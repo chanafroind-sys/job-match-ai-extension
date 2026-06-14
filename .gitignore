@@ -1,0 +1,4 @@
+.claude/
+create-icons.js
+node_modules/
+*.log
