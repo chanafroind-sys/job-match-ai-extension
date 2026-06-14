@@ -304,9 +304,17 @@ async function startAnalysis() {
   let tabResult;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
+    // Try sending message to existing content script
+    try {
+      tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
+    } catch (e) {
+      // Content script not injected (tab was open before extension loaded) — inject now
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+      await new Promise(r => setTimeout(r, 300));
+      tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
+    }
   } catch (e) {
-    showMainError('לא ניתן לקרוא את דף המשרה. נסה לרענן את הדף.');
+    showMainError('לא ניתן לקרוא את דף המשרה. רענן את הדף (F5) ונסה שוב.');
     return;
   }
 

@@ -10,6 +10,7 @@
     'comeet.co': ['.position-details', '.job-description', '.position-description'],
     'hunter.io': ['.job-body', '.description-body'],
     'heyanter.com': ['.job-body', '.description-body'],
+    'jobify360.co.il': ['.job-description', '.job-content', '.position-description', '[class*="job"]', 'article', 'main'],
   };
 
   const GENERIC_SELECTORS = [
@@ -44,6 +45,7 @@
       'comeet.co': 'Comeet',
       'hunter.io': 'Hunter',
       'heyanter.com': 'הייאנטר',
+      'jobify360.co.il': 'Jobify360',
       'jobnet.co.il': 'JobNet',
       'jobs.gov.il': 'שירות התעסוקה',
       'smartrecruiters.com': 'SmartRecruiters',
