@@ -49,41 +49,57 @@ function verdictInfo(score) {
   return { label: '❌ לא מתאים', cls: 'verdict-bad' };
 }
 
-// Extract text from DOCX file
+// Decompress DEFLATE-compressed data using DecompressionStream
+async function inflateRaw(compressedBytes) {
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  writer.write(compressedBytes);
+  writer.close();
+  const chunks = [];
+  const reader = ds.readable.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const result = new Uint8Array(total);
+  let pos = 0;
+  for (const c of chunks) { result.set(c, pos); pos += c.length; }
+  return result;
+}
+
+// Extract text from DOCX file (handles DEFLATE-compressed ZIP entries)
 async function extractDocxText(arrayBuffer) {
   try {
     const bytes = new Uint8Array(arrayBuffer);
-    // Find word/document.xml in ZIP
-    const findFile = (name) => {
-      const nameBytes = new TextEncoder().encode(name);
+
+    const findFile = async (name) => {
       for (let i = 0; i < bytes.length - 30; i++) {
         if (bytes[i] === 0x50 && bytes[i+1] === 0x4B && bytes[i+2] === 0x03 && bytes[i+3] === 0x04) {
+          const compression = bytes[i+8] | (bytes[i+9] << 8);
+          const compressedSize = bytes[i+18] | (bytes[i+19] << 8) | (bytes[i+20] << 16) | (bytes[i+21] << 24);
           const fnLen = bytes[i+26] | (bytes[i+27] << 8);
           const extraLen = bytes[i+28] | (bytes[i+29] << 8);
           const fnStart = i + 30;
           const fn = new TextDecoder().decode(bytes.slice(fnStart, fnStart + fnLen));
           if (fn === name) {
-            const compressedSize = bytes[i+18] | (bytes[i+19] << 8) | (bytes[i+20] << 16) | (bytes[i+21] << 24);
             const dataStart = fnStart + fnLen + extraLen;
-            return bytes.slice(dataStart, dataStart + compressedSize);
+            const data = bytes.slice(dataStart, dataStart + compressedSize);
+            // compression method 8 = DEFLATE, 0 = stored
+            return compression === 8 ? await inflateRaw(data) : data;
           }
         }
       }
       return null;
     };
 
-    const xmlBytes = findFile('word/document.xml');
+    const xmlBytes = await findFile('word/document.xml');
     if (!xmlBytes) return null;
 
     const xml = new TextDecoder('utf-8').decode(xmlBytes);
-    // Extract text from w:t elements
-    const texts = [];
-    const matches = xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
-    for (const m of matches) {
-      texts.push(m[1]);
-    }
-    // Also handle paragraph breaks
-    const paras = xml.split(/<w:p[ >]/);
+    // Split by paragraphs and extract w:t text
+    const paras = xml.split(/<w:p[ >\/]/);
     let result = '';
     for (const para of paras) {
       const tMatches = [...para.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)];
@@ -91,7 +107,7 @@ async function extractDocxText(arrayBuffer) {
         result += tMatches.map(m => m[1]).join('') + '\n';
       }
     }
-    return result.trim() || texts.join(' ');
+    return result.trim();
   } catch (e) {
     console.error('DOCX extract error:', e);
     return null;
