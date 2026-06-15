@@ -226,8 +226,14 @@ document.getElementById('btnTrackerBack').addEventListener('click', () => {
 });
 
 // Main screen
-document.getElementById('btnRetry').addEventListener('click', startAnalysis);
-document.getElementById('btnReanalyze').addEventListener('click', startAnalysis);
+document.getElementById('btnRetry').addEventListener('click', () => {
+  showScreen('main');
+  startAnalysis();
+});
+document.getElementById('btnReanalyze').addEventListener('click', () => {
+  showScreen('main');
+  startAnalysis();
+});
 document.getElementById('btnGoSettings').addEventListener('click', () => {
   loadSettings();
   showScreen('settings');
@@ -301,7 +307,6 @@ function showMainResult(analysis) {
 
 async function startAnalysis() {
   showMainLoading();
-  showScreen('main');
 
   const stored = await chrome.storage.local.get(['apiKey', 'cvText']);
   if (!stored.apiKey) {
@@ -597,7 +602,82 @@ async function showTrackerScreen() {
   });
 }
 
-// Init
+// ── License screen ────────────────────────────────────────────────────────────
+async function checkLicense() {
+  const data = await chrome.storage.local.get(['licenseKey', 'licenseValid']);
+  return !!(data.licenseKey && data.licenseValid);
+}
+
+document.getElementById('btnActivateLicense').addEventListener('click', async () => {
+  const key = document.getElementById('licenseKeyInput').value.trim();
+  const errEl = document.getElementById('licenseError');
+  const okEl = document.getElementById('licenseSuccess');
+  errEl.style.display = 'none';
+  okEl.style.display = 'none';
+
+  if (!key) {
+    errEl.textContent = 'נא להזין מפתח רישיון.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btnActivateLicense');
+  btn.textContent = '⏳ מאמת...';
+  btn.disabled = true;
+
+  const res = await chrome.runtime.sendMessage({ action: 'verifyLicense', licenseKey: key });
+
+  btn.textContent = '🔓 הפעל רישיון';
+  btn.disabled = false;
+
+  if (res.error) {
+    errEl.textContent = res.error;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  await chrome.storage.local.set({ licenseKey: key, licenseValid: true });
+  okEl.textContent = '✅ רישיון אומת בהצלחה!';
+  okEl.style.display = 'block';
+  setTimeout(() => showReadyScreen(), 900);
+});
+
+// ── Ready screen ───────────────────────────────────────────────────────────────
+async function showReadyScreen() {
+  const data = await chrome.storage.local.get(['cvText', 'cvName', 'apiKey']);
+
+  if (data.cvName && data.cvText) {
+    document.getElementById('readyCvName').textContent = data.cvName;
+    document.getElementById('readyCvMeta').style.display = 'flex';
+    document.getElementById('readyNoCv').style.display = 'none';
+  } else {
+    document.getElementById('readyCvMeta').style.display = 'none';
+    document.getElementById('readyNoCv').style.display = 'flex';
+  }
+
+  if (!data.apiKey) {
+    document.getElementById('readyWarning').textContent = '⚠️ לא הוגדר API Key — פתח ⚙️ הגדרות לפני הניתוח';
+  } else {
+    document.getElementById('readyWarning').textContent = '';
+  }
+
+  if (data.apiKey) state.apiKey = data.apiKey;
+  if (data.cvText) state.cvText = data.cvText;
+
+  showScreen('ready');
+}
+
+document.getElementById('btnStartAnalysis').addEventListener('click', () => {
+  showScreen('main');
+  startAnalysis();
+});
+
+// ── Init ───────────────────────────────────────────────────────────────────────
 (async () => {
-  await startAnalysis();
+  const licensed = await checkLicense();
+  if (!licensed) {
+    showScreen('license');
+  } else {
+    await showReadyScreen();
+  }
 })();

@@ -191,6 +191,41 @@ Do NOT add explanations, comments, or notes outside the CV.
 === JOB DESCRIPTION ===
 {jobText}`;
 
+// ── Gumroad License Verification ──────────────────────────────────────────────
+const GUMROAD_PRODUCT_ID = 'YOUR_ID_HERE'; // Replace with your Gumroad product permalink/ID
+const MAX_LICENSE_USES = 3; // allow up to N activations per key (set to 1 for strict single-device)
+
+async function verifyGumroadLicense(licenseKey) {
+  const body = new URLSearchParams({
+    product_id: GUMROAD_PRODUCT_ID,
+    license_key: licenseKey.trim(),
+    increment_uses_count: 'false', // don't increment on every check
+  });
+
+  const res = await fetch('https://api.gumroad.com/v2/licenses/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+
+  const data = await res.json();
+
+  if (!data.success) {
+    throw new Error('Invalid or expired license key.');
+  }
+
+  const uses = data.purchase?.uses ?? 0;
+  if (uses > MAX_LICENSE_USES) {
+    throw new Error(`This license key is already in use on ${uses} devices. Please purchase a separate license.`);
+  }
+
+  return {
+    valid: true,
+    email: data.purchase?.email || '',
+    uses,
+  };
+}
+
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === 'analyzeJob') {
     handleAnalyzeJob(req).then(sendResponse).catch(err => sendResponse({ error: friendlyError(err) }));
@@ -198,6 +233,18 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
   if (req.action === 'generateCV') {
     handleGenerateCV(req).then(sendResponse).catch(err => sendResponse({ error: friendlyError(err) }));
+    return true;
+  }
+  if (req.action === 'verifyLicense') {
+    verifyGumroadLicense(req.licenseKey)
+      .then(result => sendResponse({ result }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
+  if (req.action === 'injectContentScript') {
+    chrome.scripting.executeScript({ target: { tabId: req.tabId }, files: ['content.js'] })
+      .then(() => sendResponse({ ok: true }))
+      .catch(err => sendResponse({ error: err.message }));
     return true;
   }
 });

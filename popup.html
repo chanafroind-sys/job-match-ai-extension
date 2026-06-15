@@ -429,6 +429,77 @@
     font-size: 10px;
   }
   .no-data { color: var(--text-dim); }
+
+  /* License screen */
+  .license-wrap {
+    padding: 32px 24px;
+    text-align: center;
+  }
+  .license-icon { font-size: 44px; margin-bottom: 12px; }
+  .license-title { font-size: 17px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+  .license-subtitle { font-size: 12px; color: var(--text-muted); margin-bottom: 20px; line-height: 1.5; }
+  .license-input {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius);
+    color: var(--text-primary);
+    padding: 10px 12px;
+    font-size: 13px;
+    outline: none;
+    margin-bottom: 10px;
+    direction: ltr;
+    letter-spacing: 0.5px;
+  }
+  .license-input:focus { border-color: var(--accent); }
+  .license-error {
+    background: rgba(248,81,73,0.1);
+    border: 1px solid rgba(248,81,73,0.3);
+    border-radius: var(--border-radius);
+    padding: 8px 12px;
+    color: var(--danger);
+    font-size: 12px;
+    margin-bottom: 10px;
+    display: none;
+  }
+  .license-success {
+    background: rgba(63,185,80,0.1);
+    border: 1px solid rgba(63,185,80,0.3);
+    border-radius: var(--border-radius);
+    padding: 8px 12px;
+    color: var(--success);
+    font-size: 12px;
+    margin-bottom: 10px;
+    display: none;
+  }
+
+  /* Ready screen */
+  .ready-wrap {
+    padding: 28px 20px;
+    text-align: center;
+  }
+  .ready-icon { font-size: 52px; margin-bottom: 14px; }
+  .ready-title { font-size: 16px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+  .ready-subtitle { font-size: 12px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.5; }
+  .ready-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius);
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    text-align: right;
+  }
+  .ready-meta-icon { font-size: 20px; }
+  .ready-meta-text { font-size: 11px; color: var(--text-muted); flex: 1; }
+  .ready-meta-text strong { color: var(--text-primary); display: block; font-size: 12px; }
+  .ready-warning {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
 </style>
 </head>
 <body>
@@ -444,8 +515,53 @@
   </div>
 </div>
 
+<!-- LICENSE SCREEN -->
+<div class="screen" id="screen-license">
+  <div class="license-wrap">
+    <div class="license-icon">🔑</div>
+    <div class="license-title">הפעלת Job Match AI</div>
+    <div class="license-subtitle">הזן את מפתח הרישיון שקיבלת בעת הרכישה</div>
+    <input type="text" class="license-input" id="licenseKeyInput" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+    <div class="license-error" id="licenseError"></div>
+    <div class="license-success" id="licenseSuccess"></div>
+    <button class="btn btn-primary" id="btnActivateLicense">🔓 הפעל רישיון</button>
+    <div style="margin-top:10px;font-size:11px;color:var(--text-dim)">
+      אין לך עדיין רישיון? <a href="#" id="linkBuyLicense" style="color:var(--accent);text-decoration:none">רכוש כאן ↗</a>
+    </div>
+  </div>
+</div>
+
+<!-- READY SCREEN (shown after license check, before analysis) -->
+<div class="screen" id="screen-ready">
+  <div class="ready-wrap">
+    <div class="ready-icon">🎯</div>
+    <div class="ready-title">מוכן לניתוח</div>
+    <div class="ready-subtitle">פתוחה בפניך משרה? לחץ על הכפתור כדי לנתח אותה ולהתאים את קורות החיים שלך</div>
+
+    <div class="ready-meta" id="readyCvMeta" style="display:none">
+      <div class="ready-meta-icon">📄</div>
+      <div class="ready-meta-text">
+        <strong id="readyCvName">קורות חיים</strong>
+        <span>קובץ נטען ומוכן לשימוש</span>
+      </div>
+    </div>
+    <div class="ready-meta" id="readyNoCv" style="display:none">
+      <div class="ready-meta-icon">⚠️</div>
+      <div class="ready-meta-text">
+        <strong>קורות חיים לא הועלו</strong>
+        <span>לחץ ⚙️ כדי להעלות לפני הניתוח</span>
+      </div>
+    </div>
+
+    <div class="ready-warning" id="readyWarning"></div>
+    <button class="btn btn-primary" id="btnStartAnalysis" style="font-size:15px;padding:13px">
+      🔍 נתח משרה זו
+    </button>
+  </div>
+</div>
+
 <!-- MAIN SCREEN -->
-<div class="screen active" id="screen-main">
+<div class="screen" id="screen-main">
   <div id="mainLoading" class="loading-wrap">
     <div class="spinner"></div>
     <div class="loading-text">מנתח את דף המשרה...</div>
