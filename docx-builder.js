@@ -67,25 +67,42 @@ function makeSectionHeading(title, isRtl) {
   return `<w:p>${pPr}${run}</w:p>`;
 }
 
+// Parse a line that may contain **bold** segments into DOCX runs
+function makeRichRuns(text, baseOpts = {}) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map(part => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      const inner = part.slice(2, -2);
+      return makeRun(inner, { ...baseOpts, bold: true });
+    }
+    return part ? makeRun(part, baseOpts) : '';
+  }).join('');
+}
+
 function makeBulletParagraph(text, isRtl) {
   const align = isRtl ? 'right' : 'left';
   const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360" w:hanging="180"/>`;
-  const bullet = isRtl ? '•' : '•';
   const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}${indent}<w:spacing w:after="40" w:line="252" w:lineRule="auto"/></w:pPr>`;
-  const run = makeRun(`${bullet} ${text}`, { size: 21, color: '1f2937' });
-  return `<w:p>${pPr}${run}</w:p>`;
+  const bulletRun = makeRun('• ', { size: 21, color: '1f2937' });
+  const contentRuns = makeRichRuns(text, { size: 21, color: '1f2937' });
+  return `<w:p>${pPr}${bulletRun}${contentRuns}</w:p>`;
 }
 
 function textToDocxParagraphs(text, isRtl, isBullet = false) {
   const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   return lines.map(line => {
-    if (isBullet || line.startsWith('•') || line.startsWith('-') || line.startsWith('*')) {
-      const clean = line.replace(/^[•\-\*]\s*/, '');
+    // Detect bullet lines — but ignore lines that start with ** (bold, not bullet)
+    const isBulletLine = isBullet ||
+      line.startsWith('•') ||
+      line.startsWith('- ') ||
+      (line.startsWith('* ') && !line.startsWith('**'));
+    if (isBulletLine) {
+      const clean = line.replace(/^[•\-]\s*|^\*\s+/, '');
       return makeBulletParagraph(clean, isRtl);
     }
     const align = isRtl ? 'right' : 'left';
-    const run = makeRun(line, { size: 21, color: '1f2937' });
-    return makeParagraph(run, { align, isRtl, spacingAfter: 60 });
+    const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
+    return makeParagraph(runs, { align, isRtl, spacingAfter: 60 });
   }).join('');
 }
 
