@@ -68,7 +68,7 @@ const CV_PASS1_PROMPT = `You are a senior CV writer and recruiter expert.
 Create a tailored CV in {language} based on the original CV and job requirements.
 
 ABSOLUTE RULES — never break these:
-1. ONE PAGE MAXIMUM — cut less relevant content if needed to fit one page
+1. ONE PAGE MAXIMUM — the final CV must fit on a single printed page, no exceptions. Cut the least relevant bullet points or shorten descriptions to stay within one page. Never sacrifice core tech, key metrics, or the profile to save space — cut filler first.
 2. NEVER invent experience, skills, dates, or company names
 3. Do not reorder major sections — always: Profile → Experience → Education → Skills → Languages
 4. Languages section is ALWAYS last
@@ -99,6 +99,13 @@ PROFILE WRITING RULES:
 - Do NOT copy or paraphrase sentences from the job description — it sounds fake and recruiters notice immediately
 - The profile must sound like the candidate speaking about themselves, not echoing the employer's language
 - Make it personal, specific, and grounded in what is actually in the CV
+
+CORE TECH & HIGH-VALUE METRICS — never omit these:
+- NEVER remove core programming languages or technologies from the original CV (e.g. C++, C#, Java) even if the job focuses on only some of them — they signal versatility and depth
+- SCAN the original CV for outstanding high-value data points: perfect/near-perfect grades, academic honors, scholarships, significant quantitative achievements (e.g. performance improvements, scale metrics)
+- If the target role requires algorithmic, mathematical, or research-heavy skills (algorithms, ML, data science): surface any strong math background or analytical achievements prominently in the PROFILE section
+- For all other roles: bring relevant quantitative achievements (% improvements, project scale, team size) into the PROFILE or top bullet points of the most relevant role
+- These high-value signals must never be buried or cut — they are the candidate's competitive edge
 
 BOLD FORMATTING FOR RECRUITER SCANNING:
 - Use **double asterisks** around 3–6 key terms per section that a recruiter's eye should land on immediately
@@ -165,11 +172,16 @@ Review and improve this CV against ALL of these criteria — fix every issue you
 
 6. SPECIFICITY: Remove vague buzzwords. Replace with concrete examples or remove entirely.
 
-7. LENGTH: Must fit ONE page. Cut anything that doesn't add value for THIS specific job.
+7. LENGTH: Must fit ONE page. Cut filler bullet points and over-long descriptions first. Core tech, key metrics, and the profile must be preserved even under space pressure.
 
 8. HUMAN TONE: Should not sound AI-generated. Adjust phrasing if needed.
 
-9. HONESTY: Do not add anything not in the original CV. Do not present freelance work as full-time employment.
+9. CORE TECH & METRICS PRESERVATION: Are all core programming languages and technologies from the original CV still present?
+   If any were removed — restore them to the Skills section. Check that high-value data points (perfect grades, honors,
+   scholarships, significant quantitative achievements) are visible and not buried. If the role is algorithmic or ML-heavy,
+   verify that strong math/analytical background appears in the PROFILE. For other roles, ensure quantitative achievements
+   appear in the PROFILE or at the top of the most relevant experience entry.
+10. HONESTY: Do not add anything not in the original CV. Do not present freelance work as full-time employment.
 
 Output ONLY the improved CV with the same section markers:
 [NAME], [HEADLINE], [CONTACT], [PROFILE], [EXPERIENCE], [EDUCATION], [SKILLS], [LANGUAGES]

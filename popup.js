@@ -487,10 +487,14 @@ function showCVResult(cvText) {
   showScreen('cv-result');
 }
 
-document.getElementById('btnDownloadDocx').addEventListener('click', () => {
+document.getElementById('btnDownloadDocx').addEventListener('click', async () => {
   const isRtl = (state.analysis?.jobLanguage || state.jobLanguage) === 'hebrew';
-  const jobTitle = state.analysis?.jobTitle || 'CV';
-  const filename = `CV_${jobTitle.replace(/[^a-zA-Z0-9א-ת\s]/g, '').replace(/\s+/g, '_')}.docx`;
+  const jobTitle = (state.analysis?.jobTitle || 'CV').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').trim();
+  // Extract candidate name from CV text for filename
+  const stored = await chrome.storage.local.get(['cvName']);
+  const cvName = (stored.cvName || '').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').trim();
+  const namePart = cvName ? `_${cvName}` : '';
+  const filename = `CV_${jobTitle}${namePart}.docx`;
   console.log('[JobMatchAI] CV text being converted to DOCX:', state.generatedCV.substring(0, 500));
   downloadDocx(state.generatedCV, filename, isRtl);
 });
