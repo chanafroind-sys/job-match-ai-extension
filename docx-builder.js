@@ -6,14 +6,19 @@ function parseCVSections(cvText) {
   let currentMarker = null;
   let currentLines = [];
 
-  const lines = cvText.split('\n');
+  // Normalize line endings
+  const normalized = cvText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+
   for (const line of lines) {
     const trimmed = line.trim();
-    if (markers.includes(trimmed)) {
+    // Match marker even if AI added ** or other formatting around it
+    const foundMarker = markers.find(m => trimmed === m || trimmed === `**${m}**` || trimmed.startsWith(m));
+    if (foundMarker) {
       if (currentMarker) {
         sections[currentMarker] = currentLines.join('\n').trim();
       }
-      currentMarker = trimmed;
+      currentMarker = foundMarker;
       currentLines = [];
     } else if (currentMarker) {
       currentLines.push(line);
@@ -22,6 +27,13 @@ function parseCVSections(cvText) {
   if (currentMarker) {
     sections[currentMarker] = currentLines.join('\n').trim();
   }
+
+  // Fallback: if no markers found at all, put everything as raw content
+  const hasContent = Object.values(sections).some(v => v.length > 0);
+  if (!hasContent) {
+    sections['[PROFILE]'] = normalized.trim();
+  }
+
   return sections;
 }
 

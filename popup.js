@@ -491,6 +491,7 @@ document.getElementById('btnDownloadDocx').addEventListener('click', () => {
   const isRtl = (state.analysis?.jobLanguage || state.jobLanguage) === 'hebrew';
   const jobTitle = state.analysis?.jobTitle || 'CV';
   const filename = `CV_${jobTitle.replace(/[^a-zA-Z0-9א-ת\s]/g, '').replace(/\s+/g, '_')}.docx`;
+  console.log('[JobMatchAI] CV text being converted to DOCX:', state.generatedCV.substring(0, 500));
   downloadDocx(state.generatedCV, filename, isRtl);
 });
 
