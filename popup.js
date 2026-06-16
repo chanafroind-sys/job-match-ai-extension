@@ -1,6 +1,6 @@
 // State
 let state = {
-  apiKey: '',
+  licenseKey: '',
   cvText: '',
   cvName: '',
   jobText: '',
@@ -146,8 +146,7 @@ async function readCVFile(file) {
 
 // Settings screen
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['apiKey', 'cvText', 'cvName']);
-  if (data.apiKey) document.getElementById('apiKeyInput').value = data.apiKey;
+  const data = await chrome.storage.local.get(['cvText', 'cvName']);
   if (data.cvName) {
     document.getElementById('uploadText').textContent = `✅ ${data.cvName}`;
     document.getElementById('uploadArea').classList.add('has-file');
@@ -184,26 +183,22 @@ function showSettingsError(msg) {
 }
 
 document.getElementById('btnSaveSettings').addEventListener('click', async () => {
-  const apiKey = document.getElementById('apiKeyInput').value.trim();
   const fileInput = document.getElementById('cvFileInput');
   const errEl = document.getElementById('settingsError');
   errEl.style.display = 'none';
 
-  if (!apiKey) { showSettingsError('נא להזין API Key'); return; }
-
-  const toSave = { apiKey };
+  const toSave = {};
   if (fileInput._extractedText) {
     toSave.cvText = fileInput._extractedText;
     toSave.cvName = fileInput._fileName;
     toSave.cvSize = fileInput._fileSize;
   }
 
-  await chrome.storage.local.set(toSave);
+  if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
   document.getElementById('btnSaveSettings').textContent = '✅ נשמר!';
   setTimeout(() => {
     document.getElementById('btnSaveSettings').textContent = '💾 שמור הגדרות';
-    showScreen('main');
-    startAnalysis();
+    showReadyScreen();
   }, 800);
 });
 
@@ -308,9 +303,9 @@ function showMainResult(analysis) {
 async function startAnalysis() {
   showMainLoading();
 
-  const stored = await chrome.storage.local.get(['apiKey', 'cvText']);
-  if (!stored.apiKey) {
-    showMainError('לא הוגדר API Key. לחץ על ⚙️ להגדרות.');
+  const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
+  if (!stored.licenseKey) {
+    showMainError('לא נמצא רישיון תקף. חזור למסך הראשי.');
     return;
   }
   if (!stored.cvText) {
@@ -318,7 +313,7 @@ async function startAnalysis() {
     return;
   }
 
-  state.apiKey = stored.apiKey;
+  state.licenseKey = stored.licenseKey;
   state.cvText = stored.cvText;
 
   // Get job text from active tab
@@ -352,7 +347,7 @@ async function startAnalysis() {
   // Call API
   const response = await chrome.runtime.sendMessage({
     action: 'analyzeJob',
-    apiKey: state.apiKey,
+    licenseKey: state.licenseKey,
     cvText: state.cvText,
     jobText: state.jobText,
   });
@@ -441,7 +436,7 @@ async function startCVGeneration(answers) {
 
   const response = await chrome.runtime.sendMessage({
     action: 'generateCV',
-    apiKey: state.apiKey,
+    licenseKey: state.licenseKey,
     cvText: state.cvText,
     jobText: state.jobText,
     jobLanguage: state.analysis?.jobLanguage || state.jobLanguage,
@@ -636,6 +631,7 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
     return;
   }
 
+  state.licenseKey = key;
   await chrome.storage.local.set({ licenseKey: key, licenseValid: true });
   okEl.textContent = '✅ רישיון אומת בהצלחה!';
   okEl.style.display = 'block';
@@ -644,7 +640,10 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
 
 // ── Ready screen ───────────────────────────────────────────────────────────────
 async function showReadyScreen() {
-  const data = await chrome.storage.local.get(['cvText', 'cvName', 'apiKey']);
+  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey']);
+
+  if (data.licenseKey) state.licenseKey = data.licenseKey;
+  if (data.cvText) state.cvText = data.cvText;
 
   if (data.cvName && data.cvText) {
     document.getElementById('readyCvName').textContent = data.cvName;
@@ -655,14 +654,7 @@ async function showReadyScreen() {
     document.getElementById('readyNoCv').style.display = 'flex';
   }
 
-  if (!data.apiKey) {
-    document.getElementById('readyWarning').textContent = '⚠️ לא הוגדר API Key — פתח ⚙️ הגדרות לפני הניתוח';
-  } else {
-    document.getElementById('readyWarning').textContent = '';
-  }
-
-  if (data.apiKey) state.apiKey = data.apiKey;
-  if (data.cvText) state.cvText = data.cvText;
+  document.getElementById('readyWarning').textContent = '';
 
   showScreen('ready');
 }
