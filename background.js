@@ -21,15 +21,32 @@ function friendlyError(msg) {
 }
 
 async function backendPost(endpoint, body, licenseKey) {
-  const res = await fetch(`${BACKEND_URL}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-license-key': licenseKey || '',
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
+  let res;
+  try {
+    res = await fetch(`${BACKEND_URL}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-license-key': licenseKey || '',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error('Cannot reach the server. Check your internet connection.');
+  }
+
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // Server returned HTML — likely sleeping (Render free tier) or wrong URL
+    if (res.status === 502 || res.status === 503 || text.includes('<html')) {
+      throw new Error('השרת מתעורר (Render free tier) — המתן 30 שניות ונסה שוב.');
+    }
+    throw new Error(`Server error ${res.status}: unexpected response format.`);
+  }
+
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
