@@ -20,35 +20,49 @@ function friendlyError(msg) {
   return msg;
 }
 
-async function backendPost(endpoint, body, licenseKey) {
-  let res;
-  try {
-    res = await fetch(`${BACKEND_URL}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-license-key': licenseKey || '',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    throw new Error('Cannot reach the server. Check your internet connection.');
-  }
-
-  const text = await res.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    // Server returned HTML — likely sleeping (Render free tier) or wrong URL
-    if (res.status === 502 || res.status === 503 || text.includes('<html')) {
-      throw new Error('השרת מתעורר (Render free tier) — המתן 30 שניות ונסה שוב.');
+async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 12000) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let res;
+    try {
+      res = await fetch(`${BACKEND_URL}${endpoint}`, options);
+    } catch (e) {
+      if (attempt === maxAttempts) throw new Error('Cannot reach the server. Check your internet connection.');
+      await new Promise(r => setTimeout(r, delayMs));
+      continue;
     }
-    throw new Error(`Server error ${res.status}: unexpected response format.`);
-  }
 
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
+    const text = await res.text();
+    const isHtml = text.trimStart().startsWith('<') || text.includes('<html');
+
+    if (isHtml || res.status === 502 || res.status === 503 || res.status === 504) {
+      if (attempt === maxAttempts) {
+        throw new Error('השרת לא מגיב. אנא פתח https://job-match-ai-extension.onrender.com/health בדפדפן כדי להעיר אותו, ונסה שוב.');
+      }
+      await new Promise(r => setTimeout(r, delayMs));
+      continue;
+    }
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Server error ${res.status}: unexpected response.`);
+    }
+
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+}
+
+async function backendPost(endpoint, body, licenseKey) {
+  return fetchWithRetry(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-license-key': licenseKey || '',
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {

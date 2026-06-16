@@ -564,7 +564,10 @@
 <div class="screen" id="screen-main">
   <div id="mainLoading" class="loading-wrap">
     <div class="spinner"></div>
-    <div class="loading-text">מנתח את דף המשרה...</div>
+    <div class="loading-text" id="loadingText">מנתח את דף המשרה...</div>
+    <div style="font-size:11px;color:var(--text-dim);margin-top:8px;display:none" id="loadingHint">
+      השרת מתעורר — זה לוקח עד 45 שניות בפעם הראשונה...
+    </div>
   </div>
   <div id="mainError" style="display:none">
     <div class="error-box" id="mainErrorMsg"></div>

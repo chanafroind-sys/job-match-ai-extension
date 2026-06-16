@@ -235,19 +235,35 @@ document.getElementById('btnGoSettings').addEventListener('click', () => {
 });
 
 function showMainError(msg) {
+  hideMainLoading();
   document.getElementById('mainLoading').style.display = 'none';
   document.getElementById('mainResult').style.display = 'none';
   document.getElementById('mainErrorMsg').textContent = msg;
   document.getElementById('mainError').style.display = 'block';
 }
 
+let _loadingHintTimer = null;
+
 function showMainLoading() {
   document.getElementById('mainLoading').style.display = 'block';
   document.getElementById('mainResult').style.display = 'none';
   document.getElementById('mainError').style.display = 'none';
+  document.getElementById('loadingHint').style.display = 'none';
+  document.getElementById('loadingText').textContent = 'מנתח את דף המשרה...';
+  clearTimeout(_loadingHintTimer);
+  _loadingHintTimer = setTimeout(() => {
+    document.getElementById('loadingHint').style.display = 'block';
+    document.getElementById('loadingText').textContent = 'מחכה לשרת...';
+  }, 8000);
+}
+
+function hideMainLoading() {
+  clearTimeout(_loadingHintTimer);
+  document.getElementById('loadingHint').style.display = 'none';
 }
 
 function showMainResult(analysis) {
+  hideMainLoading();
   document.getElementById('mainLoading').style.display = 'none';
   document.getElementById('mainError').style.display = 'none';
   document.getElementById('mainResult').style.display = 'block';
