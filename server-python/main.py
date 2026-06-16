@@ -56,7 +56,12 @@ def increment_usage(license_key: str) -> int:
 
 # ── Gumroad verification ──────────────────────────────────────────────────────
 
+TEST_LICENSE_KEY = "TEST-MICHAL-FAKE-KEY"
+
 async def verify_gumroad_license(license_key: str) -> dict:
+    if license_key.strip() == TEST_LICENSE_KEY:
+        return {"email": "test@internal", "uses": 1}
+
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             "https://api.gumroad.com/v2/licenses/verify",
