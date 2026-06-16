@@ -1,4 +1,4 @@
-const BACKEND_URL = 'http://localhost:3000'; // Replace with your deployed server URL before release
+const BACKEND_URL = 'http://127.0.0.1:8000'; // Replace with your deployed server URL before release
 
 function friendlyError(msg) {
   if (!msg) return 'An unexpected error occurred.';
