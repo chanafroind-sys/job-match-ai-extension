@@ -20,23 +20,7 @@
     "128": "icons/icon128.png"
   },
   "content_scripts": [{
-    "matches": [
-      "https://*.linkedin.com/jobs/*",
-      "https://*.indeed.com/*",
-      "https://*.glassdoor.com/*",
-      "https://*.jobmaster.co.il/*",
-      "https://*.alljobs.co.il/*",
-      "https://*.drushim.co.il/*",
-      "https://*.gotfriends.co.il/*",
-      "https://*.comeet.co/*",
-      "https://*.greenhouse.io/*",
-      "https://*.lever.co/*",
-      "https://jobs.nvidia.com/*",
-      "https://*.smartrecruiters.com/*",
-      "https://*.workable.com/*",
-      "https://*.jobify360.co.il/*",
-      "https://*.jobnet.co.il/*"
-    ],
+    "matches": ["https://*/*", "http://*/*"],
     "js": ["content.js"],
     "run_at": "document_idle",
     "all_frames": false

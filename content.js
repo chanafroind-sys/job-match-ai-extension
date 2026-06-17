@@ -132,10 +132,31 @@
     'drushim.co.il': { cards: '[class*="job-item"], .job-box', title: '.job-title, h3 a', company: '.company-name', snippet: '.job-brief' },
   };
 
+  // Keywords that indicate a job listing page — checked locally, zero API cost
+  const JOB_KEYWORDS_HE = ['משרה', 'משרות', 'תפקיד', 'דרישות', 'ניסיון', 'קו"ח', 'גיוס', 'פיתוח', 'מפתח', 'הגש'];
+  const JOB_KEYWORDS_EN = ['job', 'position', 'vacancy', 'career', 'apply', 'requirements', 'experience', 'hiring', 'full-time', 'part-time', 'salary'];
+
+  function pageHasJobKeywords() {
+    const text = (document.body.innerText || '').toLowerCase();
+    const heCount = JOB_KEYWORDS_HE.filter(kw => text.includes(kw)).length;
+    const enCount = JOB_KEYWORDS_EN.filter(kw => text.includes(kw)).length;
+    return heCount >= 2 || enCount >= 3;
+  }
+
+  // Structural CSS selectors — ordered from precise to generic
   const GENERIC_CARD_SELECTORS = [
+    // Explicit job semantics
     '[class*="job-card"]', '[class*="jobCard"]', '[class*="job-listing"]',
-    '[class*="position-item"]', '[class*="vacancy-item"]', '[data-job-id]',
-    'li[class*="position"]', 'li[class*="job"]', 'article[class*="job"]',
+    '[class*="job-item"]', '[class*="jobItem"]', '[class*="job-result"]',
+    '[class*="position-item"]', '[class*="vacancy-item"]', '[class*="vacancy-card"]',
+    '[class*="opening-item"]', '[class*="opening"]',
+    '[data-job-id]', '[data-jobid]', '[data-position-id]',
+    'li[class*="position"]', 'li[class*="job"]',
+    'article[class*="job"]', 'article[class*="position"]',
+    // Common ATS patterns
+    'tr.job', 'tr[class*="job"]', 'tr[class*="position"]',
+    '.posting', '[class*="posting-item"]',
+    '[class*="result-card"]', '[class*="resultCard"]',
   ];
 
   function getCardConfig() {
@@ -146,18 +167,53 @@
     return null;
   }
 
+  // Last-resort: find repeated same-class elements that each contain a link
+  function findRepeatedLinkContainers() {
+    const candidates = [
+      ...document.querySelectorAll('li'),
+      ...document.querySelectorAll('article'),
+      ...document.querySelectorAll('div[class*="card"]'),
+      ...document.querySelectorAll('div[class*="item"]'),
+      ...document.querySelectorAll('div[class*="result"]'),
+      ...document.querySelectorAll('div[class*="listing"]'),
+    ];
+    const groups = {};
+    for (const el of candidates) {
+      const key = el.tagName + '|' + el.className;
+      if (!key || key.length < 5) continue;
+      groups[key] = groups[key] || [];
+      groups[key].push(el);
+    }
+    for (const els of Object.values(groups)) {
+      if (els.length < 3 || els.length > 200) continue;
+      const withLinks = els.filter(el => el.querySelector('a') && el.textContent.trim().length > 10);
+      if (withLinks.length >= 3) return withLinks;
+    }
+    return null;
+  }
+
   function detectJobCards() {
+    // 1. Known platform — precise selectors
     const cfg = getCardConfig();
     if (cfg) {
       const cards = document.querySelectorAll(cfg.cards);
       if (cards.length >= 2) return { cards: Array.from(cards), cfg };
     }
+
+    // 2. Generic structural selectors
     for (const sel of GENERIC_CARD_SELECTORS) {
       try {
         const cards = document.querySelectorAll(sel);
         if (cards.length >= 2) return { cards: Array.from(cards), cfg: null };
       } catch {}
     }
+
+    // 3. Pattern-based: repeated containers with links, but ONLY if page has job keywords
+    if (pageHasJobKeywords()) {
+      const els = findRepeatedLinkContainers();
+      if (els) return { cards: els, cfg: null };
+    }
+
     return null;
   }
 
