@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Match AI",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "ניתוח משרות חכם + קורות חיים מותאמים + מעקב הגשות",
   "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": ["https://job-match-ai-extension.onrender.com/*"],
@@ -18,5 +18,27 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "content_scripts": [{
+    "matches": [
+      "https://*.linkedin.com/jobs/*",
+      "https://*.indeed.com/*",
+      "https://*.glassdoor.com/*",
+      "https://*.jobmaster.co.il/*",
+      "https://*.alljobs.co.il/*",
+      "https://*.drushim.co.il/*",
+      "https://*.gotfriends.co.il/*",
+      "https://*.comeet.co/*",
+      "https://*.greenhouse.io/*",
+      "https://*.lever.co/*",
+      "https://jobs.nvidia.com/*",
+      "https://*.smartrecruiters.com/*",
+      "https://*.workable.com/*",
+      "https://*.jobify360.co.il/*",
+      "https://*.jobnet.co.il/*"
+    ],
+    "js": ["content.js"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }]
 }

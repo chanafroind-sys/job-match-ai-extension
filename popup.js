@@ -253,7 +253,7 @@ function showMainLoading() {
   clearTimeout(_loadingHintTimer);
   _loadingHintTimer = setTimeout(() => {
     document.getElementById('loadingHint').style.display = 'block';
-    document.getElementById('loadingText').textContent = 'מחכה לשרת...';
+    document.getElementById('loadingText').textContent = 'מנתחת... עוד רגע ☕';
   }, 8000);
 }
 
@@ -321,11 +321,11 @@ async function startAnalysis() {
 
   const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
   if (!stored.licenseKey) {
-    showMainError('לא נמצא רישיון תקף. חזור למסך הראשי.');
+    showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.');
     return;
   }
   if (!stored.cvText) {
-    showMainError('לא הועלו קורות חיים. לחץ על ⚙️ להגדרות.');
+    showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ בפינה כדי להוסיף.');
     return;
   }
 
@@ -346,12 +346,12 @@ async function startAnalysis() {
       tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
     }
   } catch (e) {
-    showMainError('לא ניתן לקרוא את דף המשרה. רענן את הדף (F5) ונסה שוב.');
+    showMainError('לא הצלחנו לקרוא את הדף הנוכחי. נסי לרענן (F5) ואז לפתוח שוב.');
     return;
   }
 
   if (!tabResult || !tabResult.text || tabResult.text.length < 100) {
-    showMainError('לא זוהה דף משרה. פתח דף משרה ונסה שוב.');
+    showMainError('לא זוהתה משרה בעמוד זה. פתחי את דף המשרה הספציפי ונסי שוב.');
     return;
   }
 

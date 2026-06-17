@@ -257,6 +257,28 @@ class GenerateCVRequest(BaseModel):
     jobLanguage: str = "english"
     answers: list[dict] = []
 
+class RankJobsRequest(BaseModel):
+    licenseKey: Optional[str] = None
+    cvText: str
+    jobs: list[dict]
+
+RANK_JOBS_PROMPT = """You are a job matching expert.
+Based on the candidate's CV, evaluate each job listing and return a match score + brief assessment.
+
+For each job return:
+- score: 0-100 (how well the candidate fits)
+- pro: one short sentence (under 10 words) about the best matching point
+- con: one short sentence (under 10 words) about the biggest gap or risk
+
+Return ONLY a valid JSON array. No markdown, no explanation.
+Format: [{{"index":0,"score":85,"pro":"...","con":"..."}}]
+
+=== CANDIDATE CV (summary) ===
+{cv_summary}
+
+=== JOBS TO RANK ===
+{jobs_list}"""
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -344,6 +366,47 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
 
     increment_usage(license_key)
     return {"cvText": cv_final}
+
+
+@app.post("/api/rank-jobs")
+async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header(None)):
+    license_key = x_license_key or body.licenseKey or ""
+    await require_license(license_key)
+
+    jobs_list = "\n".join(
+        f"{j.get('index', i)}. {j.get('title', '?')} at {j.get('company', 'Unknown')}: {j.get('snippet', '')}"
+        for i, j in enumerate(body.jobs[:12])
+    )
+    cv_summary = body.cvText[:800]
+    prompt = RANK_JOBS_PROMPT.format(cv_summary=cv_summary, jobs_list=jobs_list)
+
+    last_error: Exception | None = None
+    for _ in range(2):
+        try:
+            raw = await call_claude(prompt, max_tokens=1200)
+            ranked = parse_json_response(raw)
+            if not isinstance(ranked, list):
+                raise ValueError("Expected JSON array")
+
+            jobs_map = {j.get('index', i): j for i, j in enumerate(body.jobs)}
+            result = []
+            for item in ranked:
+                idx = item.get('index', 0)
+                original = jobs_map.get(idx) or (body.jobs[idx] if idx < len(body.jobs) else {})
+                result.append({
+                    "index": idx,
+                    "title": original.get('title', ''),
+                    "company": original.get('company', ''),
+                    "score": max(0, min(100, int(item.get('score', 50)))),
+                    "pro": item.get('pro', ''),
+                    "con": item.get('con', ''),
+                })
+            increment_usage(license_key)
+            return {"rankedJobs": result}
+        except Exception as e:
+            last_error = e
+
+    raise HTTPException(status_code=500, detail=str(last_error) or "Ranking failed.")
 
 
 if __name__ == "__main__":

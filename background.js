@@ -1,55 +1,55 @@
 const BACKEND_URL = 'https://job-match-ai-extension.onrender.com';
 
 function friendlyError(msg) {
-  if (!msg) return 'An unexpected error occurred.';
-  if (msg.includes('401') || msg.toLowerCase().includes('invalid') && msg.toLowerCase().includes('license')) {
-    return 'Invalid or expired license key. Please check your license in Settings.';
+  if (!msg) return 'קרתה תקלה לא צפויה. נסי שוב.';
+  const lo = msg.toLowerCase();
+  if (msg.includes('401') || (lo.includes('invalid') && lo.includes('license'))) {
+    return 'קוד הרישיון לא תקין. בדקי שהעתקת אותו נכון בהגדרות.';
   }
-  if (msg.includes('429') || msg.toLowerCase().includes('monthly usage')) {
-    return 'Monthly usage limit reached. Resets on the 1st of next month.';
+  if (msg.includes('429') || lo.includes('monthly usage') || lo.includes('monthly limit')) {
+    return 'הגעת למגבלה החודשית (100 ניתוחים). המכסה מתחדשת ב-1 לחודש הבא.';
   }
-  if (msg.includes('403')) {
-    return msg; // pass through license / device limit messages
+  if (msg.includes('403') || lo.includes('devices') || lo.includes('already activated')) {
+    return 'הרישיון כבר בשימוש במספר מקסימלי של מכשירים.';
   }
-  if (msg.match(/5\d\d/) || msg.toLowerCase().includes('server')) {
-    return 'Server error — please try again in a moment.';
+  if (lo.includes('אין חיבור') || lo.includes('internet') || lo.includes('network') || lo.includes('cannot reach')) {
+    return 'אין חיבור לאינטרנט או שהשירות לא זמין. בדקי את החיבור ונסי שוב.';
   }
-  if (msg.toLowerCase().includes('fetch') || msg.toLowerCase().includes('network') || msg.toLowerCase().includes('failed')) {
-    return 'Cannot reach the server. Check your internet connection.';
+  if (lo.includes('מתעורר') || lo.includes('waking') || msg.includes('502') || msg.includes('503')) {
+    return 'האפליקציה מתעוררת — זה יכול לקחת עד דקה. נסי שוב בעוד רגע.';
   }
-  return msg;
+  if (lo.includes('לא הצלחנו') || lo.includes('מגבלה') || lo.includes('רישיון')) return msg;
+  return 'משהו השתבש. נסי שוב בעוד רגע.';
 }
 
 async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 12000) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let res;
+    let res, text;
     try {
-      res = await fetch(`${BACKEND_URL}${endpoint}`, options);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 25000);
+      res = await fetch(`${BACKEND_URL}${endpoint}`, { ...options, signal: controller.signal });
+      clearTimeout(timeout);
+      text = await res.text();
     } catch (e) {
-      if (attempt === maxAttempts) throw new Error('Cannot reach the server. Check your internet connection.');
+      const isLast = attempt === maxAttempts;
+      if (isLast) throw new Error('אין חיבור לאינטרנט או שהשירות לא זמין. בדקי את החיבור ונסי שוב.');
       await new Promise(r => setTimeout(r, delayMs));
       continue;
     }
 
-    const text = await res.text();
     const isHtml = text.trimStart().startsWith('<') || text.includes('<html');
-
     if (isHtml || res.status === 502 || res.status === 503 || res.status === 504) {
       if (attempt === maxAttempts) {
-        throw new Error('השרת לא מגיב. אנא פתח https://job-match-ai-extension.onrender.com/health בדפדפן כדי להעיר אותו, ונסה שוב.');
+        throw new Error('לא הצלחנו להגיע לשירות. פתחי https://job-match-ai-extension.onrender.com/health בדפדפן כדי להעיר אותו, ונסי שוב.');
       }
       await new Promise(r => setTimeout(r, delayMs));
       continue;
     }
 
     let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      throw new Error(`Server error ${res.status}: unexpected response.`);
-    }
-
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    try { data = JSON.parse(text); } catch { throw new Error('תגובה לא צפויה מהשירות. נסי שוב.'); }
+    if (!res.ok) throw new Error(data.error || `שגיאה ${res.status}`);
     return data;
   }
 }
@@ -90,6 +90,25 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     }, req.licenseKey)
       .then(data => sendResponse({ cvText: data.cvText }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));
+    return true;
+  }
+
+  if (req.action === 'rankJobs') {
+    chrome.storage.local.get(['licenseKey', 'cvText'], async (stored) => {
+      if (!stored.licenseKey || !stored.cvText) {
+        sendResponse({ error: 'כדי לדרג משרות יש להגדיר קורות חיים ורישיון תחילה. פתחי את ה-extension.' });
+        return;
+      }
+      try {
+        const data = await backendPost('/api/rank-jobs', {
+          cvText: stored.cvText,
+          jobs: req.jobs,
+        }, stored.licenseKey);
+        sendResponse({ rankedJobs: data.rankedJobs });
+      } catch (err) {
+        sendResponse({ error: friendlyError(err.message) });
+      }
+    });
     return true;
   }
 
