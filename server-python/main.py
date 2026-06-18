@@ -262,17 +262,31 @@ class RankJobsRequest(BaseModel):
     cvText: str
     jobs: list[dict]
 
-RANK_JOBS_PROMPT = """You are a job matching expert.
-Based on the candidate's CV, evaluate each job listing and return a match score + brief assessment.
+RANK_JOBS_PROMPT = """You are a strict senior engineering hiring manager reviewing candidates.
+Your job: score how well THIS candidate's CV actually matches each job listing.
 
-Rules:
-- score 0-100 reflecting how well the candidate's ACTUAL experience fits the job
-- pro: one sentence (max 10 words) — strongest matching point
-- con: one sentence (max 10 words) — biggest gap or risk
-- If a job entry has very little description, do your best with what is given — never return 0 just because details are sparse
-- Return ONLY a valid JSON array. No markdown, no explanation, no extra keys.
+SCORING PHILOSOPHY — be ruthlessly honest, not encouraging:
+- A score above 80 means "I would seriously consider this candidate right now." Reserve it only when the candidate clearly meets all hard requirements.
+- A score of 60-79 means "solid partial match — one or two real gaps."
+- A score below 50 means "a hard blocker exists."
 
-Format: [{{"index":0,"score":85,"pro":"...","con":"..."}}]
+HARD BLOCKERS — each one alone should drop the score by 20-35 points:
+1. YEARS OF EXPERIENCE: If the job requires N years and the CV shows less than N-1 years, that is a hard blocker. Do NOT compensate with "potential" or "fast learner" reasoning.
+2. MISSING MANDATORY TECH: If a core technology is listed as required (not "nice to have") and it does not appear anywhere in the CV — hard blocker.
+3. SENIORITY MISMATCH: "Senior" or "Lead" roles require explicit evidence of that level (team leadership, system ownership, mentoring). Junior-level CVs must be scored down significantly.
+4. DOMAIN MISMATCH: e.g. the job is embedded systems and the CV is pure web — hard blocker even if both involve C++.
+
+SOFT FACTORS (can add up to 15 points total, never compensate for hard blockers):
+- Strong academic background in a relevant field (+5)
+- Adjacent skills that transfer well (+5)
+- Relevant side projects or open source (+5)
+
+OUTPUT — return ONLY a valid JSON array, no markdown, no explanation:
+[{{"index":0,"score":72,"pro":"...","con":"..."}}]
+
+- pro: one sentence (max 10 words) — the single strongest matching signal
+- con: one sentence (max 10 words) — the single most serious gap or blocker
+- If a job entry has very little description, score based on title alone — still apply seniority and domain checks.
 
 === CANDIDATE CV ===
 {cv_summary}
