@@ -4,7 +4,11 @@
   "version": "3.2.0",
   "description": "ניתוח משרות חכם + קורות חיים מותאמים + מעקב הגשות",
   "permissions": ["activeTab", "storage", "scripting"],
-  "host_permissions": ["https://job-match-ai-extension.onrender.com/*"],
+  "host_permissions": [
+    "https://job-match-ai-extension.onrender.com/*",
+    "https://*/*",
+    "http://*/*"
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

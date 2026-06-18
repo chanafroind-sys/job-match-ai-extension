@@ -93,6 +93,54 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  if (req.action === 'fetchJobDetails') {
+    // Fetch full HTML of each job page and extract text — no Claude cost, pure browser fetch
+    function extractJobTextFromHtml(html) {
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        ['script','style','nav','header','footer','aside','[class*="cookie"]','[class*="banner"]','[class*="nav"]'].forEach(sel => {
+          try { doc.querySelectorAll(sel).forEach(el => el.remove()); } catch {}
+        });
+        const selectors = [
+          '[class*="job-description"]','[class*="jobDescription"]','[id*="job-description"]',
+          '[class*="position-description"]','[class*="vacancy-description"]',
+          '.job__description','#jobDescriptionText','.jobDescriptionContent',
+          '#content','.content','main','article',
+        ];
+        for (const sel of selectors) {
+          try {
+            const el = doc.querySelector(sel);
+            const text = el?.textContent?.trim();
+            if (text && text.length > 150) return text.replace(/\s+/g,' ').substring(0, 2500);
+          } catch {}
+        }
+        return (doc.body?.textContent?.trim() || '').replace(/\s+/g,' ').substring(0, 2500);
+      } catch { return ''; }
+    }
+
+    const fetchOne = async (url) => {
+      if (!url || !url.startsWith('http')) return '';
+      try {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 9000);
+        const resp = await fetch(url, {
+          signal: controller.signal,
+          headers: { 'Accept': 'text/html', 'Accept-Language': 'he,en;q=0.9' },
+        });
+        clearTimeout(tid);
+        if (!resp.ok) return '';
+        const html = await resp.text();
+        return extractJobTextFromHtml(html);
+      } catch { return ''; }
+    };
+
+    Promise.all((req.urls || []).map(fetchOne)).then(texts => {
+      sendResponse({ texts });
+    });
+    return true;
+  }
+
   if (req.action === 'rankJobs') {
     chrome.storage.local.get(['licenseKey', 'cvText'], async (stored) => {
       if (!stored.licenseKey || !stored.cvText) {

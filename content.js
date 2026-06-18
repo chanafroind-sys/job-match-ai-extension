@@ -233,7 +233,11 @@
         const c = card.querySelector('[class*="company"], [class*="employer"]');
         company = c ? c.textContent.trim().substring(0, 60) : '';
       }
-      return { index: i, title: title.substring(0, 100), company: company.substring(0, 60), snippet: snippet.substring(0, 200) };
+      // Extract job URL for full-text background fetch
+      const link = card.querySelector('a[href]');
+      const href = link ? link.href : '';
+
+      return { index: i, title: title.substring(0, 100), company: company.substring(0, 60), snippet: snippet.substring(0, 200), href };
     }).filter(j => j.title.length > 2);
   }
 
@@ -254,14 +258,38 @@
     style.id = 'jma-styles';
     style.textContent = `
       #jma-float-btn {
-        position:fixed;bottom:24px;right:24px;z-index:2147483646;
-        background:#7c3aed;color:#fff;border:none;border-radius:24px;
-        padding:11px 18px;font-size:14px;font-weight:700;cursor:pointer;
-        box-shadow:0 4px 20px rgba(124,58,237,.5);
+        position:fixed;bottom:28px;right:28px;z-index:2147483646;
+        height:54px;min-width:54px;
+        border-radius:27px;
+        padding:0 15px;
+        background:rgba(109,40,217,0.82);
+        backdrop-filter:blur(20px) saturate(180%);
+        -webkit-backdrop-filter:blur(20px) saturate(180%);
+        border:1px solid rgba(255,255,255,0.20);
+        box-shadow:0 4px 6px rgba(0,0,0,0.18),0 10px 24px rgba(109,40,217,0.38),inset 0 1px 0 rgba(255,255,255,0.18);
+        cursor:pointer;color:#fff;
+        display:flex;align-items:center;justify-content:center;gap:0;overflow:hidden;
         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-        transition:all .2s;display:flex;align-items:center;gap:7px;direction:rtl;
+        white-space:nowrap;
+        transition:
+          min-width 0.38s cubic-bezier(0.34,1.56,0.64,1),
+          gap 0.3s ease,
+          box-shadow 0.3s ease,
+          transform 0.3s ease;
       }
-      #jma-float-btn:hover{background:#6d28d9;transform:translateY(-2px)}
+      #jma-float-btn:hover{
+        min-width:196px;gap:9px;
+        box-shadow:0 8px 16px rgba(0,0,0,0.22),0 18px 36px rgba(109,40,217,0.55),inset 0 1px 0 rgba(255,255,255,0.25);
+        transform:translateY(-3px);
+      }
+      #jma-float-btn .jma-icon{font-size:22px;line-height:1;flex-shrink:0;transition:transform .3s ease}
+      #jma-float-btn:hover .jma-icon{transform:scale(1.12)}
+      #jma-float-btn .jma-label{
+        font-size:13px;font-weight:700;letter-spacing:.3px;
+        max-width:0;opacity:0;overflow:hidden;direction:rtl;
+        transition:max-width 0.38s cubic-bezier(0.34,1.56,0.64,1),opacity 0.22s ease 0.1s;
+      }
+      #jma-float-btn:hover .jma-label{max-width:160px;opacity:1}
       #jma-sidebar{
         position:fixed;top:0;right:-400px;width:380px;height:100vh;z-index:2147483645;
         background:#0d1117;border-left:1px solid #21262d;
@@ -331,14 +359,34 @@
     }).join('');
   }
 
+  function setSidebarStatus(html) {
+    const body = document.getElementById('jma-sb-body');
+    if (body) body.innerHTML = html;
+  }
+
   function startRanking() {
     if (_rankingDone) return;
-    showSidebarLoading();
-    chrome.runtime.sendMessage({ action: 'rankJobs', jobs: _collectedJobs }, (resp) => {
-      if (chrome.runtime.lastError || !resp) { showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.'); return; }
-      if (resp.error) { showSidebarError(resp.error); return; }
-      _rankingDone = true;
-      renderRanked(resp.rankedJobs);
+
+    // Phase 1: fetch full job descriptions in the background (zero Claude cost)
+    setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>אוסף מידע מלא על המשרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">ממשיך ברקע ☕</div></div>');
+
+    const urls = _collectedJobs.map(j => j.href || '');
+    chrome.runtime.sendMessage({ action: 'fetchJobDetails', urls }, (fetchResp) => {
+      // Merge fetched full-texts into jobs (fall back to snippet if fetch failed)
+      const enrichedJobs = _collectedJobs.map((job, i) => {
+        const fullText = fetchResp?.texts?.[i];
+        return { ...job, fullText: fullText || job.snippet || '' };
+      });
+
+      // Phase 2: send to Claude for ranking
+      setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מנתח ומדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">יכול לקחת עד דקה</div></div>');
+
+      chrome.runtime.sendMessage({ action: 'rankJobs', jobs: enrichedJobs }, (resp) => {
+        if (chrome.runtime.lastError || !resp) { showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.'); return; }
+        if (resp.error) { showSidebarError(resp.error); return; }
+        _rankingDone = true;
+        renderRanked(resp.rankedJobs);
+      });
     });
   }
 
@@ -353,7 +401,7 @@
 
     const btn = document.createElement('button');
     btn.id = 'jma-float-btn';
-    btn.innerHTML = '🎯 דרג משרות בעמוד';
+    btn.innerHTML = '<span class="jma-icon">🎯</span><span class="jma-label">דרג משרות בעמוד</span>';
     document.body.appendChild(btn);
 
     const sidebar = document.createElement('div');

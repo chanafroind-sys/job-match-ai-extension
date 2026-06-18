@@ -373,10 +373,12 @@ async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header
     license_key = x_license_key or body.licenseKey or ""
     await require_license(license_key)
 
-    jobs_list = "\n".join(
-        f"{j.get('index', i)}. {j.get('title', '?')} at {j.get('company', 'Unknown')}: {j.get('snippet', '')}"
-        for i, j in enumerate(body.jobs[:12])
-    )
+    def job_text(j, i):
+        detail = j.get('fullText') or j.get('snippet') or ''
+        company = f" at {j.get('company')}" if j.get('company') else ''
+        return f"{j.get('index', i)}. {j.get('title', '?')}{company}: {detail[:1500]}"
+
+    jobs_list = "\n\n".join(job_text(j, i) for i, j in enumerate(body.jobs[:12]))
     cv_summary = body.cvText[:800]
     prompt = RANK_JOBS_PROMPT.format(cv_summary=cv_summary, jobs_list=jobs_list)
 
