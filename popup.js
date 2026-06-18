@@ -374,6 +374,17 @@ async function startAnalysis() {
   }
 
   state.analysis = response.result;
+  // Persist analysis so it survives accidental popup close
+  chrome.storage.local.set({
+    lastAnalysis: {
+      url: state.jobUrl,
+      analysis: response.result,
+      jobText: state.jobText,
+      jobLanguage: state.jobLanguage,
+      jobPlatform: state.jobPlatform,
+      ts: Date.now(),
+    }
+  });
   showMainResult(response.result);
 }
 
@@ -398,6 +409,7 @@ function showQuestionsScreen(questions) {
       <div class="question-skill">${q.skill}</div>
       <div class="question-text">${q.question}</div>
       <div class="question-why">${q.why}</div>
+      ${q.heExplanation ? `<div class="question-he-exp">💡 ${q.heExplanation}</div>` : ''}
       <div class="quick-answers">
         <button class="qa-btn" data-idx="${idx}" data-val="כן, יש לי ניסיון">✅ כן, יש לי ניסיון</button>
         <button class="qa-btn" data-idx="${idx}" data-val="ידע תיאורטי בלבד">📚 תיאורטי בלבד</button>
@@ -700,7 +712,27 @@ document.getElementById('btnRankPageJobs').addEventListener('click', async () =>
   const licensed = await checkLicense();
   if (!licensed) {
     showScreen('license');
-  } else {
-    await showReadyScreen();
+    return;
   }
+
+  // Restore last analysis if popup was closed mid-session (same URL, < 30 min)
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const saved = await chrome.storage.local.get(['lastAnalysis', 'licenseKey', 'cvText']);
+    const last = saved.lastAnalysis;
+    if (last && last.url === tab.url && (Date.now() - last.ts) < 30 * 60 * 1000) {
+      state.licenseKey = saved.licenseKey || '';
+      state.cvText = saved.cvText || '';
+      state.analysis = last.analysis;
+      state.jobText = last.jobText;
+      state.jobLanguage = last.jobLanguage;
+      state.jobPlatform = last.jobPlatform;
+      state.jobUrl = last.url;
+      showScreen('main');
+      showMainResult(last.analysis);
+      return;
+    }
+  } catch {}
+
+  await showReadyScreen();
 })();

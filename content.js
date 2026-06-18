@@ -388,35 +388,59 @@
     if (body) body.innerHTML = html;
   }
 
+  function rankCacheKey() {
+    return `jma_rank_${location.origin}${location.pathname}`;
+  }
+
   function startRanking() {
     if (_rankingDone) return;
 
-    setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>אוסף מידע מלא על המשרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">ממשיך ברקע ☕</div></div>');
-
-    const urls = _collectedJobs.map(j => j.href || '');
-
-    chrome.runtime.sendMessage({ action: 'fetchJobDetails', urls }, (fetchResp) => {
-      // Merge texts — prefer fetched full text (>200 chars) over card text over snippet
-      const enrichedJobs = _collectedJobs.map((job, i) => {
-        const fetched = fetchResp?.texts?.[i] || '';
-        const bestText = fetched.length > 200 ? fetched
-                       : job.cardText && job.cardText.length > 60 ? job.cardText
-                       : job.snippet || '';
-        return { ...job, fullText: bestText };
-      }).filter(j => (j.fullText || '').length > 15); // drop jobs with truly no content
-
-      if (!enrichedJobs.length) {
-        showSidebarError('לא הצלחנו לאסוף מספיק מידע על המשרות בעמוד זה.');
+    // Check local cache first — results valid for 20 minutes
+    const cKey = rankCacheKey();
+    chrome.storage.local.get([cKey], (stored) => {
+      const cached = stored[cKey];
+      if (cached && (Date.now() - cached.ts) < 20 * 60 * 1000) {
+        _rankingDone = true;
+        const cacheNote = document.createElement('div');
+        cacheNote.style.cssText = 'font-size:10px;color:#484f58;text-align:center;padding:4px 0 8px';
+        cacheNote.textContent = '⚡ תוצאות שמורות מניתוח קודם';
+        const body = document.getElementById('jma-sb-body');
+        if (body) {
+          renderRanked(cached.jobs);
+          body.prepend(cacheNote);
+        }
         return;
       }
 
-      setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מנתח ומדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">יכול לקחת עד דקה</div></div>');
+      // No cache — fetch + rank
+      setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>אוסף מידע מלא על המשרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">ממשיך ברקע ☕</div></div>');
 
-      chrome.runtime.sendMessage({ action: 'rankJobs', jobs: enrichedJobs }, (resp) => {
-        if (chrome.runtime.lastError || !resp) { showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.'); return; }
-        if (resp.error) { showSidebarError(resp.error); return; }
-        _rankingDone = true;
-        renderRanked(resp.rankedJobs);
+      const urls = _collectedJobs.map(j => j.href || '');
+
+      chrome.runtime.sendMessage({ action: 'fetchJobDetails', urls }, (fetchResp) => {
+        const enrichedJobs = _collectedJobs.map((job, i) => {
+          const fetched = fetchResp?.texts?.[i] || '';
+          const bestText = fetched.length > 200 ? fetched
+                         : job.cardText && job.cardText.length > 60 ? job.cardText
+                         : job.snippet || '';
+          return { ...job, fullText: bestText };
+        }).filter(j => (j.fullText || '').length > 15);
+
+        if (!enrichedJobs.length) {
+          showSidebarError('לא הצלחנו לאסוף מספיק מידע על המשרות בעמוד זה.');
+          return;
+        }
+
+        setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מנתח ומדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">יכול לקחת עד דקה</div></div>');
+
+        chrome.runtime.sendMessage({ action: 'rankJobs', jobs: enrichedJobs }, (resp) => {
+          if (chrome.runtime.lastError || !resp) { showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.'); return; }
+          if (resp.error) { showSidebarError(resp.error); return; }
+          _rankingDone = true;
+          // Save to cache
+          chrome.storage.local.set({ [cKey]: { jobs: resp.rankedJobs, ts: Date.now() } });
+          renderRanked(resp.rankedJobs);
+        });
       });
     });
   }
@@ -454,6 +478,12 @@
       _sidebarOpen = false;
       sidebar.classList.remove('jma-open');
     });
+  }
+
+  // Ping backend immediately when job keywords detected — wakes up Render cold start
+  // so by the time user clicks the button the server is already ready
+  if (pageHasJobKeywords()) {
+    chrome.runtime.sendMessage({ action: 'pingBackend' });
   }
 
   setTimeout(initSidebar, 2000);

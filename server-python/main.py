@@ -136,9 +136,10 @@ Return JSON only (no markdown, no explanations):
   "questions": [
     {{
       "id": "q1",
-      "skill": "<skill name>",
+      "skill": "<skill name in English>",
       "question": "<short question in the job's language>",
-      "why": "<why this matters for the role>"
+      "why": "<why this matters for the role>",
+      "heExplanation": "<1 sentence in plain Hebrew explaining what this skill is in practical terms, max 20 words — helps non-native English speakers recognize if they have experience with it>"
     }}
   ]
 }}
@@ -262,31 +263,42 @@ class RankJobsRequest(BaseModel):
     cvText: str
     jobs: list[dict]
 
-RANK_JOBS_PROMPT = """You are a strict senior engineering hiring manager reviewing candidates.
-Your job: score how well THIS candidate's CV actually matches each job listing.
+RANK_JOBS_PROMPT = """You are a strict but fair senior engineering hiring manager.
+Score how well THIS candidate's CV matches each job listing. Be honest and realistic.
 
-SCORING PHILOSOPHY — be ruthlessly honest, not encouraging:
-- A score above 80 means "I would seriously consider this candidate right now." Reserve it only when the candidate clearly meets all hard requirements.
-- A score of 60-79 means "solid partial match — one or two real gaps."
-- A score below 50 means "a hard blocker exists."
+STEP 1 — READ THE JOB TEXT AND CLASSIFY EACH REQUIREMENT:
+- "required" / "must" / "mandatory" / listed first → CRITICAL
+- "preferred" / "advantage" / "nice to have" / listed later → SECONDARY
+- When the job is vague, infer criticality from position and emphasis in the text
 
-HARD BLOCKERS — each one alone should drop the score by 20-35 points:
-1. YEARS OF EXPERIENCE: If the job requires N years and the CV shows less than N-1 years, that is a hard blocker. Do NOT compensate with "potential" or "fast learner" reasoning.
-2. MISSING MANDATORY TECH: If a core technology is listed as required (not "nice to have") and it does not appear anywhere in the CV — hard blocker.
-3. SENIORITY MISMATCH: "Senior" or "Lead" roles require explicit evidence of that level (team leadership, system ownership, mentoring). Junior-level CVs must be scored down significantly.
-4. DOMAIN MISMATCH: e.g. the job is embedded systems and the CV is pure web — hard blocker even if both involve C++.
+STEP 2 — SCORE BASED ON ACTUAL FIT:
+Start from 100 and deduct based on what is missing:
 
-SOFT FACTORS (can add up to 15 points total, never compensate for hard blockers):
-- Strong academic background in a relevant field (+5)
-- Adjacent skills that transfer well (+5)
-- Relevant side projects or open source (+5)
+CRITICAL gaps (each deduction is proportional to how critical the requirement appears):
+- Years of experience shortfall: required N yrs, CV shows M yrs → deduct ~(N-M)/N × 35 pts
+  (e.g. 4yr req, 2yr CV → -17; 5yr req, 0yr CV → -35)
+- Missing core tech listed as "required": -15 to -25 per item depending on how central it is
+- Seniority mismatch: Senior/Lead/Staff title with no evidence of that level in CV → cap score at 65
+- Domain mismatch (e.g. embedded vs web): cap score at 55
+
+SECONDARY gaps: -3 to -8 per missing item
+
+POSITIVE signals that can partially offset secondary gaps (not critical ones):
+- Strong relevant academic background: +5
+- Closely adjacent skills that transfer: +5
+- Relevant projects or open source: +5
+
+CALIBRATION:
+- 85+: Strong match — would shortlist immediately
+- 70-84: Good match — worth an interview despite minor gaps
+- 55-69: Partial match — real gaps exist
+- 40-54: Significant blocker — not ready for this role level
+- <40: Wrong domain or severe experience shortfall
 
 OUTPUT — return ONLY a valid JSON array, no markdown, no explanation:
 [{{"index":0,"score":72,"pro":"...","con":"..."}}]
-
-- pro: one sentence (max 10 words) — the single strongest matching signal
-- con: one sentence (max 10 words) — the single most serious gap or blocker
-- If a job entry has very little description, score based on title alone — still apply seniority and domain checks.
+- pro: one sentence max 10 words — strongest signal in this candidate's favor
+- con: one sentence max 10 words — single most serious gap for THIS specific job
 
 === CANDIDATE CV ===
 {cv_summary}

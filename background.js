@@ -93,6 +93,13 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  if (req.action === 'pingBackend') {
+    // Fire-and-forget wake-up call to prevent Render cold start delay
+    fetch(`${BACKEND_URL}/health`).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (req.action === 'fetchJobDetails') {
     // Fetch full HTML of each job page and extract text — no Claude cost, pure browser fetch
     function extractJobTextFromHtml(html) {
