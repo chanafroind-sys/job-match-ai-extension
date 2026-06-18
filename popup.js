@@ -680,6 +680,21 @@ document.getElementById('btnStartAnalysis').addEventListener('click', () => {
   startAnalysis();
 });
 
+document.getElementById('btnRankPageJobs').addEventListener('click', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  // Inject content script in case it wasn't loaded yet (e.g. tab opened before extension)
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+  } catch {}
+  // Give the script time to initialize, then open sidebar
+  setTimeout(() => {
+    chrome.tabs.sendMessage(tab.id, { action: 'triggerSidebar' }, (resp) => {
+      // Close popup whether it worked or not — sidebar is in the page
+    });
+  }, 1200);
+  window.close();
+});
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 (async () => {
   const licensed = await checkLicense();

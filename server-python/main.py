@@ -265,15 +265,16 @@ class RankJobsRequest(BaseModel):
 RANK_JOBS_PROMPT = """You are a job matching expert.
 Based on the candidate's CV, evaluate each job listing and return a match score + brief assessment.
 
-For each job return:
-- score: 0-100 (how well the candidate fits)
-- pro: one short sentence (under 10 words) about the best matching point
-- con: one short sentence (under 10 words) about the biggest gap or risk
+Rules:
+- score 0-100 reflecting how well the candidate's ACTUAL experience fits the job
+- pro: one sentence (max 10 words) — strongest matching point
+- con: one sentence (max 10 words) — biggest gap or risk
+- If a job entry has very little description, do your best with what is given — never return 0 just because details are sparse
+- Return ONLY a valid JSON array. No markdown, no explanation, no extra keys.
 
-Return ONLY a valid JSON array. No markdown, no explanation.
 Format: [{{"index":0,"score":85,"pro":"...","con":"..."}}]
 
-=== CANDIDATE CV (summary) ===
+=== CANDIDATE CV ===
 {cv_summary}
 
 === JOBS TO RANK ===

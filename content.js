@@ -85,6 +85,24 @@
   }
 
   chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+    if (req.action === 'triggerSidebar') {
+      if (!document.getElementById('jma-float-btn')) {
+        initSidebar();
+      }
+      setTimeout(() => {
+        const sidebar = document.getElementById('jma-sidebar');
+        if (sidebar && !_sidebarOpen) {
+          _sidebarOpen = true;
+          sidebar.classList.add('jma-open');
+          startRanking();
+          sendResponse({ ok: true });
+        } else if (!document.getElementById('jma-float-btn')) {
+          sendResponse({ error: 'לא זוהו משרות בעמוד זה' });
+        }
+      }, 600);
+      return true;
+    }
+
     if (req.action === 'getJobText') {
       const text = extractJobText();
       sendResponse({
@@ -185,9 +203,13 @@
       groups[key].push(el);
     }
     for (const els of Object.values(groups)) {
-      if (els.length < 3 || els.length > 200) continue;
-      const withLinks = els.filter(el => el.querySelector('a') && el.textContent.trim().length > 10);
-      if (withLinks.length >= 3) return withLinks;
+      if (els.length < 3 || els.length > 150) continue;
+      // Require substantial text — nav/UI items are short; real job cards have descriptions
+      const withContent = els.filter(el => {
+        const text = (el.innerText || el.textContent || '').trim();
+        return text.length > 60 && el.querySelector('a');
+      });
+      if (withContent.length >= 3) return withContent;
     }
     return null;
   }
@@ -237,8 +259,20 @@
       const link = card.querySelector('a[href]');
       const href = link ? link.href : '';
 
-      return { index: i, title: title.substring(0, 100), company: company.substring(0, 60), snippet: snippet.substring(0, 200), href };
-    }).filter(j => j.title.length > 2);
+      // Capture full card text as reliable fallback
+      const cardText = (card.innerText || card.textContent || '').trim().replace(/\s+/g,' ').substring(0, 500);
+
+      return { index: i, title: title.substring(0, 100), company: company.substring(0, 60), snippet: snippet.substring(0, 200), href, cardText };
+    })
+    .filter(j => {
+      if (j.title.length < 5) return false;
+      // Skip UI action items (short titles that are verbs/buttons)
+      const UI_ACTIONS = /^(עדכן|הוסף|חדש|מחק|שמור|בטל|צור|הגש|קרא|פתח|update|add|new|delete|save|cancel|submit|apply|sign|log|register|view|read)/i;
+      if (UI_ACTIONS.test(j.title.trim())) return false;
+      // Require card to have some real content
+      if (j.cardText.length < 15) return false;
+      return true;
+    });
   }
 
   function escHtml(str) {
@@ -259,37 +293,27 @@
     style.textContent = `
       #jma-float-btn {
         position:fixed;bottom:28px;right:28px;z-index:2147483646;
-        height:54px;min-width:54px;
-        border-radius:27px;
-        padding:0 15px;
-        background:rgba(109,40,217,0.82);
-        backdrop-filter:blur(20px) saturate(180%);
-        -webkit-backdrop-filter:blur(20px) saturate(180%);
-        border:1px solid rgba(255,255,255,0.20);
-        box-shadow:0 4px 6px rgba(0,0,0,0.18),0 10px 24px rgba(109,40,217,0.38),inset 0 1px 0 rgba(255,255,255,0.18);
+        height:48px;
+        padding:0 20px 0 16px;
+        border-radius:24px;
+        background:rgba(109,40,217,0.88);
+        backdrop-filter:blur(16px) saturate(160%);
+        -webkit-backdrop-filter:blur(16px) saturate(160%);
+        border:1px solid rgba(255,255,255,0.18);
+        box-shadow:0 4px 8px rgba(0,0,0,0.2),0 12px 28px rgba(109,40,217,0.45),inset 0 1px 0 rgba(255,255,255,0.15);
         cursor:pointer;color:#fff;
-        display:flex;align-items:center;justify-content:center;gap:0;overflow:hidden;
+        display:flex;align-items:center;gap:9px;
+        font-size:13px;font-weight:700;letter-spacing:.3px;
+        direction:rtl;white-space:nowrap;
         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-        white-space:nowrap;
-        transition:
-          min-width 0.38s cubic-bezier(0.34,1.56,0.64,1),
-          gap 0.3s ease,
-          box-shadow 0.3s ease,
-          transform 0.3s ease;
+        transition:transform .2s ease,box-shadow .25s ease;
       }
       #jma-float-btn:hover{
-        min-width:196px;gap:9px;
-        box-shadow:0 8px 16px rgba(0,0,0,0.22),0 18px 36px rgba(109,40,217,0.55),inset 0 1px 0 rgba(255,255,255,0.25);
         transform:translateY(-3px);
+        box-shadow:0 8px 16px rgba(0,0,0,0.25),0 20px 40px rgba(109,40,217,0.58),inset 0 1px 0 rgba(255,255,255,0.22);
       }
-      #jma-float-btn .jma-icon{font-size:22px;line-height:1;flex-shrink:0;transition:transform .3s ease}
-      #jma-float-btn:hover .jma-icon{transform:scale(1.12)}
-      #jma-float-btn .jma-label{
-        font-size:13px;font-weight:700;letter-spacing:.3px;
-        max-width:0;opacity:0;overflow:hidden;direction:rtl;
-        transition:max-width 0.38s cubic-bezier(0.34,1.56,0.64,1),opacity 0.22s ease 0.1s;
-      }
-      #jma-float-btn:hover .jma-label{max-width:160px;opacity:1}
+      #jma-float-btn .jma-icon{font-size:18px;line-height:1;flex-shrink:0}
+      #jma-float-btn .jma-label{font-size:13px;font-weight:700}
       #jma-sidebar{
         position:fixed;top:0;right:-400px;width:380px;height:100vh;z-index:2147483645;
         background:#0d1117;border-left:1px solid #21262d;
@@ -367,18 +391,25 @@
   function startRanking() {
     if (_rankingDone) return;
 
-    // Phase 1: fetch full job descriptions in the background (zero Claude cost)
     setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>אוסף מידע מלא על המשרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">ממשיך ברקע ☕</div></div>');
 
     const urls = _collectedJobs.map(j => j.href || '');
-    chrome.runtime.sendMessage({ action: 'fetchJobDetails', urls }, (fetchResp) => {
-      // Merge fetched full-texts into jobs (fall back to snippet if fetch failed)
-      const enrichedJobs = _collectedJobs.map((job, i) => {
-        const fullText = fetchResp?.texts?.[i];
-        return { ...job, fullText: fullText || job.snippet || '' };
-      });
 
-      // Phase 2: send to Claude for ranking
+    chrome.runtime.sendMessage({ action: 'fetchJobDetails', urls }, (fetchResp) => {
+      // Merge texts — prefer fetched full text (>200 chars) over card text over snippet
+      const enrichedJobs = _collectedJobs.map((job, i) => {
+        const fetched = fetchResp?.texts?.[i] || '';
+        const bestText = fetched.length > 200 ? fetched
+                       : job.cardText && job.cardText.length > 60 ? job.cardText
+                       : job.snippet || '';
+        return { ...job, fullText: bestText };
+      }).filter(j => (j.fullText || '').length > 15); // drop jobs with truly no content
+
+      if (!enrichedJobs.length) {
+        showSidebarError('לא הצלחנו לאסוף מספיק מידע על המשרות בעמוד זה.');
+        return;
+      }
+
       setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מנתח ומדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">יכול לקחת עד דקה</div></div>');
 
       chrome.runtime.sendMessage({ action: 'rankJobs', jobs: enrichedJobs }, (resp) => {
