@@ -6,33 +6,34 @@ function parseCVSections(cvText) {
   let currentMarker = null;
   let currentLines = [];
 
-  // Normalize line endings
   const normalized = cvText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const lines = normalized.split('\n');
 
+  // Normalize a raw line to strip # / ## / ** so we can detect markers regardless of Claude's formatting
+  function stripDecoration(line) {
+    return line.trim()
+      .replace(/^#{1,3}\s*/, '')   // strip leading # ## ###
+      .replace(/^\*{1,2}/, '').replace(/\*{1,2}$/, '')  // strip ** or *
+      .trim();
+  }
+
   for (const line of lines) {
-    const trimmed = line.trim();
-    // Match marker even if AI added ** or other formatting around it
-    const foundMarker = markers.find(m => trimmed === m || trimmed === `**${m}**` || trimmed.startsWith(m));
+    const clean = stripDecoration(line);
+    const foundMarker = markers.find(m => clean === m || clean.startsWith(m + ' '));
     if (foundMarker) {
-      if (currentMarker) {
-        sections[currentMarker] = currentLines.join('\n').trim();
-      }
+      if (currentMarker) sections[currentMarker] = currentLines.join('\n').trim();
       currentMarker = foundMarker;
       currentLines = [];
     } else if (currentMarker) {
-      currentLines.push(line);
+      // Skip lines that are just the marker text repeated (Claude sometimes echoes it)
+      const isMarkerEcho = markers.some(m => clean === m || stripDecoration(line) === m);
+      if (!isMarkerEcho) currentLines.push(line);
     }
   }
-  if (currentMarker) {
-    sections[currentMarker] = currentLines.join('\n').trim();
-  }
+  if (currentMarker) sections[currentMarker] = currentLines.join('\n').trim();
 
-  // Fallback: if no markers found at all, put everything as raw content
   const hasContent = Object.values(sections).some(v => v.length > 0);
-  if (!hasContent) {
-    sections['[PROFILE]'] = normalized.trim();
-  }
+  if (!hasContent) sections['[PROFILE]'] = normalized.trim();
 
   return sections;
 }
@@ -67,15 +68,49 @@ function makeSectionHeading(title, isRtl) {
   return `<w:p>${pPr}${run}</w:p>`;
 }
 
-// Parse a line that may contain **bold** segments into DOCX runs
+// === Hyperlink relationship registry (reset per build) ===
+let _hyperlinkRels = [];
+
+function _resetRels() { _hyperlinkRels = []; }
+
+function _addRel(url) {
+  const ex = _hyperlinkRels.find(r => r.url === url);
+  if (ex) return ex.rId;
+  const rId = `rHyp${_hyperlinkRels.length}`;
+  _hyperlinkRels.push({ rId, url });
+  return rId;
+}
+
+function makeHyperlinkXml(displayText, url, opts = {}) {
+  const rId = _addRel(url);
+  const sz = opts.size || 21;
+  const rPr = `<w:rPr><w:rStyle w:val="Hyperlink"/><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/></w:rPr>`;
+  return `<w:hyperlink r:id="${rId}" w:history="1"><w:r>${rPr}<w:t xml:space="preserve">${escapeXml(displayText)}</w:t></w:r></w:hyperlink>`;
+}
+
+// Parse a line that may contain **bold** and [LINK:display|url] into DOCX runs
 function makeRichRuns(text, baseOpts = {}) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map(part => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      const inner = part.slice(2, -2);
-      return makeRun(inner, { ...baseOpts, bold: true });
+  const tokens = [];
+  const re = /(\[LINK:[^\|]*\|[^\]]*\]|\*\*[^*]+\*\*)/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) tokens.push({ t: 'text', v: text.slice(last, m.index) });
+    tokens.push({ t: 'special', v: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) tokens.push({ t: 'text', v: text.slice(last) });
+  if (!tokens.length) tokens.push({ t: 'text', v: text });
+
+  return tokens.map(tok => {
+    if (!tok.v) return '';
+    if (tok.t === 'text') return makeRun(tok.v, baseOpts);
+    if (tok.v.startsWith('[LINK:')) {
+      const inner = tok.v.slice(6, -1);
+      const sep = inner.indexOf('|');
+      return makeHyperlinkXml(inner.slice(0, sep), inner.slice(sep + 1), baseOpts);
     }
-    return part ? makeRun(part, baseOpts) : '';
+    if (tok.v.startsWith('**')) return makeRun(tok.v.slice(2, -2), { ...baseOpts, bold: true });
+    return makeRun(tok.v, baseOpts);
   }).join('');
 }
 
@@ -309,11 +344,7 @@ const RELATIONSHIPS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`;
 
-const WORD_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>`;
+// WORD_RELS_XML is built dynamically in buildDocx to include hyperlinks
 
 const CONTENT_TYPES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -346,17 +377,33 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <w:name w:val="Normal"/>
     <w:pPr><w:spacing w:after="80" w:line="276" w:lineRule="auto"/></w:pPr>
   </w:style>
+  <w:style w:type="character" w:styleId="Hyperlink">
+    <w:name w:val="Hyperlink"/>
+    <w:rPr><w:color w:val="2563eb"/><w:u w:val="single"/></w:rPr>
+  </w:style>
 </w:styles>`;
 
 function buildDocx(cvText, isRtl = false) {
+  _resetRels(); // clear hyperlink registry for this build
   const sections = parseCVSections(cvText);
   const documentXml = buildDocumentXml(sections, isRtl);
+
+  // Build dynamic rels with any hyperlinks found during document construction
+  const hyperlinkEntries = _hyperlinkRels.map(r =>
+    `  <Relationship Id="${r.rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeXml(r.url)}" TargetMode="External"/>`
+  ).join('\n');
+  const wordRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+${hyperlinkEntries}
+</Relationships>`;
 
   const files = [
     { name: '[Content_Types].xml', data: strToBytes(CONTENT_TYPES_XML) },
     { name: '_rels/.rels', data: strToBytes(RELATIONSHIPS_XML) },
     { name: 'word/document.xml', data: strToBytes(documentXml) },
-    { name: 'word/_rels/document.xml.rels', data: strToBytes(WORD_RELS_XML) },
+    { name: 'word/_rels/document.xml.rels', data: strToBytes(wordRelsXml) },
     { name: 'word/styles.xml', data: strToBytes(STYLES_XML) },
     { name: 'word/settings.xml', data: strToBytes(SETTINGS_XML) },
   ];

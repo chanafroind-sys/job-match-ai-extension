@@ -1,5 +1,8 @@
 import json
 import os
+import re
+import urllib.parse
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -10,15 +13,35 @@ from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
+BACKEND_URL = os.getenv("BACKEND_URL", "https://job-match-ai-extension.onrender.com")
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
 GUMROAD_PRODUCT_ID: str = os.environ["GUMROAD_PRODUCT_ID"]
 MAX_DEVICES_PER_KEY: int = int(os.getenv("MAX_DEVICES_PER_KEY", "3"))
 MONTHLY_USAGE_LIMIT: int = int(os.getenv("MONTHLY_USAGE_LIMIT", "100"))
 USAGE_FILE = Path(__file__).parent / "usage.json"
+CLICKS_FILE = Path(__file__).parent / "clicks.json"
+
+# ── Link tracking ─────────────────────────────────────────────────────────────
+
+_TRACK_PATTERN = re.compile(
+    r'https?://(?:www\.)?(?:github\.com|linkedin\.com)/[^\s\)\]\"\'>]+'
+)
+
+def inject_tracking_links(cv_text: str, app_id: str) -> str:
+    """Replace GitHub/LinkedIn URLs with tracking redirect URLs — only when they exist."""
+    def replace(m: re.Match) -> str:
+        original = m.group(0)
+        target = "github" if "github.com" in original else "linkedin"
+        display = original.replace("https://", "").replace("http://", "").rstrip("/")
+        enc = urllib.parse.quote(original, safe="")
+        tracking = f"{BACKEND_URL}/api/v1/track?app_id={app_id}&target={target}&url={enc}"
+        return f"[LINK:{display}|{tracking}]"
+    return _TRACK_PATTERN.sub(replace, cv_text)
 
 anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -194,23 +217,19 @@ BOLD FORMATTING FOR RECRUITER SCANNING:
 - Bold: specific technologies, measurable achievements, and role-critical skills
 - Do NOT bold generic words (e.g. "team player", "motivated", "experience")
 
-OUTPUT FORMAT — use these exact section markers:
+OUTPUT FORMAT — use these exact section markers. Rules:
+- Write each marker on its own line, exactly as shown — no #, no **, no other prefix or suffix
+- Immediately follow each marker with the real content on the next line — no blank line between marker and content
+- Do NOT write the marker name as a heading or label — it is replaced by the parser
+
 [NAME]
-Full name here
 [HEADLINE]
-Job title here
 [CONTACT]
-Contact details here
 [PROFILE]
-Profile text here
 [EXPERIENCE]
-Experience entries here
 [EDUCATION]
-Education entries here
 [SKILLS]
-Skills here
 [LANGUAGES]
-Languages here (always last)
 === ORIGINAL CV ===
 {cv_text}
 === CANDIDATE ANSWERS TO QUESTIONS ===
@@ -232,9 +251,11 @@ Review and improve this CV against ALL of these criteria — fix every issue you
 9. CORE TECH & METRICS PRESERVATION: Are all core programming languages still present? Are high-value data points (grades, honors, achievements) visible? Restore if removed.
 10. HONESTY: Do not add anything not in the original CV. Do not present freelance work as full-time employment.
 
-Output ONLY the improved CV with the same section markers:
-[NAME], [HEADLINE], [CONTACT], [PROFILE], [EXPERIENCE], [EDUCATION], [SKILLS], [LANGUAGES]
-Do NOT add explanations, comments, or notes outside the CV.
+Output ONLY the improved CV using the same section markers.
+CRITICAL FORMAT RULES — any violation breaks the Word document:
+- Write each marker on its own line exactly: [NAME], [HEADLINE], [CONTACT], [PROFILE], [EXPERIENCE], [EDUCATION], [SKILLS], [LANGUAGES]
+- Do NOT prefix markers with #, ##, **, or any other character
+- Do NOT add explanations, comments, or labels outside the CV content
 === CV TO REVIEW ===
 {cv_draft}
 === JOB DESCRIPTION ===
@@ -391,8 +412,32 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     pass2_prompt = CV_PASS2_PROMPT.format(cv_draft=cv_draft, job_text=body.jobText)
     cv_final = await call_claude(pass2_prompt, max_tokens=2000)
 
+    # Inject tracking links only when original CV had GitHub/LinkedIn URLs
+    app_id = str(uuid.uuid4())[:8]
+    cv_final = inject_tracking_links(cv_final, app_id)
+
     increment_usage(license_key)
     return {"cvText": cv_final}
+
+
+@app.get("/api/v1/track")
+async def track_click(app_id: str, target: str, url: str):
+    """Log a link click and redirect to the original URL."""
+    try:
+        clicks: list = json.loads(CLICKS_FILE.read_text()) if CLICKS_FILE.exists() else []
+    except (json.JSONDecodeError, OSError):
+        clicks = []
+    clicks.append({
+        "app_id": app_id,
+        "target": target,
+        "url": url,
+        "ts": datetime.utcnow().isoformat(),
+    })
+    try:
+        CLICKS_FILE.write_text(json.dumps(clicks, indent=2))
+    except OSError:
+        pass
+    return RedirectResponse(url=url, status_code=302)
 
 
 @app.post("/api/rank-jobs")
