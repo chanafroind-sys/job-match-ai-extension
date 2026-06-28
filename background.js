@@ -1,9 +1,4 @@
-// Unpacked (developer-loaded) extensions have no update_url in the manifest.
-// This is Chrome's own signal — no manual flag to forget to toggle.
-const IS_DEVELOPMENT = !chrome.runtime.getManifest().update_url;
-const BACKEND_URL = IS_DEVELOPMENT
-  ? 'http://localhost:8000'
-  : 'https://job-match-ai-extension.onrender.com';
+const BACKEND_URL = 'https://job-match-ai-extension.onrender.com';
 
 function friendlyError(msg) {
   if (!msg) return 'קרתה תקלה לא צפויה. נסי שוב.';
