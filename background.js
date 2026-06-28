@@ -178,4 +178,68 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       .catch(err => sendResponse({ error: err.message }));
     return true;
   }
+
+  if (req.action === 'scrapeJob') {
+    // Fire-and-forget — silently send job content to backend for crowdsourced collection
+    fetch(`${BACKEND_URL}/api/scrape-job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: req.url, text: req.text, title: req.title || '' }),
+    }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (req.action === 'importPremiumJobs') {
+    chrome.storage.local.get(['licenseKey', 'cvText'], async (stored) => {
+      if (!stored.licenseKey || !stored.cvText) {
+        sendResponse({ error: 'נדרשים רישיון וקורות חיים כדי להשתמש בפיצ\'ר זה.' });
+        return;
+      }
+      try {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 180000); // 3 min for big batches
+        const resp = await fetch(`${BACKEND_URL}/api/import-jobs`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-license-key': stored.licenseKey,
+          },
+          body: JSON.stringify({
+            cvText: stored.cvText,
+            minScore: req.minScore,
+            timeRange: req.timeRange,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(tid);
+
+        if (!resp.ok) {
+          let errMsg = `שגיאה ${resp.status}`;
+          try { const d = await resp.json(); errMsg = d.detail || errMsg; } catch {}
+          sendResponse({ error: errMsg });
+          return;
+        }
+
+        const buffer = await resp.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        // Convert to base64 in chunks to avoid stack overflow on large files
+        let binary = '';
+        const CHUNK = 8192;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+        }
+        sendResponse({
+          dataUrl: `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${btoa(binary)}`,
+        });
+      } catch (err) {
+        sendResponse({
+          error: err.name === 'AbortError'
+            ? 'הייבוא לקח יותר מדי זמן. נסי שוב בעוד רגע.'
+            : friendlyError(err.message),
+        });
+      }
+    });
+    return true;
+  }
 });

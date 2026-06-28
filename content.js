@@ -484,6 +484,21 @@
   // so by the time user clicks the button the server is already ready
   if (pageHasJobKeywords()) {
     chrome.runtime.sendMessage({ action: 'pingBackend' });
+
+    // Silent crowdsourced scraping — fires 5s after page load.
+    // Skipped on listing pages (FAB present means cards were detected by initSidebar at 2s).
+    // Only sends when the extracted text looks like a real job description (≥400 chars).
+    setTimeout(() => {
+      if (document.getElementById('jma-float-btn')) return; // listing page — skip
+      const text = extractJobText();
+      if (!text || text.length < 400) return;
+      chrome.runtime.sendMessage({
+        action: 'scrapeJob',
+        url: location.href,
+        text: text.substring(0, 5000),
+        title: document.title || '',
+      });
+    }, 5000);
   }
 
   setTimeout(initSidebar, 2000);

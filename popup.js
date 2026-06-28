@@ -660,7 +660,11 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
   }
 
   state.licenseKey = key;
-  await chrome.storage.local.set({ licenseKey: key, licenseValid: true });
+  await chrome.storage.local.set({
+    licenseKey: key,
+    licenseValid: true,
+    isPremium: !!(res.result && res.result.isPremium),
+  });
   okEl.textContent = '✅ רישיון אומת בהצלחה!';
   okEl.style.display = 'block';
   setTimeout(() => showReadyScreen(), 900);
@@ -705,6 +709,68 @@ document.getElementById('btnRankPageJobs').addEventListener('click', async () =>
     });
   }, 1200);
   window.close();
+});
+
+// ── Premium import screen ─────────────────────────────────────────────────────
+
+async function showPremiumScreen() {
+  const data = await chrome.storage.local.get(['isPremium']);
+  document.getElementById('premiumLocked').style.display = data.isPremium ? 'none' : 'block';
+  document.getElementById('premiumActive').style.display = data.isPremium ? 'block' : 'none';
+  // Reset UI state
+  document.getElementById('importStatus').textContent = '';
+  document.getElementById('importError').style.display = 'none';
+  const btn = document.getElementById('btnImportJobs');
+  if (btn) { btn.disabled = false; btn.textContent = '📥 ייבוא והתאמת משרות'; }
+  showScreen('premium');
+}
+
+document.getElementById('btnPremium').addEventListener('click', () => showPremiumScreen());
+document.getElementById('btnPremiumBack').addEventListener('click', () => showScreen('ready'));
+document.getElementById('btnPremiumBackLocked').addEventListener('click', () => showScreen('ready'));
+
+document.getElementById('btnImportJobs').addEventListener('click', async () => {
+  const minScore = parseInt(document.getElementById('minScoreInput').value, 10) || 70;
+  const timeRange = document.getElementById('timeRangeSelect').value;
+  const btn = document.getElementById('btnImportJobs');
+  const statusEl = document.getElementById('importStatus');
+  const errEl = document.getElementById('importError');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ מסנן ומדרג...';
+  statusEl.textContent = 'שלב 1 מתוך 2: סינון ראשוני לפי מילות מפתח...';
+  errEl.style.display = 'none';
+
+  // Show stage 2 hint after a few seconds
+  const stageHint = setTimeout(() => {
+    statusEl.textContent = 'שלב 2 מתוך 2: דירוג עם AI — זה עלול לקחת דקה...';
+  }, 4000);
+
+  const resp = await chrome.runtime.sendMessage({
+    action: 'importPremiumJobs',
+    minScore,
+    timeRange,
+  });
+
+  clearTimeout(stageHint);
+  btn.disabled = false;
+  btn.textContent = '📥 ייבוא והתאמת משרות';
+
+  if (resp.error) {
+    statusEl.textContent = '';
+    errEl.textContent = resp.error;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  // Trigger download
+  statusEl.textContent = '✅ הקובץ מוכן להורדה!';
+  const a = document.createElement('a');
+  a.href = resp.dataUrl;
+  a.download = `JobMatchAI_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 });
 
 // ── Init ───────────────────────────────────────────────────────────────────────

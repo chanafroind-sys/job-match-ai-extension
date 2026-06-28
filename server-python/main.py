@@ -4,7 +4,8 @@ import re
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
@@ -13,7 +14,7 @@ from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -25,6 +26,50 @@ MAX_DEVICES_PER_KEY: int = int(os.getenv("MAX_DEVICES_PER_KEY", "3"))
 MONTHLY_USAGE_LIMIT: int = int(os.getenv("MONTHLY_USAGE_LIMIT", "100"))
 USAGE_FILE = Path(__file__).parent / "usage.json"
 CLICKS_FILE = Path(__file__).parent / "clicks.json"
+
+# ── Premium ───────────────────────────────────────────────────────────────────
+
+PREMIUM_TEST_KEY = "TEST-PREMIUM-FAKE-KEY"
+_PREMIUM_KEYS_ENV = os.getenv("PREMIUM_KEYS", "")
+PREMIUM_KEYS: set[str] = {k.strip() for k in _PREMIUM_KEYS_ENV.split(",") if k.strip()}
+RAW_JOBS_FILE = Path(__file__).parent / "raw_jobs.json"
+MAX_RAW_JOBS = 10_000
+
+
+def is_premium(license_key: str) -> bool:
+    k = license_key.strip()
+    return k in PREMIUM_KEYS or k == PREMIUM_TEST_KEY or k == TEST_LICENSE_KEY
+
+
+def _load_raw_jobs() -> list:
+    try:
+        return json.loads(RAW_JOBS_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_raw_jobs(jobs: list) -> None:
+    RAW_JOBS_FILE.write_text(json.dumps(jobs, ensure_ascii=False), encoding="utf-8")
+
+
+def _quick_filter(jobs: list, cv_text: str) -> list:
+    """Fast keyword pre-filter — no AI, removes obviously irrelevant jobs."""
+    STOP = {
+        "with","that","this","have","from","they","will","been","their","what","when",
+        "more","also","into","than","then","some","which","them","these","those","would",
+        "there","were","your","like","just","over","such","each","after","about","using",
+        "work","years","team","skills","looking","good","strong","plus","great","know",
+        "high","well","make","help","need","able","both","must","very","only","much",
+    }
+    cv_words = {w.lower() for w in re.findall(r'\b[a-zA-Z]{4,}\b', cv_text)} - STOP
+    if len(cv_words) < 5:
+        return jobs  # too few CV keywords — pass everything through
+    filtered = []
+    for job in jobs:
+        text_lower = (job.get("text") or "").lower()
+        if sum(1 for w in cv_words if w in text_lower) >= 2:
+            filtered.append(job)
+    return filtered
 
 # ── Link tracking ─────────────────────────────────────────────────────────────
 
@@ -80,6 +125,7 @@ def increment_usage(license_key: str) -> int:
 # ── Gumroad verification ──────────────────────────────────────────────────────
 
 TEST_LICENSE_KEY = "TEST-MICHAL-FAKE-KEY"
+# Note: PREMIUM_TEST_KEY defined above in the Premium section
 
 async def verify_gumroad_license(license_key: str) -> dict:
     if license_key.strip() == TEST_LICENSE_KEY:
@@ -284,6 +330,16 @@ class RankJobsRequest(BaseModel):
     cvText: str
     jobs: list[dict]
 
+class ScrapeJobRequest(BaseModel):
+    url: str
+    text: str
+    title: str = ""
+
+class ImportJobsRequest(BaseModel):
+    cvText: str
+    minScore: int = 70
+    timeRange: str = "3days"  # "3days" | "since_last"
+
 RANK_JOBS_PROMPT = """You are a strict but fair senior engineering hiring manager.
 Score how well THIS candidate's CV matches each job listing. Be honest and realistic.
 
@@ -362,6 +418,7 @@ async def verify_license(body: VerifyLicenseRequest):
         "usageCount": usage_count,
         "monthlyLimit": MONTHLY_USAGE_LIMIT,
         "email": info["email"],
+        "isPremium": is_premium(body.licenseKey),
     }
 
 
@@ -481,6 +538,142 @@ async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header
             last_error = e
 
     raise HTTPException(status_code=500, detail=str(last_error) or "Ranking failed.")
+
+
+@app.post("/api/scrape-job")
+async def scrape_job(body: ScrapeJobRequest):
+    """Crowdsourced silent job scraping — no auth, no AI. Just dedup + store."""
+    url = body.url.strip()
+    if not url or not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+
+    jobs = _load_raw_jobs()
+    existing_urls = {j["url"] for j in jobs}
+    if url in existing_urls:
+        return {"status": "duplicate"}
+
+    jobs.append({
+        "url": url,
+        "text": body.text[:5000],
+        "title": (body.title or "")[:200],
+        "ts": datetime.utcnow().isoformat(),
+    })
+
+    if len(jobs) > MAX_RAW_JOBS:
+        jobs = jobs[-MAX_RAW_JOBS:]
+
+    _save_raw_jobs(jobs)
+    return {"status": "saved"}
+
+
+@app.post("/api/import-jobs")
+async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = Header(None)):
+    """Premium: 2-stage filtering of scraped jobs → Excel download."""
+    license_key = x_license_key or ""
+    if not is_premium(license_key):
+        raise HTTPException(status_code=403, detail="דרוש רישיון פרימיום לפיצ'ר זה.")
+
+    all_jobs = _load_raw_jobs()
+    if not all_jobs:
+        raise HTTPException(
+            status_code=404,
+            detail="עדיין לא נאספו משרות. המשיכי לגלוש — כל משרה שתבקרי בה תיאסף אוטומטית.",
+        )
+
+    # Time filter
+    if body.timeRange == "since_last":
+        usage = _load_usage()
+        cutoff = usage.get(license_key, {}).get("last_import_ts", "")
+        if not cutoff:
+            cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    else:
+        cutoff = (datetime.utcnow() - timedelta(days=3)).isoformat()
+
+    time_filtered = [j for j in all_jobs if (j.get("ts") or "") >= cutoff]
+    if not time_filtered:
+        raise HTTPException(status_code=404, detail="לא נמצאו משרות חדשות בטווח הזמן שנבחר.")
+
+    # Step 1: fast keyword filter (no AI cost)
+    step1 = _quick_filter(time_filtered, body.cvText)
+    if not step1:
+        raise HTTPException(status_code=404, detail="לא נמצאו משרות רלוונטיות לאחר סינון ראשוני.")
+
+    step1 = step1[:100]  # cap before Claude to control cost
+
+    # Step 2: Claude ranking in batches of 10
+    cv_summary = body.cvText[:800]
+    ranked: list[dict] = []
+
+    for batch_start in range(0, len(step1), 10):
+        batch = step1[batch_start:batch_start + 10]
+        jobs_text = "\n\n".join(
+            f"{i}. {j.get('title', 'Unknown')} — {j.get('url', '')}\n{(j.get('text') or '')[:1200]}"
+            for i, j in enumerate(batch)
+        )
+        try:
+            raw = await call_claude(
+                RANK_JOBS_PROMPT.format(cv_summary=cv_summary, jobs_list=jobs_text),
+                max_tokens=1500,
+            )
+            items = parse_json_response(raw)
+            if isinstance(items, list):
+                for item in items:
+                    idx = int(item.get("index", 0))
+                    if idx < len(batch):
+                        job = batch[idx]
+                        score = max(0, min(100, int(item.get("score", 0))))
+                        if score >= body.minScore:
+                            ranked.append({
+                                "Title": job.get("title", ""),
+                                "URL": job.get("url", ""),
+                                "Score": score,
+                                "Pro": item.get("pro", ""),
+                                "Con": item.get("con", ""),
+                                "Date": (job.get("ts") or "")[:10],
+                            })
+        except Exception:
+            continue
+
+    if not ranked:
+        raise HTTPException(
+            status_code=404,
+            detail=f"לא נמצאו משרות שעוברות את אחוז ההתאמה המינימלי ({body.minScore}%). נסי להוריד את הסף.",
+        )
+
+    ranked.sort(key=lambda x: x["Score"], reverse=True)
+
+    # Save last import timestamp
+    usage = _load_usage()
+    usage.setdefault(license_key, {})["last_import_ts"] = datetime.utcnow().isoformat()
+    _save_usage(usage)
+
+    # Generate Excel
+    try:
+        import pandas as pd
+        from openpyxl.styles import Alignment, Font, PatternFill
+
+        df = pd.DataFrame(ranked, columns=["Title", "URL", "Score", "Pro", "Con", "Date"])
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Matched Jobs")
+            ws = writer.sheets["Matched Jobs"]
+            for cell in ws[1]:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(fill_type="solid", fgColor="7C3AED")
+                cell.alignment = Alignment(horizontal="center")
+            for col in ws.columns:
+                max_len = max((len(str(c.value or "")) for c in col), default=10)
+                ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+        output.seek(0)
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Excel generation unavailable on this server.")
+
+    filename = f"JobMatchAI_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 if __name__ == "__main__":

@@ -440,6 +440,59 @@
   }
   .no-data { color: var(--text-dim); }
 
+  /* Premium screen */
+  .premium-lock-box {
+    background: var(--bg-card);
+    border: 1px solid rgba(124,58,237,0.3);
+    border-radius: 12px;
+    padding: 28px 20px;
+    text-align: center;
+    margin-bottom: 16px;
+  }
+  .premium-lock-icon { font-size: 40px; margin-bottom: 10px; }
+  .premium-lock-title { font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+  .premium-lock-text { font-size: 12px; color: var(--text-muted); margin-bottom: 18px; line-height: 1.5; }
+  .premium-input-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .premium-input-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+  .premium-small-input {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius);
+    color: var(--text-primary);
+    padding: 8px 10px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 72px;
+    text-align: center;
+  }
+  .premium-small-input:focus { border-color: var(--accent); }
+  .premium-select {
+    flex: 1;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius);
+    color: var(--text-primary);
+    padding: 8px 10px;
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.15s;
+    direction: rtl;
+  }
+  .premium-select:focus { border-color: var(--accent); }
+  .import-status { margin-top: 8px; font-size: 12px; color: var(--text-muted); text-align: center; min-height: 18px; }
+  .import-count-badge {
+    display: inline-block;
+    background: rgba(63,185,80,0.12);
+    border: 1px solid rgba(63,185,80,0.25);
+    border-radius: 20px;
+    color: var(--success);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 10px;
+    margin-bottom: 12px;
+  }
+
   /* License screen */
   .license-wrap {
     padding: 32px 24px;
@@ -520,6 +573,7 @@
     <span>🎯</span> Job Match AI
   </div>
   <div class="header-actions">
+    <button class="btn-icon" id="btnPremium" title="ייבוא משרות פרימיום">⭐</button>
     <button class="btn-icon" id="btnTracker" title="מעקב משרות">📊</button>
     <button class="btn-icon" id="btnSettings" title="הגדרות">⚙️</button>
   </div>
@@ -653,6 +707,49 @@
   </div>
   <div class="cv-preview" id="cvPreview"></div>
   <button class="btn btn-secondary" id="btnBackToMain" style="margin-top:10px">← חזור לניתוח</button>
+</div>
+
+<!-- PREMIUM IMPORT SCREEN -->
+<div class="screen" id="screen-premium">
+  <div class="screen-title" style="margin-bottom:14px">⭐ ייבוא משרות מותאמות</div>
+
+  <!-- Non-premium locked state -->
+  <div id="premiumLocked" style="display:none">
+    <div class="premium-lock-box">
+      <div class="premium-lock-icon">🔒</div>
+      <div class="premium-lock-title">פיצ'ר פרימיום</div>
+      <div class="premium-lock-text">ייבוא וסינון משרות מהמאגר הקהילתי זמין למשתמשי פרימיום בלבד. המערכת אוספת משרות ממשתמשים אחרים בשקט, ומסננת עבורך רק את המתאימות ביותר לפרופיל שלך.</div>
+      <a href="https://expertdevai.gumroad.com/l/job-match-ai-premium" target="_blank" class="btn btn-primary" style="text-decoration:none;display:block">⭐ שדרג לפרימיום</a>
+    </div>
+    <button class="btn btn-secondary" id="btnPremiumBackLocked">← חזור</button>
+  </div>
+
+  <!-- Premium active state -->
+  <div id="premiumActive" style="display:none">
+    <div class="summary-box" style="margin-bottom:14px;font-size:11.5px;line-height:1.6">
+      המערכת אוספת משרות בשקט כשמשתמשים מבקרים בדפי משרות. כאן תוכלי לסנן ולדרג את המשרות שנאספו לפי פרופיל קורות החיים שלך.
+    </div>
+
+    <div class="premium-input-row">
+      <div class="premium-input-label">% התאמה מינימלי</div>
+      <input type="number" id="minScoreInput" class="premium-small-input" min="0" max="100" value="75">
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div class="settings-label">טווח זמן</div>
+      <select id="timeRangeSelect" class="premium-select">
+        <option value="3days">3 ימים אחרונים</option>
+        <option value="since_last">מאז הבקשה הקודמת</option>
+      </select>
+    </div>
+
+    <button class="btn btn-primary" id="btnImportJobs" style="font-size:14px;padding:12px">
+      📥 ייבוא והתאמת משרות
+    </button>
+    <div class="import-status" id="importStatus"></div>
+    <div class="error-box" id="importError" style="display:none;margin-top:8px"></div>
+    <button class="btn btn-secondary" id="btnPremiumBack">← חזור</button>
+  </div>
 </div>
 
 <!-- TRACKER SCREEN -->
