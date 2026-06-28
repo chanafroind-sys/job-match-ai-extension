@@ -30,6 +30,11 @@ CLICKS_FILE = Path(__file__).parent / "clicks.json"
 
 # ── Premium ───────────────────────────────────────────────────────────────────
 
+# Comma-separated list of license keys that get premium access
+# regardless of Gumroad variants (useful for admin/dev keys)
+_PREMIUM_KEYS_ENV = os.getenv("PREMIUM_KEYS", "")
+STATIC_PREMIUM_KEYS: set = {k.strip() for k in _PREMIUM_KEYS_ENV.split(",") if k.strip()}
+
 RAW_JOBS_FILE = Path(__file__).parent / "raw_jobs.json"
 MAX_RAW_JOBS = 10_000
 
@@ -125,16 +130,19 @@ async def verify_gumroad_license(license_key: str) -> dict:
     if license_key.strip() == TEST_LICENSE_KEY:
         return {"email": "test@internal", "uses": 1, "isPremium": True}
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            "https://api.gumroad.com/v2/licenses/verify",
-            data={
-                "product_id": GUMROAD_PRODUCT_ID,
-                "license_key": license_key.strip(),
-                "increment_uses_count": "false",
-            },
-        )
-    data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://api.gumroad.com/v2/licenses/verify",
+                data={
+                    "product_id": GUMROAD_PRODUCT_ID,
+                    "license_key": license_key.strip(),
+                    "increment_uses_count": "false",
+                },
+            )
+        data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="לא הצלחנו להגיע לשירות אימות הרישיון. נסי שוב בעוד רגע.")
 
     if not data.get("success"):
         raise HTTPException(status_code=403, detail="Invalid or expired license key.")
@@ -167,11 +175,12 @@ async def verify_gumroad_license(license_key: str) -> dict:
 
 
 async def _verify_premium(license_key: str) -> bool:
-    """Real-time premium check via Gumroad. Admin key bypasses instantly."""
-    if license_key.strip() == TEST_LICENSE_KEY:
+    """Real-time premium check. Admin/static keys bypass Gumroad instantly."""
+    k = license_key.strip()
+    if k == TEST_LICENSE_KEY or k in STATIC_PREMIUM_KEYS:
         return True
     try:
-        info = await verify_gumroad_license(license_key)
+        info = await verify_gumroad_license(k)
         return info.get("isPremium", False)
     except HTTPException:
         raise
@@ -354,7 +363,7 @@ class RankJobsRequest(BaseModel):
     cvText: str
     jobs: list[dict]
 
-async def _rank_single_job(cv_summary: str, job: dict) -> dict | None:
+async def _rank_single_job(cv_summary: str, job: dict) -> Optional[dict]:
     """Score one job against the CV with a focused single-job prompt. Returns None on failure."""
     title = job.get("title") or "Unknown"
     url = job.get("url") or ""

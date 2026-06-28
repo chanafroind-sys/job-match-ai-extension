@@ -752,6 +752,44 @@
   </div>
 </div>
 
+<!-- PREMIUM IMPORT SCREEN -->
+<div class="screen" id="screen-premium">
+  <div class="screen-title" style="margin-bottom:14px">⭐ ייבוא משרות מותאמות</div>
+
+  <!-- Locked state (non-premium) -->
+  <div id="premiumLocked" style="display:none">
+    <div class="premium-lock-box">
+      <div class="premium-lock-icon">🔒</div>
+      <div class="premium-lock-title">פיצ'ר פרימיום</div>
+      <div class="premium-lock-text">ייבוא משרות מותאמות אישית זמין למשתמשי פרימיום בלבד. שדרגי את הרישיון כדי לגשת לכל המשרות שנאספו ולקבל ניתוח מעמיק מותאם לקורות החיים שלך.</div>
+      <a href="https://expertdevai.gumroad.com/l/job-match-ai-premium" target="_blank" class="btn btn-primary" style="display:block;text-decoration:none;margin-top:6px">⭐ שדרג לפרימיום</a>
+    </div>
+  </div>
+
+  <!-- Active state (premium) -->
+  <div id="premiumActive" style="display:none">
+    <div class="premium-input-row">
+      <span class="premium-input-label">התאמה מינימלית</span>
+      <input type="number" id="minScoreInput" class="premium-small-input" min="0" max="100" value="70">
+      <span class="premium-input-label">%</span>
+    </div>
+    <div class="premium-input-row">
+      <span class="premium-input-label">טווח זמן</span>
+      <select id="timeRangeSelect" class="premium-select">
+        <option value="3days">3 ימים אחרונים</option>
+        <option value="since_last">מאז הבקשה הקודמת</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" id="btnImportJobs" style="font-size:14px;padding:12px;margin-top:4px">
+      📥 ייבוא והתאמת משרות רחבה
+    </button>
+    <div class="import-status" id="importStatus"></div>
+    <div class="error-box" id="importError" style="display:none"></div>
+  </div>
+
+  <button class="btn btn-secondary" id="btnPremiumBack">← חזור</button>
+</div>
+
 <!-- TRACKER SCREEN -->
 <div class="screen" id="screen-tracker">
   <div class="tracker-header">

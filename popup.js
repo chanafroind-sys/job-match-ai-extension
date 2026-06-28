@@ -727,7 +727,6 @@ async function showPremiumScreen() {
 
 document.getElementById('btnPremium').addEventListener('click', () => showPremiumScreen());
 document.getElementById('btnPremiumBack').addEventListener('click', () => showScreen('ready'));
-document.getElementById('btnPremiumBackLocked').addEventListener('click', () => showScreen('ready'));
 
 document.getElementById('btnImportJobs').addEventListener('click', async () => {
   const minScore = parseInt(document.getElementById('minScoreInput').value, 10) || 70;
