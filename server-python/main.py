@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -29,16 +30,8 @@ CLICKS_FILE = Path(__file__).parent / "clicks.json"
 
 # ── Premium ───────────────────────────────────────────────────────────────────
 
-PREMIUM_TEST_KEY = "TEST-PREMIUM-FAKE-KEY"
-_PREMIUM_KEYS_ENV = os.getenv("PREMIUM_KEYS", "")
-PREMIUM_KEYS: set[str] = {k.strip() for k in _PREMIUM_KEYS_ENV.split(",") if k.strip()}
 RAW_JOBS_FILE = Path(__file__).parent / "raw_jobs.json"
 MAX_RAW_JOBS = 10_000
-
-
-def is_premium(license_key: str) -> bool:
-    k = license_key.strip()
-    return k in PREMIUM_KEYS or k == PREMIUM_TEST_KEY or k == TEST_LICENSE_KEY
 
 
 def _load_raw_jobs() -> list:
@@ -125,11 +118,12 @@ def increment_usage(license_key: str) -> int:
 # ── Gumroad verification ──────────────────────────────────────────────────────
 
 TEST_LICENSE_KEY = "TEST-MICHAL-FAKE-KEY"
-# Note: PREMIUM_TEST_KEY defined above in the Premium section
+
 
 async def verify_gumroad_license(license_key: str) -> dict:
+    """Verify license via Gumroad API. Returns email, uses, and isPremium from variants."""
     if license_key.strip() == TEST_LICENSE_KEY:
-        return {"email": "test@internal", "uses": 1}
+        return {"email": "test@internal", "uses": 1, "isPremium": True}
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
@@ -145,14 +139,44 @@ async def verify_gumroad_license(license_key: str) -> dict:
     if not data.get("success"):
         raise HTTPException(status_code=403, detail="Invalid or expired license key.")
 
-    uses: int = (data.get("purchase") or {}).get("uses", 0)
+    purchase = data.get("purchase") or {}
+    uses: int = purchase.get("uses", 0)
     if uses > MAX_DEVICES_PER_KEY:
         raise HTTPException(
             status_code=403,
             detail=f"This license key is active on {uses} devices, which exceeds the maximum allowed ({MAX_DEVICES_PER_KEY}). Please purchase a separate license.",
         )
 
-    return {"email": (data.get("purchase") or {}).get("email", ""), "uses": uses}
+    # Gumroad returns variants as a JSON-encoded string, e.g. '{"Plan": "Premium"}'
+    variants_raw = purchase.get("variants", "")
+    try:
+        if isinstance(variants_raw, str) and variants_raw:
+            variants = json.loads(variants_raw)
+        else:
+            variants = variants_raw or {}
+    except (json.JSONDecodeError, TypeError):
+        variants = {}
+
+    plan = (variants.get("Plan") or variants.get("plan") or "").strip().lower()
+
+    return {
+        "email": purchase.get("email", ""),
+        "uses": uses,
+        "isPremium": plan == "premium",
+    }
+
+
+async def _verify_premium(license_key: str) -> bool:
+    """Real-time premium check via Gumroad. Admin key bypasses instantly."""
+    if license_key.strip() == TEST_LICENSE_KEY:
+        return True
+    try:
+        info = await verify_gumroad_license(license_key)
+        return info.get("isPremium", False)
+    except HTTPException:
+        raise
+    except Exception:
+        return False
 
 
 async def require_license(license_key: str) -> str:
@@ -330,6 +354,28 @@ class RankJobsRequest(BaseModel):
     cvText: str
     jobs: list[dict]
 
+async def _rank_single_job(cv_summary: str, job: dict) -> dict | None:
+    """Score one job against the CV with a focused single-job prompt. Returns None on failure."""
+    title = job.get("title") or "Unknown"
+    url = job.get("url") or ""
+    text = (job.get("text") or "")[:2000]
+    job_block = f"{title}\n{url}\n\n{text}"
+    prompt = RANK_SINGLE_JOB_PROMPT.format(cv_summary=cv_summary, job_text=job_block)
+    try:
+        raw = await call_claude(prompt, max_tokens=120)
+        item = parse_json_response(raw)
+        if isinstance(item, dict) and "score" in item:
+            return {
+                "job": job,
+                "score": max(0, min(100, int(item["score"]))),
+                "pro": str(item.get("pro", "")),
+                "con": str(item.get("con", "")),
+            }
+    except Exception:
+        pass
+    return None
+
+
 class ScrapeJobRequest(BaseModel):
     url: str
     text: str
@@ -339,6 +385,27 @@ class ImportJobsRequest(BaseModel):
     cvText: str
     minScore: int = 70
     timeRange: str = "3days"  # "3days" | "since_last"
+
+RANK_SINGLE_JOB_PROMPT = """You are a strict senior engineering hiring manager. Score this single job posting against the candidate's CV.
+
+SCORING — start from 100 and deduct:
+- Experience shortfall: (required_yrs - actual_yrs) / required_yrs × 35 pts
+- Missing required tech: -15 to -25 per item (proportional to how central it is)
+- Seniority mismatch (Senior/Lead/Staff/Principal not in CV): cap at 65
+- Domain mismatch (e.g. embedded vs web): cap at 55
+- Missing preferred/nice-to-have: -3 to -8 each
+Partial offsets (secondary gaps only): strong academics +5, adjacent skills +5, relevant projects +5
+
+CALIBRATION: 85+ shortlist | 70-84 interview | 55-69 real gaps | <40 wrong fit
+
+Return ONLY valid JSON — no markdown, no explanation:
+{{"score": <0-100>, "pro": "<max 10 words — strongest match signal>", "con": "<max 10 words — biggest gap>"}}
+
+=== CANDIDATE CV ===
+{cv_summary}
+
+=== JOB POSTING ===
+{job_text}"""
 
 RANK_JOBS_PROMPT = """You are a strict but fair senior engineering hiring manager.
 Score how well THIS candidate's CV matches each job listing. Be honest and realistic.
@@ -418,7 +485,7 @@ async def verify_license(body: VerifyLicenseRequest):
         "usageCount": usage_count,
         "monthlyLimit": MONTHLY_USAGE_LIMIT,
         "email": info["email"],
-        "isPremium": is_premium(body.licenseKey),
+        "isPremium": info.get("isPremium", False),
     }
 
 
@@ -570,7 +637,9 @@ async def scrape_job(body: ScrapeJobRequest):
 async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = Header(None)):
     """Premium: 2-stage filtering of scraped jobs → Excel download."""
     license_key = x_license_key or ""
-    if not is_premium(license_key):
+
+    # Real-time Gumroad premium check (TEST_LICENSE_KEY bypasses instantly)
+    if not await _verify_premium(license_key):
         raise HTTPException(status_code=403, detail="דרוש רישיון פרימיום לפיצ'ר זה.")
 
     all_jobs = _load_raw_jobs()
@@ -593,46 +662,37 @@ async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = He
     if not time_filtered:
         raise HTTPException(status_code=404, detail="לא נמצאו משרות חדשות בטווח הזמן שנבחר.")
 
-    # Step 1: fast keyword filter (no AI cost)
+    # Step 1: fast keyword filter — no AI, no cost
     step1 = _quick_filter(time_filtered, body.cvText)
     if not step1:
         raise HTTPException(status_code=404, detail="לא נמצאו משרות רלוונטיות לאחר סינון ראשוני.")
 
-    step1 = step1[:100]  # cap before Claude to control cost
+    step1 = step1[:100]  # cost cap before Claude
 
-    # Step 2: Claude ranking in batches of 10
+    # Step 2: concurrent per-job Claude scoring (semaphore limits to 5 parallel calls)
     cv_summary = body.cvText[:800]
-    ranked: list[dict] = []
+    sem = asyncio.Semaphore(5)
 
-    for batch_start in range(0, len(step1), 10):
-        batch = step1[batch_start:batch_start + 10]
-        jobs_text = "\n\n".join(
-            f"{i}. {j.get('title', 'Unknown')} — {j.get('url', '')}\n{(j.get('text') or '')[:1200]}"
-            for i, j in enumerate(batch)
-        )
-        try:
-            raw = await call_claude(
-                RANK_JOBS_PROMPT.format(cv_summary=cv_summary, jobs_list=jobs_text),
-                max_tokens=1500,
-            )
-            items = parse_json_response(raw)
-            if isinstance(items, list):
-                for item in items:
-                    idx = int(item.get("index", 0))
-                    if idx < len(batch):
-                        job = batch[idx]
-                        score = max(0, min(100, int(item.get("score", 0))))
-                        if score >= body.minScore:
-                            ranked.append({
-                                "Title": job.get("title", ""),
-                                "URL": job.get("url", ""),
-                                "Score": score,
-                                "Pro": item.get("pro", ""),
-                                "Con": item.get("con", ""),
-                                "Date": (job.get("ts") or "")[:10],
-                            })
-        except Exception:
+    async def rank_with_sem(job: dict):
+        async with sem:
+            return await _rank_single_job(cv_summary, job)
+
+    results = await asyncio.gather(*[rank_with_sem(j) for j in step1], return_exceptions=True)
+
+    ranked: list[dict] = []
+    for result in results:
+        if not isinstance(result, dict):
             continue
+        if result["score"] >= body.minScore:
+            job = result["job"]
+            ranked.append({
+                "Title": job.get("title", ""),
+                "URL": job.get("url", ""),
+                "Score": result["score"],
+                "Pro": result["pro"],
+                "Con": result["con"],
+                "Date": (job.get("ts") or "")[:10],
+            })
 
     if not ranked:
         raise HTTPException(
