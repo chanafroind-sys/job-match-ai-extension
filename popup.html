@@ -713,49 +713,6 @@
 <div class="screen" id="screen-premium">
   <div class="screen-title" style="margin-bottom:14px">⭐ ייבוא משרות מותאמות</div>
 
-  <!-- Non-premium locked state -->
-  <div id="premiumLocked" style="display:none">
-    <div class="premium-lock-box">
-      <div class="premium-lock-icon">🔒</div>
-      <div class="premium-lock-title">פיצ'ר פרימיום</div>
-      <div class="premium-lock-text">ייבוא וסינון משרות מהמאגר הקהילתי זמין למשתמשי פרימיום בלבד. המערכת אוספת משרות ממשתמשים אחרים בשקט, ומסננת עבורך רק את המתאימות ביותר לפרופיל שלך.</div>
-      <a href="https://expertdevai.gumroad.com/l/job-match-ai-premium" target="_blank" class="btn btn-primary" style="text-decoration:none;display:block">⭐ שדרג לפרימיום</a>
-    </div>
-    <button class="btn btn-secondary" id="btnPremiumBackLocked">← חזור</button>
-  </div>
-
-  <!-- Premium active state -->
-  <div id="premiumActive" style="display:none">
-    <div class="summary-box" style="margin-bottom:14px;font-size:11.5px;line-height:1.6">
-      המערכת אוספת משרות בשקט כשמשתמשים מבקרים בדפי משרות. כאן תוכלי לסנן ולדרג את המשרות שנאספו לפי פרופיל קורות החיים שלך.
-    </div>
-
-    <div class="premium-input-row">
-      <div class="premium-input-label">% התאמה מינימלי</div>
-      <input type="number" id="minScoreInput" class="premium-small-input" min="0" max="100" value="75">
-    </div>
-
-    <div style="margin-bottom:14px">
-      <div class="settings-label">טווח זמן</div>
-      <select id="timeRangeSelect" class="premium-select">
-        <option value="3days">3 ימים אחרונים</option>
-        <option value="since_last">מאז הבקשה הקודמת</option>
-      </select>
-    </div>
-
-    <button class="btn btn-primary" id="btnImportJobs" style="font-size:14px;padding:12px">
-      📥 ייבוא והתאמת משרות
-    </button>
-    <div class="import-status" id="importStatus"></div>
-    <div class="error-box" id="importError" style="display:none;margin-top:8px"></div>
-    <button class="btn btn-secondary" id="btnPremiumBack">← חזור</button>
-  </div>
-</div>
-
-<!-- PREMIUM IMPORT SCREEN -->
-<div class="screen" id="screen-premium">
-  <div class="screen-title" style="margin-bottom:14px">⭐ ייבוא משרות מותאמות</div>
-
   <!-- Locked state (non-premium) -->
   <div id="premiumLocked" style="display:none">
     <div class="premium-lock-box">
@@ -812,6 +769,14 @@
     </div>
     <input type="file" id="cvFileInput" accept=".docx,.pdf,.txt,.doc">
     <div class="success-msg" id="uploadSuccess"></div>
+  </div>
+
+  <div class="settings-section" style="margin-top:14px">
+    <div class="settings-label">🔑 מפתח רישיון</div>
+    <input type="text" class="license-input" id="licenseKeySettings"
+      placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" autocomplete="off" spellcheck="false"
+      style="width:100%;box-sizing:border-box;margin-bottom:6px">
+    <div id="licenseSettingsStatus" style="font-size:11px;color:#888;min-height:16px"></div>
   </div>
 
   <div id="settingsError" class="error-box" style="display:none"></div>

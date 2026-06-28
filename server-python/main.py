@@ -190,6 +190,8 @@ async def _verify_premium(license_key: str) -> bool:
 
 async def require_license(license_key: str) -> str:
     """Validate license and check monthly usage. Returns the license key on success."""
+    if not license_key or not license_key.strip():
+        raise HTTPException(status_code=401, detail="No license key provided. Please enter a valid license key in the extension settings.")
     await verify_gumroad_license(license_key)
     count = get_usage_count(license_key)
     if count >= MONTHLY_USAGE_LIMIT:

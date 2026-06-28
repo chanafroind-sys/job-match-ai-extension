@@ -8,14 +8,20 @@ const BACKEND_URL = IS_DEVELOPMENT
 function friendlyError(msg) {
   if (!msg) return 'קרתה תקלה לא צפויה. נסי שוב.';
   const lo = msg.toLowerCase();
-  if (msg.includes('401') || (lo.includes('invalid') && lo.includes('license'))) {
-    return 'קוד הרישיון לא תקין. בדקי שהעתקת אותו נכון בהגדרות.';
+  if (lo.includes('devices') || lo.includes('already activated')) {
+    return 'הרישיון כבר בשימוש במספר מקסימלי של מכשירים.';
+  }
+  if (
+    msg.includes('401') ||
+    msg.includes('403') ||
+    lo.includes('invalid') && lo.includes('license') ||
+    lo.includes('expired license') ||
+    lo.includes('license key')
+  ) {
+    return 'המפתח אינו בתוקף או שלא הוגדר. אנא הזן מפתח תקין בהגדרות ⚙️ כדי להמשיך.';
   }
   if (msg.includes('429') || lo.includes('monthly usage') || lo.includes('monthly limit')) {
     return 'הגעת למגבלה החודשית (100 ניתוחים). המכסה מתחדשת ב-1 לחודש הבא.';
-  }
-  if (msg.includes('403') || lo.includes('devices') || lo.includes('already activated')) {
-    return 'הרישיון כבר בשימוש במספר מקסימלי של מכשירים.';
   }
   if (lo.includes('אין חיבור') || lo.includes('internet') || lo.includes('network') || lo.includes('cannot reach')) {
     return 'אין חיבור לאינטרנט או שהשירות לא זמין. בדקי את החיבור ונסי שוב.';
@@ -54,7 +60,7 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 1200
 
     let data;
     try { data = JSON.parse(text); } catch { throw new Error('תגובה לא צפויה מהשירות. נסי שוב.'); }
-    if (!res.ok) throw new Error(data.error || `שגיאה ${res.status}`);
+    if (!res.ok) throw new Error(data.detail || data.error || `שגיאה ${res.status}`);
     return data;
   }
 }

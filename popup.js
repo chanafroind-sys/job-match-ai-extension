@@ -146,10 +146,22 @@ async function readCVFile(file) {
 
 // Settings screen
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cvText', 'cvName']);
+  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium']);
   if (data.cvName) {
     document.getElementById('uploadText').textContent = `✅ ${data.cvName}`;
     document.getElementById('uploadArea').classList.add('has-file');
+  }
+  const statusEl = document.getElementById('licenseSettingsStatus');
+  const keyInput = document.getElementById('licenseKeySettings');
+  keyInput.value = '';
+  if (data.licenseKey) {
+    const k = data.licenseKey;
+    const masked = k.length > 8 ? k.slice(0, 4) + '-****-****-' + k.slice(-4) : '****';
+    statusEl.textContent = `נוכחי: ${masked}${data.isPremium ? ' ⭐ פרימיום' : ' (בסיסי)'}`;
+    statusEl.style.color = data.licenseValid ? '#4caf50' : '#e53935';
+  } else {
+    statusEl.textContent = 'לא הוגדר מפתח רישיון';
+    statusEl.style.color = '#e53935';
   }
 }
 
@@ -185,6 +197,7 @@ function showSettingsError(msg) {
 document.getElementById('btnSaveSettings').addEventListener('click', async () => {
   const fileInput = document.getElementById('cvFileInput');
   const errEl = document.getElementById('settingsError');
+  const statusEl = document.getElementById('licenseSettingsStatus');
   errEl.style.display = 'none';
 
   const toSave = {};
@@ -192,6 +205,36 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
     toSave.cvText = fileInput._extractedText;
     toSave.cvName = fileInput._fileName;
     toSave.cvSize = fileInput._fileSize;
+  }
+
+  const newKey = document.getElementById('licenseKeySettings').value.trim();
+  if (newKey) {
+    const btn = document.getElementById('btnSaveSettings');
+    btn.textContent = '⏳ מאמת מפתח...';
+    btn.disabled = true;
+    statusEl.textContent = 'מאמת...';
+    statusEl.style.color = '#888';
+
+    const res = await chrome.runtime.sendMessage({ action: 'verifyLicense', licenseKey: newKey });
+
+    btn.textContent = '💾 שמור הגדרות';
+    btn.disabled = false;
+
+    if (res.error) {
+      statusEl.textContent = '❌ ' + res.error;
+      statusEl.style.color = '#e53935';
+      errEl.textContent = res.error;
+      errEl.style.display = 'block';
+      return;
+    }
+
+    toSave.licenseKey = newKey;
+    toSave.licenseValid = true;
+    toSave.isPremium = !!(res.result && res.result.isPremium);
+    state.licenseKey = newKey;
+    statusEl.textContent = `✅ אומת: ${newKey.slice(0, 4)}-****-****-${newKey.slice(-4)}${toSave.isPremium ? ' ⭐ פרימיום' : ' (בסיסי)'}`;
+    statusEl.style.color = '#4caf50';
+    document.getElementById('licenseKeySettings').value = '';
   }
 
   if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
