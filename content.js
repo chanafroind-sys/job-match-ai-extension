@@ -394,6 +394,7 @@
 
   function startRanking() {
     if (_rankingDone) return;
+    console.log(`[JMA:rank] startRanking jobs_collected=${_collectedJobs.length}`);
 
     // Check local cache first — results valid for 20 minutes
     const cKey = rankCacheKey();
@@ -417,7 +418,11 @@
 
       const urls = _collectedJobs.map(j => j.href || '');
 
+      console.log(`[JMA:rank] fetching job details for ${urls.length} URLs`);
       chrome.runtime.sendMessage({ action: 'fetchJobDetails', urls }, (fetchResp) => {
+        if (chrome.runtime.lastError) {
+          console.log(`[JMA:rank] fetchJobDetails runtime error: ${chrome.runtime.lastError.message}`);
+        }
         const enrichedJobs = _collectedJobs.map((job, i) => {
           const fetched = fetchResp?.texts?.[i] || '';
           const bestText = fetched.length > 200 ? fetched
@@ -426,6 +431,9 @@
           return { ...job, fullText: bestText };
         }).filter(j => (j.fullText || '').length > 15);
 
+        console.log(`[JMA:rank] enrichedJobs=${enrichedJobs.length} (filtered from ${_collectedJobs.length})`);
+        enrichedJobs.forEach((j,i) => console.log(`[JMA:rank]   [${i}] "${j.title}" fullText_len=${(j.fullText||'').length}`));
+
         if (!enrichedJobs.length) {
           showSidebarError('לא הצלחנו לאסוף מספיק מידע על המשרות בעמוד זה.');
           return;
@@ -433,8 +441,15 @@
 
         setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מנתח ומדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">יכול לקחת עד דקה</div></div>');
 
+        console.log(`[JMA:rank] sending rankJobs with ${enrichedJobs.length} jobs`);
         chrome.runtime.sendMessage({ action: 'rankJobs', jobs: enrichedJobs }, (resp) => {
-          if (chrome.runtime.lastError || !resp) { showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.'); return; }
+          if (chrome.runtime.lastError) {
+            console.log(`[JMA:rank] rankJobs runtime error: ${chrome.runtime.lastError.message}`);
+            showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.');
+            return;
+          }
+          console.log(`[JMA:rank] rankJobs response: error=${resp?.error} rankedJobs_len=${resp?.rankedJobs?.length}`);
+          if (!resp) { showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.'); return; }
           if (resp.error) { showSidebarError(resp.error); return; }
           _rankingDone = true;
           // Save to cache

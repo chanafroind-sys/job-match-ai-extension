@@ -36,13 +36,16 @@ function friendlyError(msg) {
 async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 12000) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res, text;
+    console.log(`[JMA:fetch] ${endpoint} attempt ${attempt}/${maxAttempts}`);
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 25000);
       res = await fetch(`${BACKEND_URL}${endpoint}`, { ...options, signal: controller.signal });
       clearTimeout(timeout);
       text = await res.text();
+      console.log(`[JMA:fetch] ${endpoint} status=${res.status} body_len=${text.length} body_start=${text.slice(0,120)}`);
     } catch (e) {
+      console.log(`[JMA:fetch] ${endpoint} network error: ${e.message}`);
       const isLast = attempt === maxAttempts;
       if (isLast) throw new Error('אין חיבור לאינטרנט או שהשירות לא זמין. בדקי את החיבור ונסי שוב.');
       await new Promise(r => setTimeout(r, delayMs));
@@ -51,6 +54,7 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 1200
 
     const isHtml = text.trimStart().startsWith('<') || text.includes('<html');
     if (isHtml || res.status === 502 || res.status === 503 || res.status === 504) {
+      console.log(`[JMA:fetch] ${endpoint} server sleeping (status=${res.status} isHtml=${isHtml}), retrying...`);
       if (attempt === maxAttempts) {
         throw new Error('לא הצלחנו להגיע לשירות. פתחי https://job-match-ai-extension.onrender.com/health בדפדפן כדי להעיר אותו, ונסי שוב.');
       }
@@ -60,7 +64,12 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 1200
 
     let data;
     try { data = JSON.parse(text); } catch { throw new Error('תגובה לא צפויה מהשירות. נסי שוב.'); }
-    if (!res.ok) throw new Error(data.detail || data.error || `שגיאה ${res.status}`);
+    if (!res.ok) {
+      const errMsg = data.detail || data.error || `שגיאה ${res.status}`;
+      console.log(`[JMA:fetch] ${endpoint} ERROR ${res.status}: ${errMsg}`);
+      throw new Error(errMsg);
+    }
+    console.log(`[JMA:fetch] ${endpoint} OK`);
     return data;
   }
 }

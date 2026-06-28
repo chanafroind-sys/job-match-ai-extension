@@ -361,8 +361,11 @@ function showMainResult(analysis) {
 
 async function startAnalysis() {
   showMainLoading();
+  console.log('[JMA:analyze] startAnalysis called');
 
   const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
+  const keyMasked = stored.licenseKey ? stored.licenseKey.slice(0,4)+'****' : '(none)';
+  console.log(`[JMA:analyze] licenseKey=${keyMasked} cvText_len=${(stored.cvText||'').length}`);
   if (!stored.licenseKey) {
     showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.');
     return;
@@ -403,6 +406,8 @@ async function startAnalysis() {
   state.jobPlatform = tabResult.platform || '';
   state.jobUrl = tabResult.url || '';
 
+  console.log(`[JMA:analyze] jobText_len=${state.jobText.length} platform=${state.jobPlatform} lang=${state.jobLanguage}`);
+
   // Call API
   const response = await chrome.runtime.sendMessage({
     action: 'analyzeJob',
@@ -411,6 +416,7 @@ async function startAnalysis() {
     jobText: state.jobText,
   });
 
+  console.log(`[JMA:analyze] response error=${response?.error} result_keys=${response?.result ? Object.keys(response.result).join(',') : 'none'}`);
   if (response.error) {
     showMainError(response.error);
     return;

@@ -127,7 +127,11 @@ TEST_LICENSE_KEY = "TEST-MICHAL-FAKE-KEY"
 
 async def verify_gumroad_license(license_key: str) -> dict:
     """Verify license via Gumroad API. Returns email, uses, and isPremium from variants."""
+    masked = license_key[:4] + "****" if len(license_key) > 4 else "****"
+    print(f"[JMA:verify] key={masked} len={len(license_key.strip())}")
+
     if license_key.strip() == TEST_LICENSE_KEY:
+        print("[JMA:verify] TEST KEY — bypass OK")
         return {"email": "test@internal", "uses": 1, "isPremium": True}
 
     try:
@@ -141,15 +145,19 @@ async def verify_gumroad_license(license_key: str) -> dict:
                 },
             )
         data = resp.json()
+        print(f"[JMA:verify] Gumroad status={resp.status_code} success={data.get('success')}")
     except Exception as e:
+        print(f"[JMA:verify] Gumroad network error: {e}")
         raise HTTPException(status_code=503, detail="לא הצלחנו להגיע לשירות אימות הרישיון. נסי שוב בעוד רגע.")
 
     if not data.get("success"):
+        print(f"[JMA:verify] Gumroad returned success=false: {data.get('message', '')}")
         raise HTTPException(status_code=403, detail="Invalid or expired license key.")
 
     purchase = data.get("purchase") or {}
     uses: int = purchase.get("uses", 0)
     if uses > MAX_DEVICES_PER_KEY:
+        print(f"[JMA:verify] Too many devices: uses={uses} max={MAX_DEVICES_PER_KEY}")
         raise HTTPException(
             status_code=403,
             detail=f"This license key is active on {uses} devices, which exceeds the maximum allowed ({MAX_DEVICES_PER_KEY}). Please purchase a separate license.",
@@ -166,6 +174,7 @@ async def verify_gumroad_license(license_key: str) -> dict:
         variants = {}
 
     plan = (variants.get("Plan") or variants.get("plan") or "").strip().lower()
+    print(f"[JMA:verify] OK email={purchase.get('email','')} uses={uses} plan={plan!r} isPremium={plan=='premium'}")
 
     return {
         "email": purchase.get("email", ""),
@@ -191,10 +200,13 @@ async def _verify_premium(license_key: str) -> bool:
 async def require_license(license_key: str) -> str:
     """Validate license and check monthly usage. Returns the license key on success."""
     if not license_key or not license_key.strip():
+        print("[JMA:license] REJECTED — empty key")
         raise HTTPException(status_code=401, detail="No license key provided. Please enter a valid license key in the extension settings.")
     await verify_gumroad_license(license_key)
     count = get_usage_count(license_key)
+    print(f"[JMA:license] usage={count}/{MONTHLY_USAGE_LIMIT}")
     if count >= MONTHLY_USAGE_LIMIT:
+        print(f"[JMA:license] REJECTED — monthly limit reached")
         raise HTTPException(
             status_code=429,
             detail=f"Monthly usage limit reached ({MONTHLY_USAGE_LIMIT} analyses). Resets on the 1st of next month.",
@@ -205,18 +217,30 @@ async def require_license(license_key: str) -> str:
 # ── Claude API ────────────────────────────────────────────────────────────────
 
 async def call_claude(prompt: str, max_tokens: int = 1200) -> str:
-    message = await anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return "".join(block.text for block in message.content if hasattr(block, "text"))
+    print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
+    try:
+        message = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = "".join(block.text for block in message.content if hasattr(block, "text"))
+        print(f"[JMA:claude] response_len={len(result)} stop_reason={message.stop_reason}")
+        return result
+    except Exception as e:
+        print(f"[JMA:claude] ERROR: {type(e).__name__}: {e}")
+        raise
 
 
 def parse_json_response(text: str) -> dict:
     import re
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    return json.loads(match.group(1).strip() if match else text.strip())
+    raw = match.group(1).strip() if match else text.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"[JMA:parse] JSON decode error: {e} | raw_start={raw[:200]!r}")
+        raise
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -503,24 +527,30 @@ async def verify_license(body: VerifyLicenseRequest):
 @app.post("/api/analyze")
 async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(None)):
     license_key = x_license_key or body.licenseKey or ""
+    print(f"[JMA:analyze] cv_len={len(body.cvText)} job_len={len(body.jobText)}")
     await require_license(license_key)
 
     prompt = ANALYZE_PROMPT.format(cv_text=body.cvText, job_text=body.jobText)
 
     last_error: Exception | None = None
-    for _ in range(3):
+    for attempt in range(3):
         try:
+            print(f"[JMA:analyze] attempt {attempt+1}/3")
             raw = await call_claude(prompt, max_tokens=1200)
             result = parse_json_response(raw)
             increment_usage(license_key)
+            print(f"[JMA:analyze] SUCCESS score={result.get('score','?') if isinstance(result,dict) else '?'}")
             return {"result": result}
         except json.JSONDecodeError as e:
+            print(f"[JMA:analyze] attempt {attempt+1} JSON error: {e}")
             last_error = e
         except Exception as e:
+            print(f"[JMA:analyze] attempt {attempt+1} error: {type(e).__name__}: {e}")
             last_error = e
             if "401" in str(e) or "429" in str(e):
                 break
 
+    print(f"[JMA:analyze] FAILED after retries: {last_error}")
     raise HTTPException(status_code=500, detail=str(last_error) or "Analysis failed.")
 
 
@@ -578,6 +608,7 @@ async def track_click(app_id: str, target: str, url: str):
 @app.post("/api/rank-jobs")
 async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header(None)):
     license_key = x_license_key or body.licenseKey or ""
+    print(f"[JMA:rank] jobs={len(body.jobs)} cv_len={len(body.cvText)}")
     await require_license(license_key)
 
     def job_text(j, i):
@@ -588,14 +619,17 @@ async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header
     jobs_list = "\n\n".join(job_text(j, i) for i, j in enumerate(body.jobs[:12]))
     cv_summary = body.cvText[:800]
     prompt = RANK_JOBS_PROMPT.format(cv_summary=cv_summary, jobs_list=jobs_list)
+    print(f"[JMA:rank] prompt_len={len(prompt)} jobs_included={min(len(body.jobs),12)}")
 
     last_error: Exception | None = None
-    for _ in range(2):
+    for attempt in range(2):
         try:
+            print(f"[JMA:rank] attempt {attempt+1}/2")
             raw = await call_claude(prompt, max_tokens=1200)
             ranked = parse_json_response(raw)
             if not isinstance(ranked, list):
-                raise ValueError("Expected JSON array")
+                print(f"[JMA:rank] response is not a list: {type(ranked)} val={str(ranked)[:100]}")
+                raise ValueError(f"Expected JSON array, got {type(ranked).__name__}: {str(ranked)[:80]}")
 
             jobs_map = {j.get('index', i): j for i, j in enumerate(body.jobs)}
             result = []
@@ -611,10 +645,13 @@ async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header
                     "con": item.get('con', ''),
                 })
             increment_usage(license_key)
+            print(f"[JMA:rank] SUCCESS returned {len(result)} ranked jobs")
             return {"rankedJobs": result}
         except Exception as e:
+            print(f"[JMA:rank] attempt {attempt+1} error: {type(e).__name__}: {e}")
             last_error = e
 
+    print(f"[JMA:rank] FAILED: {last_error}")
     raise HTTPException(status_code=500, detail=str(last_error) or "Ranking failed.")
 
 
