@@ -54,7 +54,7 @@ function makeRun(text, opts = {}) {
 }
 
 function makeParagraph(runs, opts = {}) {
-  const { align = 'left', isRtl = false, spacingAfter = 80, spacingLine = 276 } = opts;
+  const { align = 'left', isRtl = false, spacingAfter = 60, spacingLine = 252 } = opts;
   const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}<w:spacing w:after="${spacingAfter}" w:line="${spacingLine}" w:lineRule="auto"/></w:pPr>`;
   return `<w:p>${pPr}${runs}</w:p>`;
 }
@@ -62,9 +62,8 @@ function makeParagraph(runs, opts = {}) {
 function makeSectionHeading(title, isRtl) {
   const align = isRtl ? 'right' : 'left';
   const run = makeRun(title.toUpperCase(), { bold: true, size: 22, color: '7c3aed' });
-  const underlineRun = `<w:r><w:rPr><w:color w:val="7c3aed"/><w:sz w:val="4"/><w:szCs w:val="4"/></w:rPr><w:t> </w:t></w:r>`;
   const border = `<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="7c3aed"/></w:pBdr>`;
-  const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}<w:spacing w:before="120" w:after="60"/>${border}</w:pPr>`;
+  const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}<w:spacing w:before="100" w:after="40"/>${border}</w:pPr>`;
   return `<w:p>${pPr}${run}</w:p>`;
 }
 
@@ -117,7 +116,7 @@ function makeRichRuns(text, baseOpts = {}) {
 function makeBulletParagraph(text, isRtl) {
   const align = isRtl ? 'right' : 'left';
   const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360" w:hanging="180"/>`;
-  const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}${indent}<w:spacing w:after="40" w:line="252" w:lineRule="auto"/></w:pPr>`;
+  const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}${indent}<w:spacing w:after="30" w:line="240" w:lineRule="auto"/></w:pPr>`;
   const bulletRun = makeRun('• ', { size: 21, color: '1f2937' });
   const contentRuns = makeRichRuns(text, { size: 21, color: '1f2937' });
   return `<w:p>${pPr}${bulletRun}${contentRuns}</w:p>`;
@@ -146,24 +145,78 @@ function buildExperienceXml(text, isRtl) {
   const bidi = isRtl ? '<w:bidi/>' : '';
   const lines = text.split('\n');
   let xml = '';
-  let firstHeader = true;
+  let firstEntry = true;
+  let inEntry = false; // true after seeing the header line of a job block
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (!line) continue;
+    if (!line) {
+      inEntry = false; // blank line signals end of current job block
+      continue;
+    }
 
     const isBullet = line.startsWith('•') || line.startsWith('- ') ||
       (line.startsWith('* ') && !line.startsWith('**'));
 
     if (isBullet) {
+      inEntry = true;
       const clean = line.replace(/^[•\-]\s*|^\*\s+/, '');
       xml += makeBulletParagraph(clean, isRtl);
-    } else {
-      // Job entry header: add clear spacing before each new entry except the first
-      const spacingBefore = firstHeader ? 0 : 200;
-      firstHeader = false;
+    } else if (!inEntry) {
+      // Job entry header (company / role / dates) — no indent, spacing before to separate entries
+      const spacingBefore = firstEntry ? 0 : 160;
+      firstEntry = false;
+      inEntry = true;
       const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
-      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="30" w:line="252" w:lineRule="auto"/></w:pPr>`;
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
+      xml += `<w:p>${pPr}${runs}</w:p>`;
+    } else {
+      // Description text directly under a job header — indented to align with bullet text
+      const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360"/>`;
+      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}${indent}<w:spacing w:before="0" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
+      xml += `<w:p>${pPr}${runs}</w:p>`;
+    }
+  }
+
+  return xml;
+}
+
+function buildEducationXml(text, isRtl) {
+  const align = isRtl ? 'right' : 'left';
+  const bidi = isRtl ? '<w:bidi/>' : '';
+  const lines = text.split('\n');
+  let xml = '';
+  let firstEntry = true;
+  let inEntry = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      inEntry = false;
+      continue;
+    }
+
+    const isBullet = line.startsWith('•') || line.startsWith('- ') ||
+      (line.startsWith('* ') && !line.startsWith('**'));
+
+    if (isBullet) {
+      inEntry = true;
+      const clean = line.replace(/^[•\-]\s*|^\*\s+/, '');
+      xml += makeBulletParagraph(clean, isRtl);
+    } else if (!inEntry) {
+      // Institution / degree / year header — no indent
+      const spacingBefore = firstEntry ? 0 : 120;
+      firstEntry = false;
+      inEntry = true;
+      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
+      xml += `<w:p>${pPr}${runs}</w:p>`;
+    } else {
+      // Description under institution header — indented
+      const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360"/>`;
+      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}${indent}<w:spacing w:before="0" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
       xml += `<w:p>${pPr}${runs}</w:p>`;
     }
   }
@@ -179,13 +232,13 @@ function buildDocumentXml(sections, isRtl) {
   // Name
   if (sections['[NAME]']) {
     const run = makeRun(sections['[NAME]'], { bold: true, size: 40, color: '1a1a2e' });
-    body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 40 });
+    body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 30 });
   }
 
   // Headline
   if (sections['[HEADLINE]']) {
     const run = makeRun(sections['[HEADLINE]'], { size: 24, color: '7c3aed' });
-    body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 40 });
+    body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 30 });
   }
 
   // Contact
@@ -193,7 +246,7 @@ function buildDocumentXml(sections, isRtl) {
     const lines = sections['[CONTACT]'].split('\n').filter(l => l.trim());
     const contactText = lines.join('  |  ');
     const run = makeRun(contactText, { size: 20, color: '8b949e' });
-    body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 120 });
+    body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 80 });
   }
 
   // Profile
@@ -211,7 +264,7 @@ function buildDocumentXml(sections, isRtl) {
   // Education
   if (sections['[EDUCATION]']) {
     body += makeSectionHeading('Education', isRtl);
-    body += textToDocxParagraphs(sections['[EDUCATION]'], isRtl);
+    body += buildEducationXml(sections['[EDUCATION]'], isRtl);
   }
 
   // Skills
@@ -405,7 +458,7 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </w:docDefaults>
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
     <w:name w:val="Normal"/>
-    <w:pPr><w:spacing w:after="80" w:line="276" w:lineRule="auto"/></w:pPr>
+    <w:pPr><w:spacing w:after="60" w:line="252" w:lineRule="auto"/></w:pPr>
   </w:style>
   <w:style w:type="character" w:styleId="Hyperlink">
     <w:name w:val="Hyperlink"/>
