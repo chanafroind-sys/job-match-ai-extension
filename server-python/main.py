@@ -84,9 +84,17 @@ _LINK_RE = re.compile(
 )
 
 def inject_tracking_links(cv_text: str, app_id: str) -> str:
-    """Replace all URLs (any domain, with or without protocol, markdown or raw) with tracking links."""
+    """Replace all URLs with tracking links.
+
+    Handles three forms in order:
+      1. [LINK:display|url]  — already-formatted tokens (Claude preserved from original CV);
+                               rewrap the inner URL with a tracking URL, keep the display text.
+      2. [text](url)         — markdown link
+      3. https://...         — raw URL with protocol
+      4. domain.com/path     — bare domain URL without protocol
+    """
     def _make(url: str, display: str) -> str:
-        url = re.sub(r'[.,;:!?]+$', '', url)   # strip trailing punctuation
+        url = re.sub(r'[.,;:!?]+$', '', url)
         display = re.sub(r'[.,;:!?]+$', '', display)
         full_url = url if url.startswith("http") else f"https://{url}"
         target = ("github" if "github.com" in full_url
@@ -96,6 +104,14 @@ def inject_tracking_links(cv_text: str, app_id: str) -> str:
         tracking = f"{BACKEND_URL}/api/v1/track?app_id={app_id}&target={target}&url={enc}"
         return f"[LINK:{display}|{tracking}]"
 
+    # Pass 1 — rewrap any [LINK:display|url] tokens that Claude preserved verbatim
+    # from the original CV text.  We only replace the URL part; the display text
+    # stays as the original hyperlink label (e.g. "chanimed03" for a GitHub link).
+    _EXISTING_RE = re.compile(r'\[LINK:([^\|]*)\|([^\]]+)\]')
+    cv_text = _EXISTING_RE.sub(lambda m: _make(m.group(2), m.group(1) or m.group(2)), cv_text)
+
+    # Pass 2 — wrap any remaining raw / bare / markdown URLs that Claude introduced
+    # in the generated text (e.g. wrote out the URL in [CONTACT] as plain text).
     def _replace(m: re.Match) -> str:
         if m.group(1):                          # markdown [text](url)
             return _make(m.group(2), m.group(1))
@@ -339,7 +355,7 @@ ABSOLUTE RULES — never break these:
 4. Languages section is ALWAYS last
 5. Do NOT present freelance or independent projects as full-time employment positions
 6. Do NOT change the chronological order of work experience entries
-7. PRESERVE ALL URLs — every URL in the original CV (GitHub, LinkedIn, portfolio, personal site) MUST appear verbatim in the [CONTACT] section. Do NOT drop, shorten, or paraphrase any URL.
+7. PRESERVE ALL URLs — every URL in the original CV (GitHub, LinkedIn, portfolio, personal site) MUST appear verbatim in the [CONTACT] section. Do NOT drop, shorten, or paraphrase any URL. If the original CV contains tokens of the form [LINK:display|url], copy them exactly as-is into [CONTACT] — do not alter them.
 
 {language_rule}
 
@@ -408,7 +424,7 @@ Review and improve this CV against ALL of these criteria — fix every issue you
 8. HUMAN TONE: Should not sound AI-generated. Adjust phrasing if needed.
 9. CORE TECH & METRICS PRESERVATION: Are all core programming languages still present? Are high-value data points (grades, honors, achievements) visible? Restore if removed.
 10. HONESTY: Do not add anything not in the original CV. Do not present freelance work as full-time employment.
-11. URLs: Are all URLs from the draft present verbatim in [CONTACT]? GitHub, LinkedIn, portfolio, and personal site URLs must not be removed or shortened. Restore any missing URLs exactly as they appear in the draft.
+11. URLs: Are all URLs from the draft present verbatim in [CONTACT]? GitHub, LinkedIn, portfolio, and personal site URLs must not be removed or shortened. Restore any missing URLs exactly as they appear in the draft. If the draft contains [LINK:display|url] tokens, copy them unchanged — do not unwrap or reformat them.
 
 Output ONLY the improved CV using the same section markers.
 CRITICAL FORMAT RULES — any violation breaks the Word document:

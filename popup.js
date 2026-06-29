@@ -134,18 +134,21 @@ async function extractDocxText(arrayBuffer) {
 
     let xml = new TextDecoder('utf-8').decode(xmlBytes);
 
-    // Inject URLs into hyperlink elements so they appear in the extracted text.
-    // <w:hyperlink r:id="rId3">...<w:t>GitHub</w:t>...</w:hyperlink>
-    // → the last <w:t> inside gets " https://..." appended
+    // Convert hyperlink elements directly into [LINK:display|url] tokens.
+    // This keeps the URL cleanly bounded so the backend regex never bleeds
+    // into adjacent tokens (like an email address on the same line).
     xml = xml.replace(
       /<w:hyperlink\b[^>]*\br:id="([^"]+)"[^>]*>([\s\S]*?)<\/w:hyperlink>/g,
       (_, rId, inner) => {
         const url = relsMap[rId];
         if (!url) return inner;
-        // Insert URL before the last </w:t> closing tag inside the hyperlink
-        const lastClose = inner.lastIndexOf('</w:t>');
-        if (lastClose === -1) return inner;
-        return inner.slice(0, lastClose) + ' ' + url + inner.slice(lastClose);
+        // Collect all text from every <w:t> inside the hyperlink as display text
+        const display = [...inner.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)]
+          .map(m => m[1]).join('').trim() || url;
+        // Sanitise: strip characters that would break the [LINK:...|...] syntax
+        const safeDisplay = display.replace(/[|\[\]]/g, '');
+        // Replace the entire hyperlink element with a single plain-text run
+        return `<w:r><w:t xml:space="preserve">[LINK:${safeDisplay}|${url}]</w:t></w:r>`;
       }
     );
 
