@@ -218,18 +218,23 @@ async def require_license(license_key: str) -> str:
 
 async def call_claude(prompt: str, max_tokens: int = 1200) -> str:
     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
-    try:
-        message = await anthropic_client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result = "".join(block.text for block in message.content if hasattr(block, "text"))
-        print(f"[JMA:claude] response_len={len(result)} stop_reason={message.stop_reason}")
-        return result
-    except Exception as e:
-        print(f"[JMA:claude] ERROR: {type(e).__name__}: {e}")
-        raise
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            message = await anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            result = "".join(block.text for block in message.content if hasattr(block, "text"))
+            print(f"[JMA:claude] attempt={attempt} response_len={len(result)} stop_reason={message.stop_reason}")
+            return result
+        except Exception as e:
+            last_exc = e
+            print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
+            if attempt < 3:
+                await asyncio.sleep(3)
+    raise last_exc
 
 
 def parse_json_response(text: str) -> dict:
