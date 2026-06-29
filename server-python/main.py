@@ -250,9 +250,12 @@ def parse_json_response(text: str) -> dict:
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-QUESTIONS_PROMPT = """You are a recruiter. Based on the CV and job description, identify up to 3 skills that are either unclear or missing in the CV but important for this specific role.
-Return JSON only — no markdown, no extra text:
-{{"questions":[{{"id":"q1","skill":"<skill name in English>","question":"<short question in the job's language>","why":"<why it matters for this role in Hebrew, max 15 words>","heExplanation":"<plain Hebrew explanation of what this skill means in practice, max 20 words>"}}]}}
+QUESTIONS_PROMPT = """You are a recruiter screening a candidate. Read the CV and job description, then identify 1-3 skills or experiences that are either missing from the CV or mentioned too vaguely to evaluate — and that are clearly required or strongly preferred by this job.
+
+IMPORTANT: Always return at least 1 question. If the CV perfectly matches the job, still pick the most important skill to verify.
+
+Return JSON only — no markdown, no explanation, no text before or after:
+{{"questions":[{{"id":"q1","skill":"<skill name in English>","question":"<short clarifying question in the job's language>","why":"<why it matters for this role in Hebrew, max 15 words>","heExplanation":"<plain Hebrew explanation of what this skill means in practice, max 20 words>"}}]}}
 === CV ===
 {cv_text}
 === JOB DESCRIPTION ===
@@ -551,13 +554,16 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
     if body.preflight:
         # Lightweight: return questions only, verify license but don't count usage
         await verify_gumroad_license(license_key)
-        prompt = QUESTIONS_PROMPT.format(cv_text=body.cvText[:600], job_text=body.jobText[:1500])
+        prompt = QUESTIONS_PROMPT.format(cv_text=body.cvText[:1500], job_text=body.jobText[:2000])
         try:
-            raw = await call_claude(prompt, max_tokens=400)
+            raw = await call_claude(prompt, max_tokens=600)
+            print(f"[JMA:preflight] raw_len={len(raw)} raw_start={raw[:200]!r}")
             result = parse_json_response(raw)
+            q_count = len(result.get("questions", []))
+            print(f"[JMA:preflight] parsed ok, questions={q_count}")
             return {"result": result, "preflight": True}
         except Exception as e:
-            print(f"[JMA:analyze] preflight error: {e}")
+            print(f"[JMA:preflight] error: {type(e).__name__}: {e}")
             return {"result": {"questions": []}, "preflight": True}
 
     await require_license(license_key)
