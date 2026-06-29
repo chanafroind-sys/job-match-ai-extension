@@ -546,7 +546,7 @@ function showCVOptionsScreen() {
   cvOptions.language = 'english';
   cvOptions.format = 'docx';
   document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => {
-    b.classList.toggle('active', b.dataset.lang === jobLang);
+    b.classList.toggle('active', b.dataset.lang === 'english');
   });
   document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(b => {
     b.classList.toggle('active', b.dataset.fmt === 'docx');
