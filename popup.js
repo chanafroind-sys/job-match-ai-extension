@@ -111,7 +111,6 @@ async function extractDocxText(arrayBuffer) {
           if (fn === name) {
             const dataStart = fnStart + fnLen + extraLen;
             const data = bytes.slice(dataStart, dataStart + compressedSize);
-            // compression method 8 = DEFLATE, 0 = stored
             return compression === 8 ? await inflateRaw(data) : data;
           }
         }
@@ -119,10 +118,37 @@ async function extractDocxText(arrayBuffer) {
       return null;
     };
 
+    // Build rId → URL map from the relationships file
+    const relsMap = {};
+    const relsBytes = await findFile('word/_rels/document.xml.rels');
+    if (relsBytes) {
+      const relsXml = new TextDecoder('utf-8').decode(relsBytes);
+      // Match any Relationship whose Target is an external http URL
+      for (const m of relsXml.matchAll(/Id="([^"]+)"[^>]*Target="(https?:[^"]+)"/g)) {
+        relsMap[m[1]] = m[2];
+      }
+    }
+
     const xmlBytes = await findFile('word/document.xml');
     if (!xmlBytes) return null;
 
-    const xml = new TextDecoder('utf-8').decode(xmlBytes);
+    let xml = new TextDecoder('utf-8').decode(xmlBytes);
+
+    // Inject URLs into hyperlink elements so they appear in the extracted text.
+    // <w:hyperlink r:id="rId3">...<w:t>GitHub</w:t>...</w:hyperlink>
+    // → the last <w:t> inside gets " https://..." appended
+    xml = xml.replace(
+      /<w:hyperlink\b[^>]*\br:id="([^"]+)"[^>]*>([\s\S]*?)<\/w:hyperlink>/g,
+      (_, rId, inner) => {
+        const url = relsMap[rId];
+        if (!url) return inner;
+        // Append URL after the last <w:t> text node inside the hyperlink
+        return inner.replace(/(<w:t[^>]*>)([^<]*)(<\/w:t>)(?![\s\S]*<w:t)/, (__, open, text, close) =>
+          `${open}${text} ${url}${close}`
+        );
+      }
+    );
+
     // Split by paragraphs and extract w:t text
     const paras = xml.split(/<w:p[ >\/]/);
     let result = '';
