@@ -260,24 +260,41 @@ Return JSON only — no markdown, no extra text:
 
 ANALYZE_PROMPT = """You are a senior recruitment expert. Analyze the fit between the candidate's CV and the job posting.
 
+MANDATORY LANGUAGE RULE: The fields summary, strengths, and hard_gaps MUST be written in Hebrew (עברית) — no exceptions, regardless of the job's language. Technical terms, skill names, and technologies stay in English inside the Hebrew sentences.
+
 Rules:
 - Score 0-100 based on how well real experience matches the requirements (be honest, do not inflate)
-- Write summary, strengths, and hard_gaps in HEBREW. Keep skill names and technical terms in English.
 - Return JSON only (no markdown, no explanations):
 {{
   "score": <0-100>,
   "jobTitle": "<job title from posting>",
   "company": "<company name>",
   "jobLanguage": "hebrew" | "english",
-  "summary": "<2 sentences in Hebrew explaining why this is or isn't a good fit>",
-  "strengths": ["<Hebrew strength, keep skill names in English>", ...],
-  "hard_gaps": ["<missing requirement in Hebrew, keep skill name in English>", ...]
+  "summary": "<2 sentences in Hebrew — MANDATORY Hebrew>",
+  "strengths": ["<Hebrew sentence, skill names in English>", ...],
+  "hard_gaps": ["<Hebrew sentence, skill name in English>", ...]
 }}
 {answers_section}
 === CV ===
 {cv_text}
 === JOB DESCRIPTION ===
 {job_text}"""
+
+_CV_LANG_RULE_EN = """LANGUAGE RULE — 100% ENGLISH ONLY:
+- The entire CV must be written in English from start to finish — no exceptions
+- The candidate's name must always appear in English only — never translate it to Hebrew or any other language
+- Do not mix any Hebrew words or characters anywhere in the document"""
+
+_CV_LANG_RULE_HE = """LANGUAGE RULE — HEBREW OUTPUT:
+- Write the entire CV body in Hebrew (עברית) — this is mandatory
+- Keep the candidate's name in its original form — do NOT translate names
+- Keep technical terms in English: programming languages (Python, Java, C++), frameworks (React, FastAPI, Node.js), tools (Docker, Git, AWS), company names, product names, software names
+- Translate job titles and section content to Hebrew (e.g. "Software Engineer" → "מהנדס תוכנה")
+- Write in natural, professional Hebrew — not a word-for-word translation"""
+
+_CV_LANG_CHECK_EN = "1. LANGUAGE: Is the entire CV in 100% English? If any Hebrew words or characters appear anywhere — translate or remove them. The candidate's name must remain in English exactly as written."
+
+_CV_LANG_CHECK_HE = "1. LANGUAGE: Is the CV body written in Hebrew? Technical terms (technologies, tools, company names, software names) must stay in English — that is correct. But all prose — profile text, bullet points, job titles, education descriptions — must be in Hebrew. Fix any English prose that slipped through. Do NOT translate the candidate's name."
 
 CV_PASS1_PROMPT = """You are a senior CV writer and recruiter expert.
 Create a tailored CV in {language} based on the original CV and job requirements.
@@ -290,10 +307,7 @@ ABSOLUTE RULES — never break these:
 5. Do NOT present freelance or independent projects as full-time employment positions
 6. Do NOT change the chronological order of work experience entries
 
-LANGUAGE RULE — 100% ENGLISH ONLY:
-- The entire CV must be written in English from start to finish — no exceptions
-- The candidate's name must always appear in English only — never translate it to Hebrew or any other language
-- Do not mix any Hebrew words or characters anywhere in the document
+{language_rule}
 
 COMPANY STRUCTURE IS SACRED — never break this:
 - Keep every employer as its own separate block with its own company name, job title, and dates
@@ -348,7 +362,7 @@ OUTPUT FORMAT — use these exact section markers. Rules:
 CV_PASS2_PROMPT = """You are a ruthless senior recruiter reviewing a tailored CV before it goes to a hiring manager.
 Review and improve this CV against ALL of these criteria — fix every issue you find:
 
-1. LANGUAGE: Is the entire CV in 100% English? If any Hebrew words or characters appear anywhere — translate or remove them. The candidate's name must remain in English exactly as written.
+{language_check}
 2. COMPANY STRUCTURE: Is every employer kept as its own separate block? If bullet points from different companies or roles have been merged — restore the original per-company structure immediately.
 3. PROFILE AUTHENTICITY: Does the profile sound like the candidate speaking from their real experience? If it echoes the job description's language — rewrite it.
 4. SENIORITY CHECK: Remove any Senior/Lead/Staff/Principal or inflated domain title not supported by actual held job titles. A subtle orientation suffix is acceptable if backed by real projects or courses.
@@ -587,7 +601,10 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     license_key = x_license_key or body.licenseKey or ""
     await require_license(license_key)
 
-    language = "Hebrew" if body.jobLanguage == "hebrew" else "English"
+    is_hebrew = body.jobLanguage == "hebrew"
+    language = "Hebrew" if is_hebrew else "English"
+    language_rule = _CV_LANG_RULE_HE if is_hebrew else _CV_LANG_RULE_EN
+    language_check = _CV_LANG_CHECK_HE if is_hebrew else _CV_LANG_CHECK_EN
     answers_text = (
         "\n".join(f"{a.get('skill', '')}: {a.get('answer', '')}" for a in body.answers)
         if body.answers
@@ -596,13 +613,18 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
 
     pass1_prompt = CV_PASS1_PROMPT.format(
         language=language,
+        language_rule=language_rule,
         cv_text=body.cvText,
         answers_text=answers_text,
         job_text=body.jobText,
     )
     cv_draft = await call_claude(pass1_prompt, max_tokens=2000)
 
-    pass2_prompt = CV_PASS2_PROMPT.format(cv_draft=cv_draft, job_text=body.jobText)
+    pass2_prompt = CV_PASS2_PROMPT.format(
+        language_check=language_check,
+        cv_draft=cv_draft,
+        job_text=body.jobText,
+    )
     cv_final = await call_claude(pass2_prompt, max_tokens=2000)
 
     # Inject tracking links only when original CV had GitHub/LinkedIn URLs

@@ -460,7 +460,7 @@ document.getElementById('btnGenerateCV').addEventListener('click', () => {
 });
 
 // Questions screen
-function showQuestionsScreen(questions) {
+function showQuestionsScreen(questions, savedAnswers) {
   const container = document.getElementById('questionsContainer');
   container.innerHTML = '';
 
@@ -492,6 +492,19 @@ function showQuestionsScreen(questions) {
       ta.value = btn.dataset.val;
     });
   });
+
+  // Restore previously saved answers
+  if (savedAnswers && savedAnswers.length > 0) {
+    savedAnswers.forEach((a, idx) => {
+      const val = a.answer || '';
+      if (!val || val === 'לא ענה') return;
+      const ta = container.querySelector(`.question-textarea[data-idx="${idx}"]`);
+      if (ta) ta.value = val;
+      container.querySelectorAll(`.qa-btn[data-idx="${idx}"]`).forEach(btn => {
+        if (btn.dataset.val === val) btn.classList.add('selected');
+      });
+    });
+  }
 
   showScreen('questions');
 }
@@ -957,7 +970,7 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
         return;
       }
       if (saved.questions && saved.questions.length > 0) {
-        showQuestionsScreen(saved.questions);
+        showQuestionsScreen(saved.questions, saved.answers || []);
         return;
       }
     }
