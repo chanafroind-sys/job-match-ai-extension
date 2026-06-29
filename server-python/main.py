@@ -339,6 +339,7 @@ ABSOLUTE RULES — never break these:
 4. Languages section is ALWAYS last
 5. Do NOT present freelance or independent projects as full-time employment positions
 6. Do NOT change the chronological order of work experience entries
+7. PRESERVE ALL URLs — every URL in the original CV (GitHub, LinkedIn, portfolio, personal site) MUST appear verbatim in the [CONTACT] section. Do NOT drop, shorten, or paraphrase any URL.
 
 {language_rule}
 
@@ -405,6 +406,7 @@ Review and improve this CV against ALL of these criteria — fix every issue you
 8. HUMAN TONE: Should not sound AI-generated. Adjust phrasing if needed.
 9. CORE TECH & METRICS PRESERVATION: Are all core programming languages still present? Are high-value data points (grades, honors, achievements) visible? Restore if removed.
 10. HONESTY: Do not add anything not in the original CV. Do not present freelance work as full-time employment.
+11. URLs: Are all URLs from the draft present verbatim in [CONTACT]? GitHub, LinkedIn, portfolio, and personal site URLs must not be removed or shortened. Restore any missing URLs exactly as they appear in the draft.
 
 Output ONLY the improved CV using the same section markers.
 CRITICAL FORMAT RULES — any violation breaks the Word document:

@@ -142,10 +142,10 @@ async function extractDocxText(arrayBuffer) {
       (_, rId, inner) => {
         const url = relsMap[rId];
         if (!url) return inner;
-        // Append URL after the last <w:t> text node inside the hyperlink
-        return inner.replace(/(<w:t[^>]*>)([^<]*)(<\/w:t>)(?![\s\S]*<w:t)/, (__, open, text, close) =>
-          `${open}${text} ${url}${close}`
-        );
+        // Insert URL before the last </w:t> closing tag inside the hyperlink
+        const lastClose = inner.lastIndexOf('</w:t>');
+        if (lastClose === -1) return inner;
+        return inner.slice(0, lastClose) + ' ' + url + inner.slice(lastClose);
       }
     );
 
