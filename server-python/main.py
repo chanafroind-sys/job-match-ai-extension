@@ -238,9 +238,15 @@ async def call_claude(prompt: str, max_tokens: int = 1200) -> str:
 
 
 def parse_json_response(text: str) -> dict:
-    import re
+    # 1. Try markdown code block (```json ... ```)
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    raw = match.group(1).strip() if match else text.strip()
+    if match:
+        raw = match.group(1).strip()
+    else:
+        # 2. Try to extract the first {...} JSON object from the text
+        #    (handles cases where Claude adds intro text before the JSON)
+        obj_match = re.search(r'\{[\s\S]*\}', text)
+        raw = obj_match.group(0) if obj_match else text.strip()
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
