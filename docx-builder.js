@@ -141,6 +141,36 @@ function textToDocxParagraphs(text, isRtl, isBullet = false) {
   }).join('');
 }
 
+function buildExperienceXml(text, isRtl) {
+  const align = isRtl ? 'right' : 'left';
+  const bidi = isRtl ? '<w:bidi/>' : '';
+  const lines = text.split('\n');
+  let xml = '';
+  let firstHeader = true;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const isBullet = line.startsWith('•') || line.startsWith('- ') ||
+      (line.startsWith('* ') && !line.startsWith('**'));
+
+    if (isBullet) {
+      const clean = line.replace(/^[•\-]\s*|^\*\s+/, '');
+      xml += makeBulletParagraph(clean, isRtl);
+    } else {
+      // Job entry header: add clear spacing before each new entry except the first
+      const spacingBefore = firstHeader ? 0 : 200;
+      firstHeader = false;
+      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="30" w:line="252" w:lineRule="auto"/></w:pPr>`;
+      xml += `<w:p>${pPr}${runs}</w:p>`;
+    }
+  }
+
+  return xml;
+}
+
 function buildDocumentXml(sections, isRtl) {
   const align = isRtl ? 'right' : 'left';
   const bidi = isRtl ? '<w:bidi/>' : '';
@@ -175,7 +205,7 @@ function buildDocumentXml(sections, isRtl) {
   // Experience
   if (sections['[EXPERIENCE]']) {
     body += makeSectionHeading('Experience', isRtl);
-    body += textToDocxParagraphs(sections['[EXPERIENCE]'], isRtl);
+    body += buildExperienceXml(sections['[EXPERIENCE]'], isRtl);
   }
 
   // Education
@@ -196,8 +226,8 @@ function buildDocumentXml(sections, isRtl) {
     body += textToDocxParagraphs(sections['[LANGUAGES]'], isRtl);
   }
 
-  // Page size A4, margins 1.8cm = ~1021 twips
-  const sectPr = `<w:sectPr>${bidi}<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1021" w:right="1021" w:bottom="1021" w:left="1021" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>`;
+  // Page size A4, margins ~1.25cm = 720 twips (Narrow margins to fit one page)
+  const sectPr = `<w:sectPr>${bidi}<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr>`;
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"

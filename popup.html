@@ -73,13 +73,24 @@
   }
   .btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-hover); }
 
-  .screen { display: none; padding: 16px; }
+  .screen { display: none; padding: 10px 13px; }
   .screen.active { display: block; }
+
+  /* CV Options screen */
+  .cv-opts-section { margin-bottom: 14px; }
+  .cv-opts-row { display: flex; gap: 8px; margin-top: 6px; }
+  .cv-opt-btn {
+    flex: 1; padding: 10px 6px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg-card); color: var(--text-secondary);
+    cursor: pointer; font-size: 13px; transition: all 0.15s; text-align: center;
+  }
+  .cv-opt-btn:hover { border-color: var(--border-hover); background: var(--bg-hover); }
+  .cv-opt-btn.active { border-color: var(--accent); background: rgba(124,58,237,0.15); color: var(--text-primary); font-weight: 600; }
 
   /* Loading state */
   .loading-wrap {
     text-align: center;
-    padding: 60px 20px;
+    padding: 36px 20px;
   }
   .spinner {
     width: 36px; height: 36px;
@@ -679,11 +690,32 @@
 
 <!-- QUESTIONS SCREEN -->
 <div class="screen" id="screen-questions">
-  <div class="screen-title">כמה שאלות לפני שמכין קורות חיים</div>
-  <div class="screen-subtitle">התשובות יעזרו להתאים את הקורות חיים למשרה הספציפית</div>
+  <div class="screen-title">כמה שאלות לפני הניתוח</div>
+  <div class="screen-subtitle">תשובותיך ישפיעו על הציון וניתוח ההתאמה</div>
   <div id="questionsContainer"></div>
-  <button class="btn btn-primary" id="btnContinueToCV">המשך לייצור קורות חיים →</button>
-  <button class="btn btn-secondary" id="btnSkipQuestions">דלג על השאלות</button>
+  <button class="btn btn-primary" id="btnContinueToCV">המשך לניתוח ←</button>
+  <button class="btn btn-secondary" id="btnSkipQuestions">דלג — נתח ללא תשובות</button>
+</div>
+
+<!-- CV OPTIONS SCREEN -->
+<div class="screen" id="screen-cv-options">
+  <div class="screen-title" style="margin-bottom:14px">✨ התאמת קורות חיים</div>
+  <div class="cv-opts-section">
+    <div class="settings-label">🌐 שפת קורות החיים</div>
+    <div class="cv-opts-row">
+      <button class="cv-opt-btn" id="cvOptLangEn" data-lang="english">🇺🇸 English</button>
+      <button class="cv-opt-btn" id="cvOptLangHe" data-lang="hebrew">🇮🇱 עברית</button>
+    </div>
+  </div>
+  <div class="cv-opts-section">
+    <div class="settings-label">📁 פורמט הקובץ</div>
+    <div class="cv-opts-row">
+      <button class="cv-opt-btn active" id="cvOptFmtDocx" data-fmt="docx">📄 Word (.docx)</button>
+      <button class="cv-opt-btn" id="cvOptFmtPdf" data-fmt="pdf">🖨️ PDF</button>
+    </div>
+  </div>
+  <button class="btn btn-primary" id="btnStartCvGen" style="margin-top:14px;font-size:14px">✨ צור קורות חיים</button>
+  <button class="btn btn-secondary" id="btnCvOptsBack">← חזור לניתוח</button>
 </div>
 
 <!-- GENERATING SCREEN -->
@@ -702,8 +734,11 @@
 <!-- CV RESULT SCREEN -->
 <div class="screen" id="screen-cv-result">
   <div class="cv-actions">
-    <button class="btn btn-primary" id="btnDownloadDocx" style="flex:1">⬇️ הורד DOCX</button>
-    <button class="btn btn-secondary" id="btnCopyCV" style="flex:1;margin:0">📋 העתק</button>
+    <button class="btn btn-primary" id="btnDownloadDocx" style="flex:1">📄 הורד DOCX</button>
+    <button class="btn btn-secondary" id="btnDownloadPdf" style="flex:1;margin:0">🖨️ PDF</button>
+  </div>
+  <div class="cv-actions" style="margin-top:6px">
+    <button class="btn btn-secondary" id="btnCopyCV" style="flex:1;margin:0">📋 העתק טקסט</button>
   </div>
   <div class="cv-preview" id="cvPreview"></div>
   <button class="btn btn-secondary" id="btnBackToMain" style="margin-top:10px">← חזור לניתוח</button>

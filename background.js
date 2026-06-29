@@ -90,7 +90,12 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req.action === 'analyzeJob') {
-    backendPost('/api/analyze', { cvText: req.cvText, jobText: req.jobText }, req.licenseKey)
+    backendPost('/api/analyze', {
+      cvText: req.cvText,
+      jobText: req.jobText,
+      answers: req.answers || [],
+      preflight: req.preflight || false,
+    }, req.licenseKey)
       .then(data => sendResponse({ result: data.result }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));
     return true;

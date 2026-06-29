@@ -9,8 +9,33 @@ let state = {
   jobUrl: '',
   jobTitle: '',
   analysis: null,
+  questions: [],
+  answers: [],
   generatedCV: '',
+  cvIsRtl: false,
 };
+
+let cvOptions = { language: 'english', format: 'docx' };
+
+// ── Per-URL job state persistence ────────────────────────────────────────────
+function jobStateKey(url) {
+  let h = 0;
+  for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
+  return `jma_job_${Math.abs(h).toString(36)}`;
+}
+async function saveJobState(updates) {
+  if (!state.jobUrl) return;
+  const key = jobStateKey(state.jobUrl);
+  const prev = (await chrome.storage.local.get([key]))[key] || {};
+  await chrome.storage.local.set({ [key]: { ...prev, ...updates, url: state.jobUrl, ts: Date.now() } });
+}
+async function loadJobState(url) {
+  if (!url) return null;
+  const key = jobStateKey(url);
+  const d = (await chrome.storage.local.get([key]))[key];
+  if (!d || (Date.now() - d.ts) > 4 * 60 * 60 * 1000) return null;
+  return d;
+}
 
 // Screen management
 function showScreen(id) {
@@ -264,14 +289,8 @@ document.getElementById('btnTrackerBack').addEventListener('click', () => {
 });
 
 // Main screen
-document.getElementById('btnRetry').addEventListener('click', () => {
-  showScreen('main');
-  startAnalysis();
-});
-document.getElementById('btnReanalyze').addEventListener('click', () => {
-  showScreen('main');
-  startAnalysis();
-});
+document.getElementById('btnRetry').addEventListener('click', startFlow);
+document.getElementById('btnReanalyze').addEventListener('click', startFlow);
 document.getElementById('btnGoSettings').addEventListener('click', () => {
   loadSettings();
   showScreen('settings');
@@ -287,12 +306,12 @@ function showMainError(msg) {
 
 let _loadingHintTimer = null;
 
-function showMainLoading() {
+function showMainLoading(text) {
   document.getElementById('mainLoading').style.display = 'block';
   document.getElementById('mainResult').style.display = 'none';
   document.getElementById('mainError').style.display = 'none';
   document.getElementById('loadingHint').style.display = 'none';
-  document.getElementById('loadingText').textContent = 'מנתח את דף המשרה...';
+  document.getElementById('loadingText').textContent = text || 'מנתח את דף המשרה...';
   clearTimeout(_loadingHintTimer);
   _loadingHintTimer = setTimeout(() => {
     document.getElementById('loadingHint').style.display = 'block';
@@ -359,22 +378,13 @@ function showMainResult(analysis) {
   btnCV.style.display = score >= 40 ? 'block' : 'none';
 }
 
-async function startAnalysis() {
-  showMainLoading();
-  console.log('[JMA:analyze] startAnalysis called');
+async function startFlow() {
+  showScreen('main');
+  showMainLoading('מאתר שאלות רלוונטיות למשרה...');
 
   const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
-  const keyMasked = stored.licenseKey ? stored.licenseKey.slice(0,4)+'****' : '(none)';
-  console.log(`[JMA:analyze] licenseKey=${keyMasked} cvText_len=${(stored.cvText||'').length}`);
-  if (!stored.licenseKey) {
-    showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.');
-    return;
-  }
-  if (!stored.cvText) {
-    showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ בפינה כדי להוסיף.');
-    return;
-  }
-
+  if (!stored.licenseKey) { showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.'); return; }
+  if (!stored.cvText) { showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ בפינה כדי להוסיף.'); return; }
   state.licenseKey = stored.licenseKey;
   state.cvText = stored.cvText;
 
@@ -382,19 +392,14 @@ async function startAnalysis() {
   let tabResult;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    // Try sending message to existing content script
     try {
       tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
-    } catch (e) {
-      // Content script not injected (tab was open before extension loaded) — inject now
+    } catch {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
       await new Promise(r => setTimeout(r, 300));
       tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
     }
-  } catch (e) {
-    showMainError('לא הצלחנו לקרוא את הדף הנוכחי. נסי לרענן (F5) ואז לפתוח שוב.');
-    return;
-  }
+  } catch { showMainError('לא הצלחנו לקרוא את הדף הנוכחי. נסי לרענן (F5) ואז לפתוח שוב.'); return; }
 
   if (!tabResult || !tabResult.text || tabResult.text.length < 100) {
     showMainError('לא זוהתה משרה בעמוד זה. פתחי את דף המשרה הספציפי ונסי שוב.');
@@ -405,45 +410,53 @@ async function startAnalysis() {
   state.jobLanguage = tabResult.language || 'english';
   state.jobPlatform = tabResult.platform || '';
   state.jobUrl = tabResult.url || '';
+  await saveJobState({ jobText: state.jobText, jobLanguage: state.jobLanguage, jobPlatform: state.jobPlatform });
 
-  console.log(`[JMA:analyze] jobText_len=${state.jobText.length} platform=${state.jobPlatform} lang=${state.jobLanguage}`);
+  console.log(`[JMA:analyze] startFlow jobText_len=${state.jobText.length} platform=${state.jobPlatform}`);
 
-  // Call API
+  // Preflight: get questions only (no score, no usage count)
+  const prefResp = await chrome.runtime.sendMessage({
+    action: 'analyzeJob',
+    licenseKey: state.licenseKey,
+    cvText: state.cvText,
+    jobText: state.jobText,
+    preflight: true,
+    answers: [],
+  });
+
+  const questions = prefResp?.result?.questions || [];
+  state.questions = questions;
+  await saveJobState({ questions });
+  showQuestionsScreen(questions);
+}
+
+async function runFullAnalysis(answers) {
+  state.answers = answers;
+  await saveJobState({ answers });
+  showScreen('main');
+  showMainLoading('מנתח התאמה בין קורות החיים למשרה...');
+
+  console.log(`[JMA:analyze] runFullAnalysis answers=${answers.length}`);
   const response = await chrome.runtime.sendMessage({
     action: 'analyzeJob',
     licenseKey: state.licenseKey,
     cvText: state.cvText,
     jobText: state.jobText,
+    preflight: false,
+    answers,
   });
 
   console.log(`[JMA:analyze] response error=${response?.error} result_keys=${response?.result ? Object.keys(response.result).join(',') : 'none'}`);
-  if (response.error) {
-    showMainError(response.error);
-    return;
-  }
+  if (response.error) { showMainError(response.error); return; }
 
   state.analysis = response.result;
-  // Persist analysis so it survives accidental popup close
-  chrome.storage.local.set({
-    lastAnalysis: {
-      url: state.jobUrl,
-      analysis: response.result,
-      jobText: state.jobText,
-      jobLanguage: state.jobLanguage,
-      jobPlatform: state.jobPlatform,
-      ts: Date.now(),
-    }
-  });
+  await saveJobState({ analysis: response.result });
   showMainResult(response.result);
 }
 
 // Generate CV flow
 document.getElementById('btnGenerateCV').addEventListener('click', () => {
-  if (state.analysis && state.analysis.questions && state.analysis.questions.length > 0) {
-    showQuestionsScreen(state.analysis.questions);
-  } else {
-    startCVGeneration([]);
-  }
+  showCVOptionsScreen();
 });
 
 // Questions screen
@@ -484,7 +497,7 @@ function showQuestionsScreen(questions) {
 }
 
 function collectAnswers() {
-  const questions = state.analysis?.questions || [];
+  const questions = state.questions || [];
   const answers = [];
   questions.forEach((q, idx) => {
     const ta = document.querySelector(`.question-textarea[data-idx="${idx}"]`);
@@ -496,19 +509,59 @@ function collectAnswers() {
 
 document.getElementById('btnContinueToCV').addEventListener('click', () => {
   const answers = collectAnswers();
-  startCVGeneration(answers);
+  runFullAnalysis(answers);
 });
 
 document.getElementById('btnSkipQuestions').addEventListener('click', () => {
-  startCVGeneration([]);
+  runFullAnalysis([]);
+});
+
+// CV Options screen
+function showCVOptionsScreen() {
+  const jobLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
+  cvOptions.language = jobLang;
+  cvOptions.format = 'docx';
+  document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => {
+    b.classList.toggle('active', b.dataset.lang === jobLang);
+  });
+  document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(b => {
+    b.classList.toggle('active', b.dataset.fmt === 'docx');
+  });
+  showScreen('cv-options');
+}
+
+document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    cvOptions.language = btn.dataset.lang;
+    document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    cvOptions.format = btn.dataset.fmt;
+    document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+document.getElementById('btnStartCvGen').addEventListener('click', () => {
+  startCVGeneration(state.answers, cvOptions.language, cvOptions.format);
+});
+
+document.getElementById('btnCvOptsBack').addEventListener('click', () => {
+  showScreen('main');
 });
 
 // CV Generation
-async function startCVGeneration(answers) {
+async function startCVGeneration(answers, language, format) {
+  language = language || state.analysis?.jobLanguage || state.jobLanguage || 'english';
+  format = format || 'docx';
+  state.cvIsRtl = language === 'hebrew';
   showScreen('generating');
   setProgress(0, 'מתאים קורות חיים למשרה...', 'Pass 1 מ-2');
 
-  // Small delay for UX
   setTimeout(() => setProgress(25, 'מתאים קורות חיים למשרה...', 'שולח ל-AI...'), 300);
 
   const response = await chrome.runtime.sendMessage({
@@ -516,7 +569,7 @@ async function startCVGeneration(answers) {
     licenseKey: state.licenseKey,
     cvText: state.cvText,
     jobText: state.jobText,
-    jobLanguage: state.analysis?.jobLanguage || state.jobLanguage,
+    jobLanguage: language,
     answers,
   });
 
@@ -531,6 +584,7 @@ async function startCVGeneration(answers) {
   setProgress(100, 'הושלם!', '');
 
   state.generatedCV = response.cvText;
+  await saveJobState({ generatedCV: response.cvText, cvLanguage: language });
 
   await new Promise(r => setTimeout(r, 400));
 
@@ -564,8 +618,12 @@ function showCVResult(cvText) {
   showScreen('cv-result');
 }
 
+document.getElementById('btnDownloadPdf').addEventListener('click', () => {
+  downloadAsPdf(state.generatedCV, state.cvIsRtl);
+});
+
 document.getElementById('btnDownloadDocx').addEventListener('click', async () => {
-  const isRtl = (state.analysis?.jobLanguage || state.jobLanguage) === 'hebrew';
+  const isRtl = state.cvIsRtl;
   const jobTitle = (state.analysis?.jobTitle || 'CV').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').trim();
   // Extract candidate name from CV text for filename
   const stored = await chrome.storage.local.get(['cvName']);
@@ -575,6 +633,53 @@ document.getElementById('btnDownloadDocx').addEventListener('click', async () =>
   console.log('[JobMatchAI] CV text being converted to DOCX:', state.generatedCV.substring(0, 500));
   downloadDocx(state.generatedCV, filename, isRtl);
 });
+
+function buildCvPrintHtml(cvText, isRtl) {
+  const dir = isRtl ? 'rtl' : 'ltr';
+  const ta = isRtl ? 'right' : 'left';
+  const secs = parseCVSections(cvText);
+  function ren(txt) {
+    if (!txt) return '';
+    return txt.split('\n').map(l => {
+      l = l.trim(); if (!l) return '';
+      const isBul = l.startsWith('•') || l.startsWith('- ');
+      const cl = isBul ? l.replace(/^[•-]\s*/, '') : l;
+      const bd = cl.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      return isBul ? `<li>${bd}</li>` : `<p>${bd}</p>`;
+    }).join('');
+  }
+  const secHtml = [
+    secs['[PROFILE]'] ? `<h2>Profile</h2>${ren(secs['[PROFILE]'])}` : '',
+    secs['[EXPERIENCE]'] ? `<h2>Experience</h2>${ren(secs['[EXPERIENCE]'])}` : '',
+    secs['[EDUCATION]'] ? `<h2>Education</h2>${ren(secs['[EDUCATION]'])}` : '',
+    secs['[SKILLS]'] ? `<h2>Skills</h2>${ren(secs['[SKILLS]'])}` : '',
+    secs['[LANGUAGES]'] ? `<h2>Languages</h2>${ren(secs['[LANGUAGES]'])}` : '',
+  ].join('');
+  return `<!DOCTYPE html><html dir="${dir}"><head><meta charset="UTF-8"><title>CV</title>
+<style>
+  @media print { @page { margin: 1.5cm; } body { margin: 0; } }
+  body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1f2937; direction: ${dir}; text-align: ${ta}; margin: 1.5cm; }
+  h1 { text-align: center; font-size: 18pt; margin: 0 0 4px; }
+  .hl { text-align: center; color: #7c3aed; font-size: 12pt; margin: 0 0 3px; }
+  .ct { text-align: center; color: #6b7280; font-size: 10pt; margin: 0 0 14px; }
+  h2 { font-size: 11pt; color: #7c3aed; border-bottom: 1px solid #7c3aed; margin: 10px 0 3px; padding-bottom: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+  p { margin: 2px 0; line-height: 1.35; }
+  li { margin: 1px 0; line-height: 1.35; }
+  ul, ol { margin: 2px 0; padding-${isRtl ? 'right' : 'left'}: 18px; }
+</style></head><body>
+${secs['[NAME]'] ? `<h1>${secs['[NAME]']}</h1>` : ''}
+${secs['[HEADLINE]'] ? `<p class="hl">${secs['[HEADLINE]']}</p>` : ''}
+${secs['[CONTACT]'] ? `<p class="ct">${secs['[CONTACT]'].replace(/\n/g, ' | ')}</p>` : ''}
+${secHtml}
+<script>window.onload=()=>{ setTimeout(()=>window.print(),300); };<\/script>
+</body></html>`;
+}
+
+function downloadAsPdf(cvText, isRtl) {
+  const html = buildCvPrintHtml(cvText, isRtl || false);
+  const encoded = encodeURIComponent(html);
+  chrome.tabs.create({ url: `data:text/html;charset=utf-8,${encoded}` });
+}
 
 document.getElementById('btnCopyCV').addEventListener('click', async () => {
   await navigator.clipboard.writeText(state.generatedCV);
@@ -740,10 +845,7 @@ async function showReadyScreen() {
   showScreen('ready');
 }
 
-document.getElementById('btnStartAnalysis').addEventListener('click', () => {
-  showScreen('main');
-  startAnalysis();
-});
+document.getElementById('btnStartAnalysis').addEventListener('click', startFlow);
 
 document.getElementById('btnRankPageJobs').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -824,29 +926,42 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
 // ── Init ───────────────────────────────────────────────────────────────────────
 (async () => {
   const licensed = await checkLicense();
-  if (!licensed) {
-    showScreen('license');
-    return;
-  }
+  if (!licensed) { showScreen('license'); return; }
 
-  // Restore last analysis if popup was closed mid-session (same URL, < 30 min)
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const saved = await chrome.storage.local.get(['lastAnalysis', 'licenseKey', 'cvText']);
-    const last = saved.lastAnalysis;
-    if (last && last.url === tab.url && (Date.now() - last.ts) < 30 * 60 * 1000) {
-      state.licenseKey = saved.licenseKey || '';
-      state.cvText = saved.cvText || '';
-      state.analysis = last.analysis;
-      state.jobText = last.jobText;
-      state.jobLanguage = last.jobLanguage;
-      state.jobPlatform = last.jobPlatform;
-      state.jobUrl = last.url;
-      showScreen('main');
-      showMainResult(last.analysis);
-      return;
+    const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
+    const saved = await loadJobState(tab?.url);
+
+    if (saved) {
+      state.licenseKey = stored.licenseKey || '';
+      state.cvText = stored.cvText || '';
+      state.jobText = saved.jobText || '';
+      state.jobLanguage = saved.jobLanguage || 'english';
+      state.jobPlatform = saved.jobPlatform || '';
+      state.jobUrl = saved.url || '';
+      state.answers = saved.answers || [];
+      state.questions = saved.questions || [];
+
+      if (saved.generatedCV) {
+        state.generatedCV = saved.generatedCV;
+        state.analysis = saved.analysis;
+        state.cvIsRtl = (saved.cvLanguage || saved.jobLanguage || 'english') === 'hebrew';
+        showCVResult(saved.generatedCV);
+        return;
+      }
+      if (saved.analysis) {
+        state.analysis = saved.analysis;
+        showScreen('main');
+        showMainResult(saved.analysis);
+        return;
+      }
+      if (saved.questions && saved.questions.length > 0) {
+        showQuestionsScreen(saved.questions);
+        return;
+      }
     }
-  } catch {}
+  } catch (e) { console.log('[JMA:init] restore error:', e); }
 
   await showReadyScreen();
 })();

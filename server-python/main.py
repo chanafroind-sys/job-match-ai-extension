@@ -245,32 +245,30 @@ def parse_json_response(text: str) -> dict:
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
+QUESTIONS_PROMPT = """You are a recruiter. Based on the CV and job description, identify up to 3 skills that are either unclear or missing in the CV but important for this specific role.
+Return JSON only — no markdown, no extra text:
+{{"questions":[{{"id":"q1","skill":"<skill name in English>","question":"<short question in the job's language>","why":"<why it matters for this role in Hebrew, max 15 words>","heExplanation":"<plain Hebrew explanation of what this skill means in practice, max 20 words>"}}]}}
+=== CV ===
+{cv_text}
+=== JOB DESCRIPTION ===
+{job_text}"""
+
 ANALYZE_PROMPT = """You are a senior recruitment expert. Analyze the fit between the candidate's CV and the job posting.
+
 Rules:
-- Score 0-100 based on how well the real experience matches the requirements
-- Identify missing mandatory requirements (hard_gaps)
-- Identify missing "nice to have" requirements — these will be asked of the candidate (questions)
-- Questions: only about things that could change the hiring decision, maximum 3 questions
-- Detect the language of the job posting
-Return JSON only (no markdown, no explanations):
+- Score 0-100 based on how well real experience matches the requirements (be honest, do not inflate)
+- Write summary, strengths, and hard_gaps in HEBREW. Keep skill names and technical terms in English.
+- Return JSON only (no markdown, no explanations):
 {{
   "score": <0-100>,
-  "jobTitle": "<job title>",
+  "jobTitle": "<job title from posting>",
   "company": "<company name>",
   "jobLanguage": "hebrew" | "english",
-  "summary": "<2 sentences: why this is or isn't a good fit>",
-  "strengths": ["<short strength>", ...],
-  "hard_gaps": ["<missing mandatory requirement>", ...],
-  "questions": [
-    {{
-      "id": "q1",
-      "skill": "<skill name in English>",
-      "question": "<short question in the job's language>",
-      "why": "<why this matters for the role>",
-      "heExplanation": "<1 sentence in plain Hebrew explaining what this skill is in practical terms, max 20 words — helps non-native English speakers recognize if they have experience with it>"
-    }}
-  ]
+  "summary": "<2 sentences in Hebrew explaining why this is or isn't a good fit>",
+  "strengths": ["<Hebrew strength, keep skill names in English>", ...],
+  "hard_gaps": ["<missing requirement in Hebrew, keep skill name in English>", ...]
 }}
+{answers_section}
 === CV ===
 {cv_text}
 === JOB DESCRIPTION ===
@@ -376,6 +374,8 @@ class AnalyzeRequest(BaseModel):
     licenseKey: Optional[str] = None
     cvText: str
     jobText: str
+    answers: list = []
+    preflight: bool = False
 
 class GenerateCVRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -527,10 +527,33 @@ async def verify_license(body: VerifyLicenseRequest):
 @app.post("/api/analyze")
 async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(None)):
     license_key = x_license_key or body.licenseKey or ""
-    print(f"[JMA:analyze] cv_len={len(body.cvText)} job_len={len(body.jobText)}")
+    print(f"[JMA:analyze] cv_len={len(body.cvText)} job_len={len(body.jobText)} preflight={body.preflight} answers={len(body.answers)}")
+
+    if body.preflight:
+        # Lightweight: return questions only, verify license but don't count usage
+        await verify_gumroad_license(license_key)
+        prompt = QUESTIONS_PROMPT.format(cv_text=body.cvText[:600], job_text=body.jobText[:1500])
+        try:
+            raw = await call_claude(prompt, max_tokens=400)
+            result = parse_json_response(raw)
+            return {"result": result, "preflight": True}
+        except Exception as e:
+            print(f"[JMA:analyze] preflight error: {e}")
+            return {"result": {"questions": []}, "preflight": True}
+
     await require_license(license_key)
 
-    prompt = ANALYZE_PROMPT.format(cv_text=body.cvText, job_text=body.jobText)
+    answers_text = "\n".join(
+        f"- {a.get('skill', '')}: {a.get('answer', '')}"
+        for a in (body.answers or [])
+        if a.get('answer') and a.get('answer') not in ('לא ענה', '')
+    )
+    answers_section = (
+        f"=== CANDIDATE'S ANSWERS TO SCREENING QUESTIONS ===\n{answers_text}\n"
+        if answers_text else ""
+    )
+
+    prompt = ANALYZE_PROMPT.format(cv_text=body.cvText, job_text=body.jobText, answers_section=answers_section)
 
     last_error: Exception | None = None
     for attempt in range(3):
