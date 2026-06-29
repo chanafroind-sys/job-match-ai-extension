@@ -425,21 +425,21 @@ async function startFlow() {
   });
 
   console.log('[JMA:preflight] resp=', JSON.stringify(prefResp));
-  if (prefResp?.error) {
-    console.log('[JMA:preflight] error, skipping to full analysis');
-    await runFullAnalysis([]);
-    return;
-  }
-  const questions = prefResp?.result?.questions || [];
-  console.log('[JMA:preflight] questions count=', questions.length);
-  state.questions = questions;
-  await saveJobState({ questions });
+  const newQuestions = (!prefResp?.error && prefResp?.result?.questions) || [];
+  console.log('[JMA:preflight] questions count=', newQuestions.length);
 
-  if (questions.length === 0) {
+  if (newQuestions.length > 0) {
+    // Fresh questions from preflight — save and show
+    state.questions = newQuestions;
+    await saveJobState({ questions: newQuestions });
+    showQuestionsScreen(newQuestions);
+  } else if (state.questions && state.questions.length > 0) {
+    // Preflight returned empty but we have saved questions from this session — reuse them
+    showQuestionsScreen(state.questions, state.answers || []);
+  } else {
+    // Truly no questions — go straight to full analysis
     await runFullAnalysis([]);
-    return;
   }
-  showQuestionsScreen(questions);
 }
 
 async function runFullAnalysis(answers) {
@@ -543,8 +543,7 @@ document.getElementById('btnSkipQuestions').addEventListener('click', () => {
 
 // CV Options screen
 function showCVOptionsScreen() {
-  const jobLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
-  cvOptions.language = jobLang;
+  cvOptions.language = 'english';
   cvOptions.format = 'docx';
   document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => {
     b.classList.toggle('active', b.dataset.lang === jobLang);
