@@ -241,12 +241,12 @@ function buildDocumentXml(sections, isRtl) {
     body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 30 });
   }
 
-  // Contact
+  // Contact — use makeRichRuns so [LINK:...] tokens become real hyperlinks
   if (sections['[CONTACT]']) {
     const lines = sections['[CONTACT]'].split('\n').filter(l => l.trim());
-    const contactText = lines.join('  |  ');
-    const run = makeRun(contactText, { size: 20, color: '8b949e' });
-    body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 80 });
+    const sepRun = makeRun('  |  ', { size: 20, color: '8b949e' });
+    const contactRuns = lines.map((l, i) => (i > 0 ? sepRun : '') + makeRichRuns(l, { size: 20, color: '8b949e' })).join('');
+    body += makeParagraph(contactRuns, { align: 'center', isRtl, spacingAfter: 80 });
   }
 
   const labels = isRtl

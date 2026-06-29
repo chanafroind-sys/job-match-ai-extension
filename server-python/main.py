@@ -369,7 +369,9 @@ CORE TECH & HIGH-VALUE METRICS — never omit these:
 - These high-value signals must never be buried or cut
 
 BOLD FORMATTING FOR RECRUITER SCANNING:
-- Use **double asterisks** around 3–6 key terms per section
+- Use **double asterisks** around 3–6 key terms per section — this applies to EVERY section including [PROFILE]
+- In [PROFILE]: bold 2–4 role-relevant technologies or measurable skills (e.g. **Python**, **FastAPI**, **95% test coverage**)
+- In [EXPERIENCE] bullets: bold the most impactful technology or metric per bullet
 - Bold: specific technologies, measurable achievements, and role-critical skills
 - Do NOT bold generic words (e.g. "team player", "motivated", "experience")
 
@@ -670,7 +672,27 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     cv_final = inject_tracking_links(cv_final, app_id)
 
     increment_usage(license_key)
-    return {"cvText": cv_final}
+    return {"cvText": cv_final, "appId": app_id}
+
+
+@app.get("/api/v1/clicks")
+async def get_clicks(app_ids: str = ""):
+    """Return click events for the given comma-separated app_ids."""
+    ids = {i.strip() for i in app_ids.split(",") if i.strip()}
+    try:
+        all_clicks: list = json.loads(CLICKS_FILE.read_text()) if CLICKS_FILE.exists() else []
+    except (json.JSONDecodeError, OSError):
+        all_clicks = []
+    result: dict = {}
+    for c in all_clicks:
+        aid = c.get("app_id", "")
+        if aid in ids:
+            result.setdefault(aid, []).append({
+                "target": c.get("target"),
+                "url": c.get("url"),
+                "ts": c.get("ts"),
+            })
+    return {"clicks": result}
 
 
 @app.get("/api/v1/track")

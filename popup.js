@@ -650,6 +650,7 @@ async function startCVGeneration(answers, language, format) {
     cvGenerated: true,
     cvFilename: `CV_${(state.analysis?.jobTitle || 'job').replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`,
     status: 'טרם טופל',
+    appId: response.appId || null,
   };
   await saveJob(record);
 
@@ -725,7 +726,7 @@ function buildCvPrintHtml(cvText, isRtl) {
 </style></head><body>
 ${secs['[NAME]'] ? `<h1>${secs['[NAME]']}</h1>` : ''}
 ${secs['[HEADLINE]'] ? `<p class="hl">${secs['[HEADLINE]']}</p>` : ''}
-${secs['[CONTACT]'] ? `<p class="ct">${secs['[CONTACT]'].replace(/\n/g, ' | ')}</p>` : ''}
+${secs['[CONTACT]'] ? `<p class="ct">${secs['[CONTACT]'].split('\n').filter(l=>l.trim()).map(renderInline).join(' | ')}</p>` : ''}
 ${secHtml}
 <script>window.onload=()=>{ setTimeout(()=>window.print(),300); };<\/script>
 </body></html>`;
@@ -764,11 +765,38 @@ async function showTrackerScreen() {
     return;
   }
 
+  // Fetch link click data for all jobs that have an appId
+  const appIds = jobs.map(j => j.appId).filter(Boolean);
+  let clicksMap = {};
+  if (appIds.length > 0) {
+    try {
+      const resp = await fetch(`https://job-match-ai-extension.onrender.com/api/v1/clicks?app_ids=${appIds.join(',')}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        clicksMap = data.clicks || {};
+      }
+    } catch { /* ignore — show dash if backend unreachable */ }
+  }
+
   const rows = jobs.map(j => {
     const score = j.score || 0;
     const scoreClass = score >= 75 ? 'score-green' : score >= 55 ? 'score-yellow' : score >= 35 ? 'score-orange' : 'score-red';
     const date = new Date(j.date).toLocaleDateString('he-IL');
     const status = j.status || 'טרם טופל';
+
+    // Link-click cell
+    let linkCell = '<span class="no-data">-</span>';
+    if (j.appId) {
+      const clicks = clicksMap[j.appId] || [];
+      if (clicks.length > 0) {
+        const targets = [...new Set(clicks.map(c => c.target))];
+        const label = targets.map(t => t === 'github' ? 'GitHub' : t === 'linkedin' ? 'LinkedIn' : 'Portfolio').join(', ');
+        linkCell = `<span title="${label}" style="color:#16a34a;font-weight:600;cursor:default">✅ ${label}</span>`;
+      } else {
+        linkCell = `<span title="הלינקים בקוח לא נפתחו עדיין" style="color:#9ca3af;cursor:default">⏳</span>`;
+      }
+    }
+
     return `<tr>
       <td>${date}</td>
       <td style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.jobTitle || '-'}</td>
@@ -776,6 +804,7 @@ async function showTrackerScreen() {
       <td><span class="platform-tag">${j.platform || '-'}</span></td>
       <td class="score-cell ${scoreClass}">${score}%</td>
       <td>${j.cvGenerated ? '✅' : '❌'}</td>
+      <td>${linkCell}</td>
       <td>
         <select class="status-select" data-id="${j.id}">
           <option ${status === 'טרם טופל' ? 'selected' : ''}>טרם טופל</option>
@@ -802,6 +831,7 @@ async function showTrackerScreen() {
             <th>פלטפורמה</th>
             <th>ציון</th>
             <th>CV</th>
+            <th>לינקים</th>
             <th>סטטוס</th>
             <th></th>
           </tr>
