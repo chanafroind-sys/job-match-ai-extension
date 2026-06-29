@@ -662,14 +662,20 @@ function buildCvPrintHtml(cvText, isRtl) {
   const dir = isRtl ? 'rtl' : 'ltr';
   const ta = isRtl ? 'right' : 'left';
   const secs = parseCVSections(cvText);
+  function renderInline(text) {
+    return text
+      .replace(/\[LINK:([^\|]*)\|([^\]]*)\]/g, (_, display, url) =>
+        `<a href="${url}" style="color:#7c3aed">${display}</a>`)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
   function ren(txt) {
     if (!txt) return '';
     return txt.split('\n').map(l => {
       l = l.trim(); if (!l) return '';
       const isBul = l.startsWith('•') || l.startsWith('- ');
-      const cl = isBul ? l.replace(/^[•-]\s*/, '') : l;
-      const bd = cl.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      return isBul ? `<li>${bd}</li>` : `<p>${bd}</p>`;
+      const cl = isBul ? l.replace(/^[•\-]\s*/, '') : l;
+      const html = renderInline(cl);
+      return isBul ? `<li>${html}</li>` : `<p>${html}</p>`;
     }).join('');
   }
   const secHtml = [

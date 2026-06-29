@@ -71,20 +71,42 @@ def _quick_filter(jobs: list, cv_text: str) -> list:
 
 # ── Link tracking ─────────────────────────────────────────────────────────────
 
-_TRACK_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:github\.com|linkedin\.com)/[^\s\)\]\"\'>]+'
+# Single-pass regex — three alternatives, evaluated in order:
+#   group(1)+group(2) : markdown link  [display text](https://url)
+#   group(3)          : raw URL with protocol  https://... or http://...
+#   group(4)          : bare domain/path without protocol  github.com/user, mysite.io/portfolio, etc.
+_LINK_RE = re.compile(
+    r'\[([^\]]+)\]\((https?://[^\)]+)\)'                                          # markdown link
+    r'|(https?://[^\s\)\]\"\'>]+)'                                                # raw URL w/ protocol
+    r'|(?<![/\w@.])'                                                              # bare URL — not preceded by URL chars
+      r'([a-zA-Z0-9][a-zA-Z0-9\-]{2,}\.(?:com|io|dev|me|net|org|co|ai|app|tech)'
+      r'/[^\s\)\]\"\'>]+)'
 )
 
 def inject_tracking_links(cv_text: str, app_id: str) -> str:
-    """Replace GitHub/LinkedIn URLs with tracking redirect URLs — only when they exist."""
-    def replace(m: re.Match) -> str:
-        original = m.group(0)
-        target = "github" if "github.com" in original else "linkedin"
-        display = original.replace("https://", "").replace("http://", "").rstrip("/")
-        enc = urllib.parse.quote(original, safe="")
+    """Replace all URLs (any domain, with or without protocol, markdown or raw) with tracking links."""
+    def _make(url: str, display: str) -> str:
+        url = re.sub(r'[.,;:!?]+$', '', url)   # strip trailing punctuation
+        display = re.sub(r'[.,;:!?]+$', '', display)
+        full_url = url if url.startswith("http") else f"https://{url}"
+        target = ("github" if "github.com" in full_url
+                  else "linkedin" if "linkedin.com" in full_url
+                  else "portfolio")
+        enc = urllib.parse.quote(full_url, safe="")
         tracking = f"{BACKEND_URL}/api/v1/track?app_id={app_id}&target={target}&url={enc}"
         return f"[LINK:{display}|{tracking}]"
-    return _TRACK_PATTERN.sub(replace, cv_text)
+
+    def _replace(m: re.Match) -> str:
+        if m.group(1):                          # markdown [text](url)
+            return _make(m.group(2), m.group(1))
+        if m.group(3):                          # raw URL with protocol
+            url = m.group(3)
+            display = re.sub(r'^https?://', '', url).rstrip('/')
+            return _make(url, display)
+        url = m.group(4)                        # bare domain/path
+        return _make(url, url.rstrip('/'))
+
+    return _LINK_RE.sub(_replace, cv_text)
 
 anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
