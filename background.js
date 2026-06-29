@@ -34,7 +34,7 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 1200
     console.log(`[JMA:fetch] ${endpoint} attempt ${attempt}/${maxAttempts}`);
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 25000);
+      const timeout = setTimeout(() => controller.abort(), 60000);
       res = await fetch(`${BACKEND_URL}${endpoint}`, { ...options, signal: controller.signal });
       clearTimeout(timeout);
       text = await res.text();
@@ -48,7 +48,7 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 1200
     }
 
     const isHtml = text.trimStart().startsWith('<') || text.includes('<html');
-    if (isHtml || res.status === 502 || res.status === 503 || res.status === 504) {
+    if (isHtml || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504) {
       console.log(`[JMA:fetch] ${endpoint} server sleeping (status=${res.status} isHtml=${isHtml}), retrying...`);
       if (attempt === maxAttempts) {
         throw new Error('לא הצלחנו להגיע לשירות. פתחי https://job-match-ai-extension.onrender.com/health בדפדפן כדי להעיר אותו, ונסי שוב.');
