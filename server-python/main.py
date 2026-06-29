@@ -259,9 +259,10 @@ def parse_json_response(text: str) -> dict:
 QUESTIONS_PROMPT = """You are a recruiter screening a candidate. Read the CV and job description, then identify 1-3 skills or experiences that are either missing from the CV or mentioned too vaguely to evaluate — and that are clearly required or strongly preferred by this job.
 
 IMPORTANT: Always return at least 1 question. If the CV perfectly matches the job, still pick the most important skill to verify.
+ALL text fields (question, why, heExplanation) MUST be written in Hebrew (עברית). Keep only skill names in English.
 
 Return JSON only — no markdown, no explanation, no text before or after:
-{{"questions":[{{"id":"q1","skill":"<skill name in English>","question":"<short clarifying question in the job's language>","why":"<why it matters for this role in Hebrew, max 15 words>","heExplanation":"<plain Hebrew explanation of what this skill means in practice, max 20 words>"}}]}}
+{{"questions":[{{"id":"q1","skill":"<skill name in English>","question":"<שאלת הבהרה קצרה בעברית>","why":"<למה זה חשוב לתפקיד זה בעברית, עד 15 מילים>","heExplanation":"<הסבר פשוט בעברית מה המיומנות הזו אומרת בפועל, עד 20 מילים>"}}]}}
 === CV ===
 {cv_text}
 === JOB DESCRIPTION ===
@@ -295,11 +296,12 @@ _CV_LANG_RULE_EN = """LANGUAGE RULE — 100% ENGLISH ONLY:
 - Do not mix any Hebrew words or characters anywhere in the document"""
 
 _CV_LANG_RULE_HE = """LANGUAGE RULE — HEBREW OUTPUT:
-- Write the entire CV body in Hebrew (עברית) — this is mandatory
-- Keep the candidate's name in its original form — do NOT translate names
+- Write the entire CV in Hebrew (עברית) — this is mandatory
+- The candidate's name: if it is a Hebrew name write it in Hebrew; if it is a Latin/English name keep it as-is
 - Keep technical terms in English: programming languages (Python, Java, C++), frameworks (React, FastAPI, Node.js), tools (Docker, Git, AWS), company names, product names, software names
-- Translate job titles and section content to Hebrew (e.g. "Software Engineer" → "מהנדס תוכנה")
-- Write in natural, professional Hebrew — not a word-for-word translation"""
+- Translate job titles and all section content to Hebrew (e.g. "Software Engineer" → "מהנדס תוכנה")
+- Write in natural, professional Hebrew — not a word-for-word translation
+- The document direction is right-to-left"""
 
 _CV_LANG_CHECK_EN = "1. LANGUAGE: Is the entire CV in 100% English? If any Hebrew words or characters appear anywhere — translate or remove them. The candidate's name must remain in English exactly as written."
 

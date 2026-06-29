@@ -249,33 +249,37 @@ function buildDocumentXml(sections, isRtl) {
     body += makeParagraph(run, { align: 'center', isRtl, spacingAfter: 80 });
   }
 
+  const labels = isRtl
+    ? { profile: 'פרופיל', experience: 'ניסיון', education: 'השכלה', skills: 'כישורים', languages: 'שפות' }
+    : { profile: 'Profile', experience: 'Experience', education: 'Education', skills: 'Skills', languages: 'Languages' };
+
   // Profile
   if (sections['[PROFILE]']) {
-    body += makeSectionHeading('Profile', isRtl);
+    body += makeSectionHeading(labels.profile, isRtl);
     body += textToDocxParagraphs(sections['[PROFILE]'], isRtl);
   }
 
   // Experience
   if (sections['[EXPERIENCE]']) {
-    body += makeSectionHeading('Experience', isRtl);
+    body += makeSectionHeading(labels.experience, isRtl);
     body += buildExperienceXml(sections['[EXPERIENCE]'], isRtl);
   }
 
   // Education
   if (sections['[EDUCATION]']) {
-    body += makeSectionHeading('Education', isRtl);
+    body += makeSectionHeading(labels.education, isRtl);
     body += buildEducationXml(sections['[EDUCATION]'], isRtl);
   }
 
   // Skills
   if (sections['[SKILLS]']) {
-    body += makeSectionHeading('Skills', isRtl);
+    body += makeSectionHeading(labels.skills, isRtl);
     body += textToDocxParagraphs(sections['[SKILLS]'], isRtl);
   }
 
   // Languages (always last)
   if (sections['[LANGUAGES]']) {
-    body += makeSectionHeading('Languages', isRtl);
+    body += makeSectionHeading(labels.languages, isRtl);
     body += textToDocxParagraphs(sections['[LANGUAGES]'], isRtl);
   }
 
