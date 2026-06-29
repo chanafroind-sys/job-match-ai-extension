@@ -424,9 +424,21 @@ async function startFlow() {
     answers: [],
   });
 
+  console.log('[JMA:preflight] resp=', JSON.stringify(prefResp));
+  if (prefResp?.error) {
+    console.log('[JMA:preflight] error, skipping to full analysis');
+    await runFullAnalysis([]);
+    return;
+  }
   const questions = prefResp?.result?.questions || [];
+  console.log('[JMA:preflight] questions count=', questions.length);
   state.questions = questions;
   await saveJobState({ questions });
+
+  if (questions.length === 0) {
+    await runFullAnalysis([]);
+    return;
+  }
   showQuestionsScreen(questions);
 }
 
