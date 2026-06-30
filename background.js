@@ -39,7 +39,7 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 1200
     console.log(`[JMA:fetch] ${endpoint} attempt ${attempt}/${maxAttempts}`);
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
+      const timeout = setTimeout(() => controller.abort(), 90000);
       res = await fetch(`${BACKEND_URL}${endpoint}`, { ...options, signal: controller.signal });
       clearTimeout(timeout);
       text = await res.text();

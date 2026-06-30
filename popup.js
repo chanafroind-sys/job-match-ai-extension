@@ -498,15 +498,24 @@ async function startFlow() {
   const wakeTimer = setTimeout(() => showMainLoading('השרת מתעורר, זה יכול לקחת עד דקה...'), 15000);
 
   // Preflight: get questions only (no score, no usage count)
-  const prefResp = await chrome.runtime.sendMessage({
+  const preflightMsg = {
     action: 'analyzeJob',
     licenseKey: state.licenseKey,
     cvText: state.cvText,
     jobText: state.jobText,
     preflight: true,
     answers: [],
-  });
+  };
+  let prefResp = await chrome.runtime.sendMessage(preflightMsg);
   clearTimeout(wakeTimer);
+
+  // On cold-start the first preflight may time out before Render + Claude finish.
+  // If we got an error (not just empty questions), retry once — server is now awake.
+  if (prefResp?.error) {
+    console.log('[JMA:preflight] first attempt errored, retrying:', prefResp.error);
+    showMainLoading('כמעט שם, מנסה שוב...');
+    prefResp = await chrome.runtime.sendMessage(preflightMsg);
+  }
 
   console.log('[JMA:preflight] resp=', JSON.stringify(prefResp));
   const newQuestions = (!prefResp?.error && prefResp?.result?.questions) || [];
