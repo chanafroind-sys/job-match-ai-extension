@@ -159,16 +159,20 @@ function buildExperienceXml(text, isRtl) {
     // e.g. "**• Built FastAPI backend**" → "• Built FastAPI backend"
     const stripped = line.replace(/^\*\*(.+)\*\*$/, '$1').trim();
 
-    const isBullet = stripped.startsWith('•') || stripped.startsWith('- ') ||
+    // Bullet detection — handle •, -, –, —, * bullet styles
+    const isBullet = /^[•\-–—]\s/.test(stripped) ||
       (stripped.startsWith('* ') && !stripped.startsWith('**'));
+
+    // Job-header heuristic: a non-bullet line that contains " | " or a 4-digit year
+    // is almost certainly a new entry header, even if no blank line preceded it.
+    const isJobHeader = !isBullet && (/\s\|\s/.test(stripped) || /\b(19|20)\d{2}\b/.test(stripped));
 
     if (isBullet) {
       inEntry = true;
-      // Remove bullet marker; keep inner **bold** markup intact for makeRichRuns
-      const clean = stripped.replace(/^[•\-]\s*|^\*\s+/, '');
+      const clean = stripped.replace(/^[•\-–—]\s+|^\*\s+/, '');
       xml += makeBulletParagraph(clean, isRtl);
-    } else if (!inEntry) {
-      // Job entry header (company / role / dates) — no indent, spacing before to separate entries
+    } else if (!inEntry || isJobHeader) {
+      // Job entry header — reset state so next non-bullet/non-header becomes description
       const spacingBefore = firstEntry ? 0 : 160;
       firstEntry = false;
       inEntry = true;
@@ -176,7 +180,7 @@ function buildExperienceXml(text, isRtl) {
       const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
       xml += `<w:p>${pPr}${runs}</w:p>`;
     } else {
-      // Description text directly under a job header — indented to align with bullet text
+      // Description text directly under a job header — indented
       const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360"/>`;
       const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
       const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}${indent}<w:spacing w:before="0" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
@@ -204,14 +208,15 @@ function buildEducationXml(text, isRtl) {
 
     const stripped = line.replace(/^\*\*(.+)\*\*$/, '$1').trim();
 
-    const isBullet = stripped.startsWith('•') || stripped.startsWith('- ') ||
+    const isBullet = /^[•\-–—]\s/.test(stripped) ||
       (stripped.startsWith('* ') && !stripped.startsWith('**'));
+    const isEntryHeader = !isBullet && (/\s\|\s/.test(stripped) || /\b(19|20)\d{2}\b/.test(stripped));
 
     if (isBullet) {
       inEntry = true;
-      const clean = stripped.replace(/^[•\-]\s*|^\*\s+/, '');
+      const clean = stripped.replace(/^[•\-–—]\s+|^\*\s+/, '');
       xml += makeBulletParagraph(clean, isRtl);
-    } else if (!inEntry) {
+    } else if (!inEntry || isEntryHeader) {
       // Institution / degree / year header — no indent
       const spacingBefore = firstEntry ? 0 : 120;
       firstEntry = false;

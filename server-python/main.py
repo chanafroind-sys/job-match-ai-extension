@@ -376,6 +376,8 @@ COMPANY STRUCTURE IS SACRED — never break this:
 - NEVER merge bullet points from different companies or roles into a single thematic list
 - You may reorder bullet points WITHIN a single role to highlight the most relevant ones first
 - You may NOT move bullets across roles or companies under any circumstances
+- Separate each job block with a BLANK LINE — put an empty line between the last bullet of one job and the first line of the next job
+- Use only • or - as bullet markers (not — or * or any other character)
 
 HEADLINE / SENIORITY GUARDRAILS:
 - Use the candidate's real core title as the base (e.g. Backend Developer, Software Engineer)
