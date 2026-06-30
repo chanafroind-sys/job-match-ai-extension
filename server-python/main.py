@@ -304,6 +304,37 @@ def parse_json_response(text: str) -> dict:
         raise
 
 
+def parse_json_array(text: str) -> list:
+    """Parse Claude's response as a JSON array, stripping any markdown fences."""
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    raw = match.group(1).strip() if match else text.strip()
+    arr_match = re.search(r'\[[\s\S]*\]', raw)
+    if arr_match:
+        raw = arr_match.group(0)
+    result = json.loads(raw)
+    return result if isinstance(result, list) else []
+
+
+def parse_cv_sections_py(cv_text: str) -> dict:
+    """Parse a structured CV (with [SECTION] markers) into {marker: content}."""
+    markers = {'[NAME]', '[HEADLINE]', '[CONTACT]', '[PROFILE]',
+               '[EXPERIENCE]', '[EDUCATION]', '[SKILLS]', '[LANGUAGES]'}
+    sections: dict = {}
+    current: str | None = None
+    lines: list = []
+    for line in cv_text.splitlines():
+        clean = line.strip().lstrip('#').strip().strip('*').strip()
+        if clean in markers:
+            if current:
+                sections[current] = '\n'.join(lines).strip()
+            current, lines = clean, []
+        elif current:
+            lines.append(line)
+    if current:
+        sections[current] = '\n'.join(lines).strip()
+    return sections
+
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 QUESTIONS_PROMPT = """You are a recruiter screening a candidate. Read the CV and job description, then identify 1-3 skills or experiences that are either missing from the CV or mentioned too vaguely to evaluate — and that are clearly required or strongly preferred by this job.
@@ -449,6 +480,43 @@ CRITICAL FORMAT RULES — any violation breaks the Word document:
 {cv_draft}
 === JOB DESCRIPTION ===
 {job_text}"""
+
+
+# ── Diff-screen constants & prompt ────────────────────────────────────────────
+
+DIFF_SECTIONS = ['[PROFILE]', '[EXPERIENCE]', '[EDUCATION]', '[SKILLS]', '[LANGUAGES]']
+SECTION_LABELS = {
+    '[PROFILE]':    'פרופיל',
+    '[EXPERIENCE]': 'ניסיון תעסוקתי',
+    '[EDUCATION]':  'השכלה',
+    '[SKILLS]':     'כישורים',
+    '[LANGUAGES]':  'שפות',
+}
+
+CV_DIFF_PROMPT = """You are a CV comparison assistant.
+
+I provide you with 5 sections from an AI-ADAPTED CV and the full text of the ORIGINAL CV.
+For each section: find the matching content in the ORIGINAL CV, then compare it to the adapted version.
+
+Return ONLY a valid JSON array — no markdown fences, no extra text, just the raw JSON array.
+
+Each element must have exactly these fields:
+{{"id":<integer>,"section_name":"<marker>","label":"<Hebrew label>","original_text":"<matched text from ORIGINAL CV — copy verbatim>","updated_text":"<the adapted text provided below>","changed":<true|false>,"explanation_hebrew":"<≤12-word Hebrew sentence — why this helps for the job; empty string if not changed>"}}
+
+Sections from the ADAPTED CV:
+{sections_block}
+
+Rules:
+- original_text: find the relevant paragraph(s) in the ORIGINAL CV by meaning — copy verbatim from it
+- changed: true only when there is a meaningful semantic difference (ignore punctuation/whitespace)
+- explanation_hebrew: mention specific keywords or technologies added; empty string if changed is false
+- If a section exists in ADAPTED but has no equivalent in ORIGINAL, set original_text to ""
+
+=== ORIGINAL CV ===
+{original_cv}
+
+=== JOB CONTEXT (first 200 chars) ===
+{job_context}"""
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -723,8 +791,36 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     app_id = str(uuid.uuid4())[:8]
     cv_final = inject_tracking_links(cv_final, app_id)
 
+    # ── Diff pass: compare original CV to adapted CV, generate Hebrew explanations ──
+    sections: list = []
+    try:
+        adapted_secs = parse_cv_sections_py(cv_final)
+        sections_block_parts = []
+        for idx, marker in enumerate(DIFF_SECTIONS, start=1):
+            content = adapted_secs.get(marker, '').strip()
+            if not content:
+                continue
+            label = SECTION_LABELS[marker]
+            # Truncate very long sections to keep prompt size reasonable
+            truncated = content[:600] + ('…' if len(content) > 600 else '')
+            sections_block_parts.append(
+                f"Section {idx} — {marker} (label: {label}, id: {idx}):\n{truncated}"
+            )
+        if sections_block_parts:
+            diff_prompt = CV_DIFF_PROMPT.format(
+                sections_block='\n\n'.join(sections_block_parts),
+                original_cv=body.cvText[:3000],
+                job_context=body.jobText[:200],
+            )
+            raw_diff = await call_claude(diff_prompt, max_tokens=1800)
+            sections = parse_json_array(raw_diff)
+            print(f"[JMA:diff] parsed {len(sections)} sections")
+    except Exception as e:
+        print(f"[JMA:diff] diff pass failed — {type(e).__name__}: {e}")
+        sections = []
+
     increment_usage(license_key)
-    return {"cvText": cv_final, "appId": app_id}
+    return {"cvText": cv_final, "appId": app_id, "sections": sections}
 
 
 @app.get("/api/v1/clicks")

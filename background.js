@@ -117,7 +117,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       cvUrls: req.cvUrls || [],
       userConstraints: req.userConstraints || '',
     }, req.licenseKey)
-      .then(data => sendResponse({ cvText: data.cvText, appId: data.appId }))
+      .then(data => sendResponse({ cvText: data.cvText, appId: data.appId, sections: data.sections || [] }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));
     return true;
   }

@@ -223,6 +223,47 @@
   .constraint-check-row { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
   .constraint-check-row input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
   .constraint-check-row span { font-size: 12px; color: var(--text-primary); line-height: 1.4; direction: rtl; }
+
+  /* Diff & Control screen */
+  .diff-header { margin-bottom: 10px; }
+  .diff-count { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+  .diff-actions-row { display: flex; gap: 6px; margin-bottom: 10px; }
+  .diff-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius);
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  .diff-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(124,58,237,0.07);
+    gap: 8px;
+  }
+  .diff-card-title { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+  .diff-approve-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .diff-approve-label input { accent-color: var(--success); cursor: pointer; }
+  .diff-block { padding: 7px 12px; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; direction: rtl; }
+  .diff-original { background: rgba(248,81,73,0.07); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+  .diff-updated  { background: rgba(63,185,80,0.07);  border-bottom: 1px solid var(--border); }
+  .diff-block-label { font-size: 10px; font-weight: 600; margin-bottom: 3px; }
+  .diff-original .diff-block-label { color: var(--danger); }
+  .diff-updated  .diff-block-label { color: var(--success); }
+  .diff-explanation { padding: 6px 12px; font-size: 10px; color: var(--text-dim); direction: rtl; line-height: 1.45; }
+  .diff-no-changes { text-align:center; padding: 28px 16px; color: var(--text-muted); font-size: 13px; }
   .settings-input {
     width: 100%;
     background: var(--bg-card);
@@ -733,6 +774,21 @@
     </div>
     <div class="progress-label" id="progressLabel">0%</div>
   </div>
+</div>
+
+<!-- DIFF & CONTROL SCREEN -->
+<div class="screen" id="screen-diff">
+  <div class="diff-header">
+    <div class="screen-title" style="margin-bottom:4px">🔍 בדוק ואשר שינויים</div>
+    <div class="diff-count" id="diffCount"></div>
+  </div>
+  <div class="diff-actions-row">
+    <button class="btn btn-secondary" id="btnDiffSelectAll" style="flex:1;margin:0;font-size:11px">✅ בחר הכל</button>
+    <button class="btn btn-secondary" id="btnDiffSelectNone" style="flex:1;margin:0;font-size:11px">☐ בטל הכל</button>
+  </div>
+  <div id="diffCardsContainer"></div>
+  <button class="btn btn-primary" id="btnApproveDiff" style="margin-top:4px;font-size:14px">✅ אשר ובנה קורות חיים</button>
+  <button class="btn btn-secondary" id="btnDiffBack" style="margin-top:6px">← חזור</button>
 </div>
 
 <!-- CV RESULT SCREEN -->

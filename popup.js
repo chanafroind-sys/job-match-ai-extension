@@ -666,9 +666,9 @@ async function startCVGeneration(answers, language, format) {
   format = format || 'docx';
   state.cvIsRtl = language === 'hebrew';
   showScreen('generating');
-  setProgress(0, 'מתאים קורות חיים למשרה...', 'Pass 1 מ-2');
+  setProgress(0, 'מתאים קורות חיים למשרה...', 'Pass 1 מ-3');
 
-  setTimeout(() => setProgress(25, 'מתאים קורות חיים למשרה...', 'שולח ל-AI...'), 300);
+  setTimeout(() => setProgress(20, 'מתאים קורות חיים למשרה...', 'שולח ל-AI...'), 300);
 
   const response = await chrome.runtime.sendMessage({
     action: 'generateCV',
@@ -687,7 +687,7 @@ async function startCVGeneration(answers, language, format) {
     return;
   }
 
-  setProgress(75, 'בודק איכות מקצועית...', 'Pass 2 מ-2');
+  setProgress(70, 'מנתח שינויים...', 'Pass 3 מ-3');
   await new Promise(r => setTimeout(r, 500));
   setProgress(100, 'הושלם!', '');
 
@@ -712,7 +712,11 @@ async function startCVGeneration(answers, language, format) {
   };
   await saveJob(record);
 
-  showCVResult(response.cvText);
+  if (response.sections && response.sections.length > 0) {
+    renderDiffScreen(response.sections);
+  } else {
+    showCVResult(response.cvText);
+  }
 }
 
 function setProgress(pct, title, subtitle) {
@@ -726,6 +730,91 @@ function showCVResult(cvText) {
   document.getElementById('cvPreview').textContent = cvText;
   showScreen('cv-result');
 }
+
+// ── Diff & Control screen ─────────────────────────────────────────────────────
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function assembleCVText(secs) {
+  const ORDER = ['[NAME]','[HEADLINE]','[CONTACT]','[PROFILE]','[EXPERIENCE]','[EDUCATION]','[SKILLS]','[LANGUAGES]'];
+  return ORDER.filter(m => secs[m]).map(m => `${m}\n${secs[m]}`).join('\n\n');
+}
+
+function applyDiffChoices(cvText, sections, choices) {
+  if (!sections || sections.length === 0) return cvText;
+  const secs = parseCVSections(cvText);
+  for (const sec of sections) {
+    const approved = choices[sec.id] !== false;
+    if (!approved && sec.changed && sec.original_text && sec.original_text.trim().length > 5) {
+      secs[sec.section_name] = sec.original_text;
+    }
+  }
+  return assembleCVText(secs);
+}
+
+function renderDiffScreen(sections) {
+  state.diffSections = sections || [];
+  const changed = state.diffSections.filter(s => s.changed);
+  const container = document.getElementById('diffCardsContainer');
+  container.innerHTML = '';
+
+  document.getElementById('diffCount').textContent =
+    changed.length > 0
+      ? `ה-AI שינה ${changed.length} סעיף${changed.length > 1 ? 'ים' : ''} — בדוק ואשר:`
+      : '';
+
+  if (changed.length === 0) {
+    container.innerHTML = '<div class="diff-no-changes">✅ ה-AI לא ביצע שינויים משמעותיים — קורות החיים ייוצאו כפי שהם.</div>';
+  } else {
+    changed.forEach(sec => {
+      const hasOriginal = sec.original_text && sec.original_text.trim().length > 5;
+      const card = document.createElement('div');
+      card.className = 'diff-card';
+      card.innerHTML = `
+        <div class="diff-card-header">
+          <span class="diff-card-title">${escHtml(sec.label || sec.section_name)}</span>
+          <label class="diff-approve-label">
+            <input type="checkbox" class="diff-approve-check" data-id="${sec.id}" ${hasOriginal ? 'checked' : 'checked disabled'}>
+            <span>אשר שינוי</span>
+          </label>
+        </div>
+        ${hasOriginal ? `
+        <div class="diff-block diff-original">
+          <div class="diff-block-label">לפני (מקורי)</div>${escHtml(sec.original_text.trim())}
+        </div>` : ''}
+        <div class="diff-block diff-updated">
+          <div class="diff-block-label">אחרי (מותאם למשרה)</div>${escHtml(sec.updated_text ? sec.updated_text.trim() : '')}
+        </div>
+        ${sec.explanation_hebrew ? `<div class="diff-explanation">💡 ${escHtml(sec.explanation_hebrew)}</div>` : ''}
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  showScreen('diff');
+}
+
+document.getElementById('btnDiffSelectAll').addEventListener('click', () => {
+  document.querySelectorAll('.diff-approve-check:not([disabled])').forEach(cb => { cb.checked = true; });
+});
+document.getElementById('btnDiffSelectNone').addEventListener('click', () => {
+  document.querySelectorAll('.diff-approve-check:not([disabled])').forEach(cb => { cb.checked = false; });
+});
+document.getElementById('btnDiffBack').addEventListener('click', () => showScreen('main'));
+
+document.getElementById('btnApproveDiff').addEventListener('click', async () => {
+  const choices = {};
+  document.querySelectorAll('.diff-approve-check').forEach(cb => {
+    choices[parseInt(cb.dataset.id)] = cb.checked;
+  });
+  const finalCvText = applyDiffChoices(state.generatedCV, state.diffSections, choices);
+  state.generatedCV = finalCvText;
+  showCVResult(finalCvText);
+});
 
 document.getElementById('btnDownloadPdf').addEventListener('click', () => {
   downloadAsPdf(state.generatedCV, state.cvIsRtl);
