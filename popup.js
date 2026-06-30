@@ -134,21 +134,20 @@ async function extractDocxText(arrayBuffer) {
 
     let xml = new TextDecoder('utf-8').decode(xmlBytes);
 
-    // Convert hyperlink elements directly into [LINK:display|url] tokens.
-    // This keeps the URL cleanly bounded so the backend regex never bleeds
-    // into adjacent tokens (like an email address on the same line).
+    // Inject hyperlink URLs as plain text so Claude can see them naturally,
+    // and collect them separately so the backend can add an explicit "must-include" instruction.
+    const hyperlinkUrls = [];
     xml = xml.replace(
       /<w:hyperlink\b[^>]*\br:id="([^"]+)"[^>]*>([\s\S]*?)<\/w:hyperlink>/g,
       (_, rId, inner) => {
         const url = relsMap[rId];
         if (!url) return inner;
-        // Collect all text from every <w:t> inside the hyperlink as display text
-        const display = [...inner.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)]
-          .map(m => m[1]).join('').trim() || url;
-        // Sanitise: strip characters that would break the [LINK:...|...] syntax
-        const safeDisplay = display.replace(/[|\[\]]/g, '');
-        // Replace the entire hyperlink element with a single plain-text run
-        return `<w:r><w:t xml:space="preserve">[LINK:${safeDisplay}|${url}]</w:t></w:r>`;
+        hyperlinkUrls.push(url);
+        // Append the raw URL to the last <w:t> inside the hyperlink so the
+        // extracted text contains e.g. "chanimed03 https://github.com/chanimed03"
+        const lastClose = inner.lastIndexOf('</w:t>');
+        if (lastClose === -1) return inner;
+        return inner.slice(0, lastClose) + ' ' + url + inner.slice(lastClose);
       }
     );
 
@@ -161,7 +160,7 @@ async function extractDocxText(arrayBuffer) {
         result += tMatches.map(m => m[1]).join('') + '\n';
       }
     }
-    return result.trim();
+    return { text: result.trim(), hyperlinkUrls };
   } catch (e) {
     console.error('DOCX extract error:', e);
     return null;
@@ -179,9 +178,9 @@ async function readCVFile(file) {
   }
   if (ext === 'docx') {
     const buf = await file.arrayBuffer();
-    const text = await extractDocxText(buf);
-    if (!text) throw new Error('לא ניתן לקרוא את הקובץ. נסה להמיר ל-.txt');
-    return text;
+    const result = await extractDocxText(buf);
+    if (!result?.text) throw new Error('לא ניתן לקרוא את הקובץ. נסה להמיר ל-.txt');
+    return result; // { text, hyperlinkUrls }
   }
   if (ext === 'pdf') {
     // For PDF we store as base64 for Claude to process
@@ -227,14 +226,17 @@ document.getElementById('cvFileInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   try {
-    const text = await readCVFile(file);
+    const cvResult = await readCVFile(file);
+    const cvText = typeof cvResult === 'object' ? cvResult.text : cvResult;
+    const cvHyperlinkUrls = typeof cvResult === 'object' ? (cvResult.hyperlinkUrls || []) : [];
     document.getElementById('uploadText').textContent = `✅ ${file.name}`;
     document.getElementById('uploadArea').classList.add('has-file');
     const successEl = document.getElementById('uploadSuccess');
     successEl.textContent = `הועלה: ${file.name} (${Math.round(file.size / 1024)} KB)`;
     successEl.style.display = 'block';
-    // Store temporarily
-    document.getElementById('cvFileInput')._extractedText = text;
+    // Store temporarily until "Save settings" is clicked
+    document.getElementById('cvFileInput')._extractedText = cvText;
+    document.getElementById('cvFileInput')._hyperlinkUrls = cvHyperlinkUrls;
     document.getElementById('cvFileInput')._fileName = file.name;
     document.getElementById('cvFileInput')._fileSize = file.size;
   } catch (err) {
@@ -259,6 +261,7 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
     toSave.cvText = fileInput._extractedText;
     toSave.cvName = fileInput._fileName;
     toSave.cvSize = fileInput._fileSize;
+    toSave.cvHyperlinkUrls = fileInput._hyperlinkUrls || [];
   }
 
   const newKey = document.getElementById('licenseKeySettings').value.trim();
@@ -411,11 +414,12 @@ async function startFlow() {
   showScreen('main');
   showMainLoading('מאתר שאלות רלוונטיות למשרה...');
 
-  const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
+  const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls']);
   if (!stored.licenseKey) { showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.'); return; }
   if (!stored.cvText) { showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ בפינה כדי להוסיף.'); return; }
   state.licenseKey = stored.licenseKey;
   state.cvText = stored.cvText;
+  state.cvHyperlinkUrls = stored.cvHyperlinkUrls || [];
 
   // Get job text from active tab
   let tabResult;
@@ -628,6 +632,7 @@ async function startCVGeneration(answers, language, format) {
     jobText: state.jobText,
     jobLanguage: language,
     answers,
+    cvUrls: state.cvHyperlinkUrls || [],
   });
 
   if (response.error) {
@@ -706,8 +711,8 @@ function buildCvPrintHtml(cvText, isRtl) {
     if (!txt) return '';
     return txt.split('\n').map(l => {
       l = l.trim(); if (!l) return '';
-      const isBul = l.startsWith('•') || l.startsWith('- ');
-      const cl = isBul ? l.replace(/^[•\-]\s*/, '') : l;
+      const isBul = l.startsWith('$ ') || l.startsWith('•') || l.startsWith('- ');
+      const cl = isBul ? l.replace(/^\$\s+|^[•\-]\s*/, '') : l;
       const html = renderInline(cl);
       return isBul ? `<li>${html}</li>` : `<p>${html}</p>`;
     }).join('');

@@ -376,8 +376,8 @@ COMPANY STRUCTURE IS SACRED — never break this:
 - NEVER merge bullet points from different companies or roles into a single thematic list
 - You may reorder bullet points WITHIN a single role to highlight the most relevant ones first
 - You may NOT move bullets across roles or companies under any circumstances
-- Separate each job block with a BLANK LINE — put an empty line between the last bullet of one job and the first line of the next job
-- Use only • or - as bullet markers (not — or * or any other character)
+- Use `$ ` (dollar-sign + space) as the bullet marker for ALL bullet points — e.g. `$ Built a REST API using FastAPI`
+- Do NOT use •, -, *, –, or any other bullet character — only `$ ` at the start of bullet lines
 
 HEADLINE / SENIORITY GUARDRAILS:
 - Use the candidate's real core title as the base (e.g. Backend Developer, Software Engineer)
@@ -469,6 +469,7 @@ class GenerateCVRequest(BaseModel):
     jobText: str
     jobLanguage: str = "english"
     answers: list[dict] = []
+    cvUrls: list[str] = []
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -681,20 +682,30 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         else "No additional information provided."
     )
 
+    # Build explicit URL instruction — ensures Claude puts hyperlink URLs in [CONTACT]
+    # even if it doesn't parse the raw URL embedded in the CV text.
+    url_instruction = ""
+    if body.cvUrls:
+        url_list = "\n".join(f"  - {u}" for u in body.cvUrls)
+        url_instruction = (
+            f"\n\nMANDATORY CONTACT URLS — the original CV contained these hyperlinks."
+            f" Every one of them MUST appear verbatim as its own line in [CONTACT]:\n{url_list}"
+        )
+
     pass1_prompt = CV_PASS1_PROMPT.format(
         language=language,
         language_rule=language_rule,
         cv_text=body.cvText,
         answers_text=answers_text,
         job_text=body.jobText,
-    )
+    ) + url_instruction
     cv_draft = await call_claude(pass1_prompt, max_tokens=2000)
 
     pass2_prompt = CV_PASS2_PROMPT.format(
         language_check=language_check,
         cv_draft=cv_draft,
         job_text=body.jobText,
-    )
+    ) + url_instruction
     cv_final = await call_claude(pass2_prompt, max_tokens=2000)
 
     # Inject tracking links only when original CV had GitHub/LinkedIn URLs

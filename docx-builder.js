@@ -159,8 +159,8 @@ function buildExperienceXml(text, isRtl) {
     // e.g. "**• Built FastAPI backend**" → "• Built FastAPI backend"
     const stripped = line.replace(/^\*\*(.+)\*\*$/, '$1').trim();
 
-    // Bullet detection — handle •, -, –, —, * bullet styles
-    const isBullet = /^[•\-–—]\s/.test(stripped) ||
+    // Bullet detection — $ is the canonical marker; also accept •, -, –, —, * as fallback
+    const isBullet = stripped.startsWith('$ ') || /^[•\-–—]\s/.test(stripped) ||
       (stripped.startsWith('* ') && !stripped.startsWith('**'));
 
     // Job-header heuristic: a non-bullet line that contains " | " or a 4-digit year
@@ -169,7 +169,7 @@ function buildExperienceXml(text, isRtl) {
 
     if (isBullet) {
       inEntry = true;
-      const clean = stripped.replace(/^[•\-–—]\s+|^\*\s+/, '');
+      const clean = stripped.replace(/^\$\s+|^[•\-–—]\s+|^\*\s+/, '');
       xml += makeBulletParagraph(clean, isRtl);
     } else if (!inEntry || isJobHeader) {
       // Job entry header — reset state so next non-bullet/non-header becomes description
@@ -214,7 +214,7 @@ function buildEducationXml(text, isRtl) {
 
     if (isBullet) {
       inEntry = true;
-      const clean = stripped.replace(/^[•\-–—]\s+|^\*\s+/, '');
+      const clean = stripped.replace(/^\$\s+|^[•\-–—]\s+|^\*\s+/, '');
       xml += makeBulletParagraph(clean, isRtl);
     } else if (!inEntry || isEntryHeader) {
       // Institution / degree / year header — no indent

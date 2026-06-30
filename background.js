@@ -114,6 +114,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       jobText: req.jobText,
       jobLanguage: req.jobLanguage,
       answers: req.answers,
+      cvUrls: req.cvUrls || [],
     }, req.licenseKey)
       .then(data => sendResponse({ cvText: data.cvText, appId: data.appId }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));
