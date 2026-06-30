@@ -760,6 +760,90 @@ function applyDiffChoices(cvText, sections, choices) {
   return assembleCVText(secs);
 }
 
+// ── Word/line diff engine ──────────────────────────────────────────────────────
+
+// Generic LCS → edit-ops on any array, with custom equality fn
+function lcsOps(a, b, eq) {
+  const m = a.length, n = b.length;
+  // Guard: fall back to simple replacement for very large inputs
+  if (m * n > 40000) return [...a.map(v => ({t:'del',v})), ...b.map(v => ({t:'ins',v}))];
+  const dp = Array.from({length: m + 1}, () => new Int32Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = eq(a[i-1], b[j-1]) ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+  const ops = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && eq(a[i-1], b[j-1])) { ops.unshift({t:'eq', v:a[i-1]}); i--; j--; }
+    else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) { ops.unshift({t:'ins', v:b[j-1]}); j--; }
+    else { ops.unshift({t:'del', v:a[i-1]}); i--; }
+  }
+  return ops;
+}
+
+// Word-level diff on a single line; returns HTML string
+function wordDiffHtml(oldLine, newLine) {
+  const a = oldLine.split(/(\s+)/);
+  const b = newLine.split(/(\s+)/);
+  return lcsOps(a, b, (x, y) => x === y).map(op => {
+    const v = escHtml(op.v);
+    if (op.t === 'eq')  return v;
+    if (op.t === 'ins') return `<mark class="diff-ins">${v}</mark>`;
+    return `<del class="diff-del">${v}</del>`;
+  }).join('');
+}
+
+// Unified HTML for a whole section (line-level LCS → word diff on changed lines)
+function buildDiffHtml(oldText, newText, hasOriginal) {
+  if (!hasOriginal || !oldText.trim()) {
+    // No original — just render updated text as fully added
+    return `<mark class="diff-ins">${escHtml(newText.trim())}</mark>`;
+  }
+
+  const oldLines = oldText.trim().split('\n');
+  const newLines = newText.trim().split('\n');
+  const lineOps  = lcsOps(oldLines, newLines, (a, b) => a.trim() === b.trim());
+
+  // Count changed lines to decide between unified vs block view
+  const changed = lineOps.filter(o => o.t !== 'eq').length;
+  const changeRatio = changed / Math.max(lineOps.length, 1);
+
+  // > 75% of lines changed → show two separate blocks (cleaner for heavy rewrites)
+  if (changeRatio > 0.75 && oldLines.length > 2) {
+    return [
+      `<div class="diff-block-label lbl-before">לפני (מקורי)</div>`,
+      escHtml(oldText.trim()),
+      `<div class="diff-block-sep"></div>`,
+      `<div class="diff-block-label lbl-after">אחרי (מותאם)</div>`,
+      escHtml(newText.trim()),
+    ].join('\n');
+  }
+
+  // Unified view: process line ops, do word diff on adjacent del+ins pairs
+  const htmlLines = [];
+  let k = 0;
+  while (k < lineOps.length) {
+    const op = lineOps[k];
+    if (op.t === 'eq') {
+      htmlLines.push(escHtml(op.v));
+      k++;
+    } else if (op.t === 'del' && k + 1 < lineOps.length && lineOps[k + 1].t === 'ins') {
+      // Modified line — word-level diff
+      htmlLines.push(wordDiffHtml(op.v, lineOps[k + 1].v));
+      k += 2;
+    } else if (op.t === 'ins') {
+      htmlLines.push(`<mark class="diff-ins">${escHtml(op.v)}</mark>`);
+      k++;
+    } else {
+      htmlLines.push(`<del class="diff-del">${escHtml(op.v)}</del>`);
+      k++;
+    }
+  }
+  return htmlLines.join('\n');
+}
+
+// ── Render diff screen ─────────────────────────────────────────────────────────
+
 function renderDiffScreen(sections) {
   state.diffSections = sections || [];
   const changed = state.diffSections.filter(s => s.changed);
@@ -776,24 +860,22 @@ function renderDiffScreen(sections) {
   } else {
     changed.forEach(sec => {
       const hasOriginal = sec.original_text && sec.original_text.trim().length > 5;
+      const diffHtml    = buildDiffHtml(sec.original_text || '', sec.updated_text || '', hasOriginal);
       const card = document.createElement('div');
       card.className = 'diff-card';
       card.innerHTML = `
+        ${sec.explanation_hebrew
+          ? `<div class="diff-explanation-banner">💡 ${escHtml(sec.explanation_hebrew)}</div>`
+          : ''}
         <div class="diff-card-header">
           <span class="diff-card-title">${escHtml(sec.label || sec.section_name)}</span>
           <label class="diff-approve-label">
-            <input type="checkbox" class="diff-approve-check" data-id="${sec.id}" ${hasOriginal ? 'checked' : 'checked disabled'}>
+            <input type="checkbox" class="diff-approve-check" data-id="${sec.id}"
+              ${hasOriginal ? 'checked' : 'checked disabled'}>
             <span>אשר שינוי</span>
           </label>
         </div>
-        ${hasOriginal ? `
-        <div class="diff-block diff-original">
-          <div class="diff-block-label">לפני (מקורי)</div>${escHtml(sec.original_text.trim())}
-        </div>` : ''}
-        <div class="diff-block diff-updated">
-          <div class="diff-block-label">אחרי (מותאם למשרה)</div>${escHtml(sec.updated_text ? sec.updated_text.trim() : '')}
-        </div>
-        ${sec.explanation_hebrew ? `<div class="diff-explanation">💡 ${escHtml(sec.explanation_hebrew)}</div>` : ''}
+        <div class="diff-unified">${diffHtml}</div>
       `;
       container.appendChild(card);
     });
