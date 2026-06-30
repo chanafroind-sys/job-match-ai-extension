@@ -219,6 +219,10 @@
   /* Settings screen */
   .settings-section { margin-bottom: 16px; }
   .settings-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 500; }
+  .constraint-checks { display: flex; flex-direction: column; gap: 7px; margin-bottom: 10px; }
+  .constraint-check-row { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+  .constraint-check-row input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
+  .constraint-check-row span { font-size: 12px; color: var(--text-primary); line-height: 1.4; direction: rtl; }
   .settings-input {
     width: 100%;
     background: var(--bg-card);
@@ -812,6 +816,32 @@
       placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" autocomplete="off" spellcheck="false"
       style="width:100%;box-sizing:border-box;margin-bottom:6px">
     <div id="licenseSettingsStatus" style="font-size:11px;color:#888;min-height:16px"></div>
+  </div>
+
+  <div class="settings-section" id="premiumConstraintsSection" style="margin-top:14px;display:none">
+    <div class="settings-label">✏️ הוראות אישיות לקורות חיים</div>
+    <div class="constraint-checks">
+      <label class="constraint-check-row">
+        <input type="checkbox" id="constraintNoJobTitles">
+        <span>אל תשנה כותרות תפקידים (Job Titles)</span>
+      </label>
+      <label class="constraint-check-row">
+        <input type="checkbox" id="constraintProfileOnly">
+        <span>התאם רק את פסקת הפתיחה (Profile/Summary) — אל תיגע בניסיון התעסוקתי</span>
+      </label>
+      <label class="constraint-check-row">
+        <input type="checkbox" id="constraintNoDelete">
+        <span>אל תקצר או תמחק היסטוריית תעסוקה ומשרות עבר</span>
+      </label>
+      <label class="constraint-check-row">
+        <input type="checkbox" id="constraintBoldKeywords">
+        <span>הדגש מילות מפתח טכנולוגיות קריטיות בטקסט (בכתב מודגש — Bold)</span>
+      </label>
+    </div>
+    <textarea id="userConstraintsInput" rows="3"
+      placeholder="הוראות נוספות... (לדוגמה: אל תכתוב שיש לי יותר מ-2 שנות ניסיון)"
+      style="width:100%;box-sizing:border-box;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--border-radius);color:var(--text-primary);font-size:12px;resize:vertical;font-family:inherit;direction:rtl"></textarea>
+    <div style="font-size:11px;color:var(--text-dim);margin-top:4px">כללים אישיים שה-AI חייב לעמוד בהם בעת יצירת קורות החיים</div>
   </div>
 
   <div id="settingsError" class="error-box" style="display:none"></div>

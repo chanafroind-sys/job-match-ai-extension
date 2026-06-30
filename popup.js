@@ -197,9 +197,17 @@ async function readCVFile(file) {
   throw new Error('פורמט לא נתמך');
 }
 
+// Checkbox → sentence mapping (single source of truth)
+const CONSTRAINT_MAP = {
+  constraintNoJobTitles:  'חוק קשיח: אל תשנה את כותרות התפקידים הרשמיות שלי (Job Titles) בשום אופן.',
+  constraintProfileOnly:  'חוק קשיח: התאם אך ורק את פסקת הפתיחה / פרופיל (Summary). אל תשנה ואל תערוך את תוכן הניסיון התעסוקתי עצמו.',
+  constraintNoDelete:     'חוק קשיח: אל תמחק ואל תקצר מקומות עבודה או תפקידים מהעבר כדי לחסוך במקום.',
+  constraintBoldKeywords: 'הנחיה: סמן בכתב מודגש (Bold) מילות מפתח, טכנולוגיות וכלים קריטיים שמופיעים בדרישות המשרה לאורך קורות החיים.',
+};
+
 // Settings screen
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium']);
+  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints']);
   if (data.cvName) {
     document.getElementById('uploadText').textContent = `✅ ${data.cvName}`;
     document.getElementById('uploadArea').classList.add('has-file');
@@ -215,6 +223,19 @@ async function loadSettings() {
   } else {
     statusEl.textContent = 'לא הוגדר מפתח רישיון';
     statusEl.style.color = '#e53935';
+  }
+  const constraintsSection = document.getElementById('premiumConstraintsSection');
+  const constraintsInput = document.getElementById('userConstraintsInput');
+  if (data.licenseKey) {
+    constraintsSection.style.display = 'block';
+    const text = data.userConstraints || '';
+    constraintsInput.value = text;
+    // Derive checkbox states from what sentences are present in the textarea
+    Object.entries(CONSTRAINT_MAP).forEach(([id, sentence]) => {
+      document.getElementById(id).checked = text.includes(sentence);
+    });
+  } else {
+    constraintsSection.style.display = 'none';
   }
 }
 
@@ -250,6 +271,23 @@ function showSettingsError(msg) {
   el.style.display = 'block';
 }
 
+// Two-way sync: checkbox ↔ textarea
+Object.entries(CONSTRAINT_MAP).forEach(([id, sentence]) => {
+  document.getElementById(id).addEventListener('change', (e) => {
+    const ta = document.getElementById('userConstraintsInput');
+    if (e.target.checked) {
+      if (!ta.value.includes(sentence)) {
+        ta.value = ta.value.trim() ? ta.value.trim() + '\n' + sentence : sentence;
+      }
+    } else {
+      ta.value = ta.value.split('\n')
+        .filter(line => line.trim() !== sentence.trim())
+        .join('\n')
+        .trim();
+    }
+  });
+});
+
 document.getElementById('btnSaveSettings').addEventListener('click', async () => {
   const fileInput = document.getElementById('cvFileInput');
   const errEl = document.getElementById('settingsError');
@@ -262,6 +300,10 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
     toSave.cvName = fileInput._fileName;
     toSave.cvSize = fileInput._fileSize;
     toSave.cvHyperlinkUrls = fileInput._hyperlinkUrls || [];
+  }
+  const constraintsInput = document.getElementById('userConstraintsInput');
+  if (constraintsInput && document.getElementById('premiumConstraintsSection').style.display !== 'none') {
+    toSave.userConstraints = constraintsInput.value.trim();
   }
 
   const newKey = document.getElementById('licenseKeySettings').value.trim();
@@ -296,9 +338,9 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
 
   if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
   document.getElementById('btnSaveSettings').textContent = '✅ נשמר!';
-  setTimeout(() => {
+  setTimeout(async () => {
     document.getElementById('btnSaveSettings').textContent = '💾 שמור הגדרות';
-    showReadyScreen();
+    await loadSettings();
   }, 800);
 });
 
@@ -414,12 +456,13 @@ async function startFlow() {
   showScreen('main');
   showMainLoading('מאתר שאלות רלוונטיות למשרה...');
 
-  const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls']);
+  const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls', 'userConstraints']);
   if (!stored.licenseKey) { showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.'); return; }
   if (!stored.cvText) { showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ בפינה כדי להוסיף.'); return; }
   state.licenseKey = stored.licenseKey;
   state.cvText = stored.cvText;
   state.cvHyperlinkUrls = stored.cvHyperlinkUrls || [];
+  state.userConstraints = stored.userConstraints || '';
 
   // Get job text from active tab
   let tabResult;
@@ -615,6 +658,8 @@ document.getElementById('btnCvOptsBack').addEventListener('click', () => {
   showScreen('main');
 });
 
+
+
 // CV Generation
 async function startCVGeneration(answers, language, format) {
   language = language || state.analysis?.jobLanguage || state.jobLanguage || 'english';
@@ -633,6 +678,7 @@ async function startCVGeneration(answers, language, format) {
     jobLanguage: language,
     answers,
     cvUrls: state.cvHyperlinkUrls || [],
+    userConstraints: state.userConstraints || '',
   });
 
   if (response.error) {
@@ -917,9 +963,12 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
     licenseValid: true,
     isPremium: !!(res.result && res.result.isPremium),
   });
-  okEl.textContent = '✅ רישיון אומת בהצלחה!';
+  okEl.textContent = '✅ רישיון אומת בהצלחה! כעת הגדר את קורות החיים שלך ⬇️';
   okEl.style.display = 'block';
-  setTimeout(() => showReadyScreen(), 900);
+  setTimeout(async () => {
+    await loadSettings();
+    showScreen('settings');
+  }, 900);
 });
 
 // ── Ready screen ───────────────────────────────────────────────────────────────

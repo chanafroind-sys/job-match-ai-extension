@@ -470,6 +470,7 @@ class GenerateCVRequest(BaseModel):
     jobLanguage: str = "english"
     answers: list[dict] = []
     cvUrls: list[str] = []
+    userConstraints: str = ""
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -692,20 +693,30 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
             f" Every one of them MUST appear verbatim as its own line in [CONTACT]:\n{url_list}"
         )
 
+    constraints_block = ""
+    if body.userConstraints and body.userConstraints.strip():
+        constraints_block = (
+            f"\n\n<user_constraints>\n"
+            f"These are the user's personal hard rules. They MUST be followed without exception, "
+            f"even if they conflict with general CV best practices or the job description:\n"
+            f"{body.userConstraints.strip()}\n"
+            f"</user_constraints>"
+        )
+
     pass1_prompt = CV_PASS1_PROMPT.format(
         language=language,
         language_rule=language_rule,
         cv_text=body.cvText,
         answers_text=answers_text,
         job_text=body.jobText,
-    ) + url_instruction
+    ) + url_instruction + constraints_block
     cv_draft = await call_claude(pass1_prompt, max_tokens=2000)
 
     pass2_prompt = CV_PASS2_PROMPT.format(
         language_check=language_check,
         cv_draft=cv_draft,
         job_text=body.jobText,
-    ) + url_instruction
+    ) + url_instruction + constraints_block
     cv_final = await call_claude(pass2_prompt, max_tokens=2000)
 
     # Inject tracking links only when original CV had GitHub/LinkedIn URLs
