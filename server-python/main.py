@@ -104,14 +104,20 @@ def inject_tracking_links(cv_text: str, app_id: str) -> str:
         tracking = f"{BACKEND_URL}/api/v1/track?app_id={app_id}&target={target}&url={enc}"
         return f"[LINK:{display}|{tracking}]"
 
-    # Pass 1 — rewrap any [LINK:display|url] tokens that Claude preserved verbatim
-    # from the original CV text.  We only replace the URL part; the display text
-    # stays as the original hyperlink label (e.g. "chanimed03" for a GitHub link).
+    # Pass 1 — rewrap any [LINK:display|url] tokens that Claude preserved verbatim.
+    # Results are stashed behind NUL-delimited placeholders so that Pass 2's regex
+    # cannot see (and double-wrap) the tracking URLs embedded inside them.
     _EXISTING_RE = re.compile(r'\[LINK:([^\|]*)\|([^\]]+)\]')
-    cv_text = _EXISTING_RE.sub(lambda m: _make(m.group(2), m.group(1) or m.group(2)), cv_text)
+    _stash: dict[str, str] = {}
 
-    # Pass 2 — wrap any remaining raw / bare / markdown URLs that Claude introduced
-    # in the generated text (e.g. wrote out the URL in [CONTACT] as plain text).
+    def _pass1(m: re.Match) -> str:
+        key = f"\x00{len(_stash)}\x00"
+        _stash[key] = _make(m.group(2), m.group(1) or m.group(2))
+        return key
+
+    cv_text = _EXISTING_RE.sub(_pass1, cv_text)
+
+    # Pass 2 — wrap any remaining raw / bare / markdown URLs Claude introduced.
     def _replace(m: re.Match) -> str:
         if m.group(1):                          # markdown [text](url)
             return _make(m.group(2), m.group(1))
@@ -122,7 +128,13 @@ def inject_tracking_links(cv_text: str, app_id: str) -> str:
         url = m.group(4)                        # bare domain/path
         return _make(url, url.rstrip('/'))
 
-    return _LINK_RE.sub(_replace, cv_text)
+    cv_text = _LINK_RE.sub(_replace, cv_text)
+
+    # Restore Pass 1 results
+    for key, val in _stash.items():
+        cv_text = cv_text.replace(key, val)
+
+    return cv_text
 
 anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 

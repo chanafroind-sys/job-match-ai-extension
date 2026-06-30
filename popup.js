@@ -443,6 +443,9 @@ async function startFlow() {
 
   console.log(`[JMA:analyze] startFlow jobText_len=${state.jobText.length} platform=${state.jobPlatform}`);
 
+  // Show "waking up" message after 15 s so user knows we're waiting for Render cold-start
+  const wakeTimer = setTimeout(() => showMainLoading('השרת מתעורר, זה יכול לקחת עד דקה...'), 15000);
+
   // Preflight: get questions only (no score, no usage count)
   const prefResp = await chrome.runtime.sendMessage({
     action: 'analyzeJob',
@@ -452,6 +455,7 @@ async function startFlow() {
     preflight: true,
     answers: [],
   });
+  clearTimeout(wakeTimer);
 
   console.log('[JMA:preflight] resp=', JSON.stringify(prefResp));
   const newQuestions = (!prefResp?.error && prefResp?.result?.questions) || [];

@@ -28,7 +28,12 @@ function friendlyError(msg) {
   return 'משהו השתבש. נסי שוב בעוד רגע.';
 }
 
-async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 12000) {
+async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 12000) {
+  // Render free-tier servers return 502 immediately when sleeping and take ~60s to wake.
+  // We use a longer delay (25 s) specifically for sleeping-server responses so that
+  // across 5 retries (5 × 25 = 125 s) the server has enough time to come online.
+  const SLEEPING_DELAY_MS = 25000;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res, text;
     console.log(`[JMA:fetch] ${endpoint} attempt ${attempt}/${maxAttempts}`);
@@ -48,12 +53,14 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 4, delayMs = 1200
     }
 
     const isHtml = text.trimStart().startsWith('<') || text.includes('<html');
-    if (isHtml || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504) {
+    const isSleeping = isHtml || res.status === 502 || res.status === 503 || res.status === 504;
+    if (isSleeping || res.status === 500) {
       console.log(`[JMA:fetch] ${endpoint} server sleeping (status=${res.status} isHtml=${isHtml}), retrying...`);
       if (attempt === maxAttempts) {
         throw new Error('לא הצלחנו להגיע לשירות. פתחי https://job-match-ai-extension.onrender.com/health בדפדפן כדי להעיר אותו, ונסי שוב.');
       }
-      await new Promise(r => setTimeout(r, delayMs));
+      // Use longer delay when the server is sleeping so it has time to start up
+      await new Promise(r => setTimeout(r, isSleeping ? SLEEPING_DELAY_MS : delayMs));
       continue;
     }
 

@@ -155,12 +155,17 @@ function buildExperienceXml(text, isRtl) {
       continue;
     }
 
-    const isBullet = line.startsWith('•') || line.startsWith('- ') ||
-      (line.startsWith('* ') && !line.startsWith('**'));
+    // Strip outer **...** that Claude sometimes wraps around an entire bullet line
+    // e.g. "**• Built FastAPI backend**" → "• Built FastAPI backend"
+    const stripped = line.replace(/^\*\*(.+)\*\*$/, '$1').trim();
+
+    const isBullet = stripped.startsWith('•') || stripped.startsWith('- ') ||
+      (stripped.startsWith('* ') && !stripped.startsWith('**'));
 
     if (isBullet) {
       inEntry = true;
-      const clean = line.replace(/^[•\-]\s*|^\*\s+/, '');
+      // Remove bullet marker; keep inner **bold** markup intact for makeRichRuns
+      const clean = stripped.replace(/^[•\-]\s*|^\*\s+/, '');
       xml += makeBulletParagraph(clean, isRtl);
     } else if (!inEntry) {
       // Job entry header (company / role / dates) — no indent, spacing before to separate entries
@@ -197,12 +202,14 @@ function buildEducationXml(text, isRtl) {
       continue;
     }
 
-    const isBullet = line.startsWith('•') || line.startsWith('- ') ||
-      (line.startsWith('* ') && !line.startsWith('**'));
+    const stripped = line.replace(/^\*\*(.+)\*\*$/, '$1').trim();
+
+    const isBullet = stripped.startsWith('•') || stripped.startsWith('- ') ||
+      (stripped.startsWith('* ') && !stripped.startsWith('**'));
 
     if (isBullet) {
       inEntry = true;
-      const clean = line.replace(/^[•\-]\s*|^\*\s+/, '');
+      const clean = stripped.replace(/^[•\-]\s*|^\*\s+/, '');
       xml += makeBulletParagraph(clean, isRtl);
     } else if (!inEntry) {
       // Institution / degree / year header — no indent
