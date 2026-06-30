@@ -497,6 +497,31 @@ SECTION_LABELS = {
     '[LANGUAGES]':  'שפות',
 }
 
+COVER_LETTER_PROMPT = """You are an expert career coach writing a professional cover letter.
+
+Write a concise, targeted cover letter based on the candidate's CV and the job description below.
+
+Requirements:
+- Exactly 3 paragraphs (no more, no less)
+- Paragraph 1: Open with a confident, specific statement about why this candidate is a strong fit for THIS role — reference 1-2 concrete achievements from the CV
+- Paragraph 2: Connect the candidate's most relevant skills/experiences directly to the job's key requirements
+- Paragraph 3: Close with enthusiasm and a clear call to action
+- Tone: professional, warm, confident — never generic or formulaic
+- Length: 180-260 words total
+- Language: {language} — write the ENTIRE letter in {language} (including greeting and closing)
+- Do NOT include placeholders like [Your Name] or [Date] — write a complete, ready-to-send letter
+- Address the hiring team as "Hiring Team" or equivalent in the target language
+- Sign off with the candidate's name from the CV
+
+Output ONLY the cover letter text — no explanations, no labels, no markdown.
+
+=== CANDIDATE CV ===
+{cv_text}
+
+=== JOB DESCRIPTION ===
+{job_text}"""
+
+
 CV_DIFF_PROMPT = """You are a CV comparison assistant.
 
 I provide you with 5 sections from an AI-ADAPTED CV and the full text of the ORIGINAL CV.
@@ -543,6 +568,7 @@ class GenerateCVRequest(BaseModel):
     answers: list[dict] = []
     cvUrls: list[str] = []
     userConstraints: str = ""
+    generateCoverLetter: bool = False
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -823,8 +849,25 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         print(f"[JMA:diff] diff pass failed — {type(e).__name__}: {e}")
         sections = []
 
+    # ── Cover letter pass (optional) ──────────────────────────────────────────
+    cover_letter_text = ""
+    if body.generateCoverLetter:
+        try:
+            cl_language = "Hebrew" if body.jobLanguage == "hebrew" else "English"
+            cl_prompt = COVER_LETTER_PROMPT.format(
+                language=cl_language,
+                cv_text=body.cvText[:2000],
+                job_text=body.jobText[:1500],
+            )
+            cover_letter_text = await call_claude(cl_prompt, max_tokens=600)
+            cover_letter_text = cover_letter_text.strip()
+            print(f"[JMA:cover_letter] generated {len(cover_letter_text)} chars")
+        except Exception as e:
+            print(f"[JMA:cover_letter] failed — {type(e).__name__}: {e}")
+            cover_letter_text = ""
+
     increment_usage(license_key)
-    return {"cvText": cv_final, "appId": app_id, "sections": sections}
+    return {"cvText": cv_final, "appId": app_id, "sections": sections, "coverLetterText": cover_letter_text}
 
 
 @app.get("/api/v1/clicks")

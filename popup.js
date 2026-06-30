@@ -15,7 +15,7 @@ let state = {
   cvIsRtl: false,
 };
 
-let cvOptions = { language: 'english', format: 'docx' };
+let cvOptions = { language: 'english', format: 'docx', coverLetter: false };
 
 // ── Per-URL job state persistence ────────────────────────────────────────────
 function jobStateKey(url) {
@@ -627,14 +627,18 @@ document.getElementById('btnSkipQuestions').addEventListener('click', () => {
 
 // CV Options screen
 function showCVOptionsScreen() {
-  cvOptions.language = 'english';
+  // Auto-detect language from job language; default to english
+  const autoLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
+  cvOptions.language = autoLang;
   cvOptions.format = 'docx';
+  cvOptions.coverLetter = false;
   document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => {
-    b.classList.toggle('active', b.dataset.lang === 'english');
+    b.classList.toggle('active', b.dataset.lang === autoLang);
   });
   document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(b => {
     b.classList.toggle('active', b.dataset.fmt === 'docx');
   });
+  document.getElementById('chkCoverLetter').checked = false;
   showScreen('cv-options');
 }
 
@@ -654,8 +658,12 @@ document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(btn => {
   });
 });
 
+document.getElementById('chkCoverLetter').addEventListener('change', (e) => {
+  cvOptions.coverLetter = e.target.checked;
+});
+
 document.getElementById('btnStartCvGen').addEventListener('click', () => {
-  startCVGeneration(state.answers, cvOptions.language, cvOptions.format);
+  startCVGeneration(state.answers, cvOptions.language, cvOptions.format, cvOptions.coverLetter);
 });
 
 document.getElementById('btnCvOptsBack').addEventListener('click', () => {
@@ -665,7 +673,7 @@ document.getElementById('btnCvOptsBack').addEventListener('click', () => {
 
 
 // CV Generation
-async function startCVGeneration(answers, language, format) {
+async function startCVGeneration(answers, language, format, coverLetter) {
   language = language || state.analysis?.jobLanguage || state.jobLanguage || 'english';
   format = format || 'docx';
   state.cvIsRtl = language === 'hebrew';
@@ -696,6 +704,7 @@ async function startCVGeneration(answers, language, format) {
     answers,
     cvUrls: state.cvHyperlinkUrls || [],
     userConstraints: state.userConstraints || '',
+    generateCoverLetter: !!coverLetter,
   });
 
   clearInterval(_progressInterval);
@@ -709,7 +718,8 @@ async function startCVGeneration(answers, language, format) {
   setProgress(100, 'הושלם!', '');
 
   state.generatedCV = response.cvText;
-  await saveJobState({ generatedCV: response.cvText, cvLanguage: language });
+  state.coverLetterText = response.coverLetterText || '';
+  await saveJobState({ generatedCV: response.cvText, cvLanguage: language, coverLetterText: state.coverLetterText });
 
   await new Promise(r => setTimeout(r, 400));
 
@@ -732,7 +742,7 @@ async function startCVGeneration(answers, language, format) {
   if (response.sections && response.sections.length > 0) {
     renderDiffScreen(response.sections);
   } else {
-    showCVResult(response.cvText);
+    showCVResult(response.cvText, state.coverLetterText);
   }
 }
 
@@ -743,8 +753,16 @@ function setProgress(pct, title, subtitle) {
   if (subtitle) document.getElementById('genSubtitle').textContent = subtitle;
 }
 
-function showCVResult(cvText) {
+function showCVResult(cvText, coverLetterText) {
   document.getElementById('cvPreview').textContent = cvText;
+  const clSection = document.getElementById('coverLetterSection');
+  const clTextarea = document.getElementById('coverLetterTextarea');
+  if (coverLetterText) {
+    clTextarea.value = coverLetterText;
+    clSection.style.display = 'block';
+  } else {
+    clSection.style.display = 'none';
+  }
   showScreen('cv-result');
 }
 
@@ -917,7 +935,7 @@ document.getElementById('btnApproveDiff').addEventListener('click', async () => 
   });
   const finalCvText = applyDiffChoices(state.generatedCV, state.diffSections, choices);
   state.generatedCV = finalCvText;
-  showCVResult(finalCvText);
+  showCVResult(finalCvText, state.coverLetterText);
 });
 
 document.getElementById('btnDownloadPdf').addEventListener('click', () => {
@@ -993,7 +1011,15 @@ document.getElementById('btnCopyCV').addEventListener('click', async () => {
   await navigator.clipboard.writeText(state.generatedCV);
   const btn = document.getElementById('btnCopyCV');
   btn.textContent = '✅ הועתק!';
-  setTimeout(() => { btn.textContent = '📋 העתק'; }, 1500);
+  setTimeout(() => { btn.textContent = '📋 העתק טקסט'; }, 1500);
+});
+
+document.getElementById('btnCopyCoverLetter').addEventListener('click', async () => {
+  const text = document.getElementById('coverLetterTextarea').value;
+  await navigator.clipboard.writeText(text);
+  const btn = document.getElementById('btnCopyCoverLetter');
+  btn.textContent = '✅ הועתק!';
+  setTimeout(() => { btn.textContent = '📋 העתק מכתב מקדים'; }, 1500);
 });
 
 document.getElementById('btnBackToMain').addEventListener('click', () => {
@@ -1298,9 +1324,10 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
 
       if (saved.generatedCV) {
         state.generatedCV = saved.generatedCV;
+        state.coverLetterText = saved.coverLetterText || '';
         state.analysis = saved.analysis;
         state.cvIsRtl = (saved.cvLanguage || saved.jobLanguage || 'english') === 'hebrew';
-        showCVResult(saved.generatedCV);
+        showCVResult(saved.generatedCV, state.coverLetterText);
         return;
       }
       if (saved.analysis) {

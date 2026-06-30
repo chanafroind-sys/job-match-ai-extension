@@ -134,8 +134,9 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       answers: req.answers,
       cvUrls: req.cvUrls || [],
       userConstraints: req.userConstraints || '',
+      generateCoverLetter: req.generateCoverLetter || false,
     }, req.licenseKey)
-      .then(data => sendResponse({ cvText: data.cvText, appId: data.appId, sections: data.sections || [] }))
+      .then(data => sendResponse({ cvText: data.cvText, appId: data.appId, sections: data.sections || [], coverLetterText: data.coverLetterText || '' }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));
     return true;
   }
