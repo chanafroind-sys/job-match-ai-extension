@@ -337,9 +337,13 @@ def parse_cv_sections_py(cv_text: str) -> dict:
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-QUESTIONS_PROMPT = """You are a recruiter screening a candidate. Read the CV and job description, then identify 1-3 skills or experiences that are either missing from the CV or mentioned too vaguely to evaluate — and that are clearly required or strongly preferred by this job.
+QUESTIONS_PROMPT = """You are a recruiter screening a candidate. Read the CV and job description carefully, then identify the most important skills or experiences that are either missing from the CV or mentioned too vaguely to evaluate — and that are clearly required or strongly preferred by this job.
 
-IMPORTANT: Always return at least 1 question. If the CV perfectly matches the job, still pick the most important skill to verify.
+Return between 3 and 5 questions:
+- If the job requirements are straightforward and the CV covers them well: return 3 questions focusing on the most critical gaps.
+- If the job has many requirements or the CV has significant gaps across multiple areas: return up to 5 questions.
+- Always return at least 3 questions. Even if the CV seems like a strong match, pick the skills most important to verify.
+
 ALL text fields (question, why, heExplanation) MUST be written in Hebrew (עברית). Keep only skill names in English.
 
 Return JSON only — no markdown, no explanation, no text before or after:
@@ -690,7 +694,7 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
         await verify_gumroad_license(license_key)
         prompt = QUESTIONS_PROMPT.format(cv_text=body.cvText[:1500], job_text=body.jobText[:2000])
         try:
-            raw = await call_claude(prompt, max_tokens=600)
+            raw = await call_claude(prompt, max_tokens=900)
             print(f"[JMA:preflight] raw_len={len(raw)} raw_start={raw[:200]!r}")
             result = parse_json_response(raw)
             q_count = len(result.get("questions", []))

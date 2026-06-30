@@ -670,9 +670,22 @@ async function startCVGeneration(answers, language, format) {
   format = format || 'docx';
   state.cvIsRtl = language === 'hebrew';
   showScreen('generating');
-  setProgress(0, 'מתאים קורות חיים למשרה...', 'Pass 1 מ-3');
+  setProgress(0, 'מתאים קורות חיים למשרה...', 'מתחברת לשרת...');
 
-  setTimeout(() => setProgress(20, 'מתאים קורות חיים למשרה...', 'שולח ל-AI...'), 300);
+  // Smooth progress: +2% every 400 ms, capped at 90% until response arrives
+  let _pct = 0;
+  const _progressStages = [
+    [0,  'מתאים קורות חיים למשרה...'],
+    [28, 'בוחן פערי התאמה...'],
+    [52, 'כותב גרסה משופרת...'],
+    [72, 'מנתח שינויים...'],
+  ];
+  const _progressInterval = setInterval(() => {
+    if (_pct >= 90) return;
+    _pct = Math.min(_pct + 2, 90);
+    const label = _progressStages.reduce((acc, [at, lbl]) => _pct >= at ? lbl : acc, _progressStages[0][1]);
+    setProgress(_pct, label, '');
+  }, 400);
 
   const response = await chrome.runtime.sendMessage({
     action: 'generateCV',
@@ -685,14 +698,14 @@ async function startCVGeneration(answers, language, format) {
     userConstraints: state.userConstraints || '',
   });
 
+  clearInterval(_progressInterval);
+
   if (response.error) {
     showMainError(response.error);
     showScreen('main');
     return;
   }
 
-  setProgress(70, 'מנתח שינויים...', 'Pass 3 מ-3');
-  await new Promise(r => setTimeout(r, 500));
   setProgress(100, 'הושלם!', '');
 
   state.generatedCV = response.cvText;
@@ -859,8 +872,12 @@ function renderDiffScreen(sections) {
     container.innerHTML = '<div class="diff-no-changes">✅ ה-AI לא ביצע שינויים משמעותיים — קורות החיים ייוצאו כפי שהם.</div>';
   } else {
     changed.forEach(sec => {
-      const hasOriginal = sec.original_text && sec.original_text.trim().length > 5;
-      const diffHtml    = buildDiffHtml(sec.original_text || '', sec.updated_text || '', hasOriginal);
+      const origTrimmed = (sec.original_text || '').trim();
+      const updTrimmed  = (sec.updated_text  || '').trim();
+      const hasOriginal = origTrimmed.length > 5;
+      // Skip card if no meaningful content to show
+      if (!updTrimmed) return;
+
       const card = document.createElement('div');
       card.className = 'diff-card';
       card.innerHTML = `
@@ -875,7 +892,8 @@ function renderDiffScreen(sections) {
             <span>אשר שינוי</span>
           </label>
         </div>
-        <div class="diff-unified">${diffHtml}</div>
+        ${hasOriginal ? `<div class="diff-before">${escHtml(origTrimmed)}</div>` : ''}
+        <div class="diff-after">${escHtml(updTrimmed)}</div>
       `;
       container.appendChild(card);
     });
@@ -1252,6 +1270,19 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    // LinkedIn SPA: if user navigated to a new job since the last analysis,
+    // skip state restoration and go straight to the ready screen
+    if (tab?.id) {
+      const navKey = `jma_nav_${tab.id}`;
+      const navCheck = await chrome.storage.local.get([navKey]);
+      if (navCheck[navKey]) {
+        await chrome.storage.local.remove([navKey]);
+        await showReadyScreen();
+        return;
+      }
+    }
+
     const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
     const saved = await loadJobState(tab?.url);
 

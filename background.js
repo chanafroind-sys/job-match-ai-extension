@@ -87,6 +87,24 @@ async function backendPost(endpoint, body, licenseKey) {
   });
 }
 
+// LinkedIn SPA navigation detector
+// When the user browses between job postings inside LinkedIn, the URL changes
+// but the page never fully reloads, so the old analysis would re-appear.
+// We stamp a flag in storage; the popup reads it on open and forces a fresh start.
+{
+  const _linkedinTabUrls = {};
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (!changeInfo.url) return;
+    const url = changeInfo.url;
+    if (!url.includes('linkedin.com')) return;
+    const prev = _linkedinTabUrls[tabId];
+    _linkedinTabUrls[tabId] = url;
+    if (prev && prev !== url) {
+      chrome.storage.local.set({ [`jma_nav_${tabId}`]: Date.now() }).catch(() => {});
+    }
+  });
+}
+
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === 'verifyLicense') {

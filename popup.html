@@ -268,39 +268,30 @@
   }
   .diff-approve-label input { accent-color: var(--success); cursor: pointer; }
 
-  /* ③ Unified word-level diff view */
-  .diff-unified {
+  /* ③ Paragraph-level diff blocks — original then proposed */
+  .diff-before {
     padding: 10px 12px;
     font-size: 11.5px;
-    line-height: 1.8;
+    line-height: 1.7;
     white-space: pre-wrap;
     word-break: break-word;
     direction: rtl;
-    color: #e6edf3;
-  }
-
-  /* Inline change markers */
-  .diff-ins {
-    background: rgba(63,185,80,0.28);
-    color: #7ee787;
-    border-radius: 3px;
-    padding: 1px 3px;
-    font-weight: 500;
-  }
-  .diff-del {
-    background: rgba(248,81,73,0.22);
     color: #ff7b72;
     text-decoration: line-through;
-    text-decoration-color: #ff7b72;
-    border-radius: 3px;
-    padding: 1px 3px;
+    text-decoration-color: rgba(248,81,73,0.55);
+    background: rgba(248,81,73,0.07);
+    border-bottom: 1px solid rgba(248,81,73,0.18);
   }
-
-  /* Fallback block view (large rewrites) */
-  .diff-block-sep { border-top: 1px dashed var(--border); margin: 4px 12px; }
-  .diff-block-label { font-size: 10px; font-weight: 700; margin-bottom: 3px; }
-  .diff-block-label.lbl-before { color: #ff7b72; }
-  .diff-block-label.lbl-after  { color: #7ee787; }
+  .diff-after {
+    padding: 10px 12px;
+    font-size: 11.5px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    direction: rtl;
+    color: #7ee787;
+    background: rgba(63,185,80,0.07);
+  }
 
   .diff-no-changes { text-align:center; padding: 28px 16px; color: var(--text-muted); font-size: 13px; }
   .settings-input {
