@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Match AI — דשבורד אנליטיקה</title>
+<style>
+  :root {
+    --bg:        #0d1117;
+    --bg-card:   #161b22;
+    --bg-hover:  #21262d;
+    --border:    #30363d;
+    --accent:    #7c3aed;
+    --blue:      #2563eb;
+    --teal:      #0891b2;
+    --green:     #16a34a;
+    --yellow:    #d97706;
+    --red:       #dc2626;
+    --orange:    #ea580c;
+    --pink:      #db2777;
+    --text:      #f0f6fc;
+    --muted:     #8b949e;
+    --dim:       #484f58;
+    --success:   #3fb950;
+    --radius:    10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    direction: rtl;
+  }
+
+  /* ── Header ── */
+  .dash-header {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .dash-logo { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  .dash-logo span { font-size: 24px; }
+  .dash-date { font-size: 12px; color: var(--muted); }
+
+  /* ── Layout ── */
+  .dash-body { padding: 24px 32px; max-width: 1200px; margin: 0 auto; }
+
+  /* ── KPI row ── */
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+  .kpi-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .kpi-icon { font-size: 22px; margin-bottom: 6px; }
+  .kpi-value { font-size: 32px; font-weight: 700; line-height: 1; }
+  .kpi-label { font-size: 12px; color: var(--muted); }
+  .kpi-card.accent  .kpi-value { color: var(--accent); }
+  .kpi-card.green   .kpi-value { color: var(--success); }
+  .kpi-card.blue    .kpi-value { color: #60a5fa; }
+  .kpi-card.yellow  .kpi-value { color: #fbbf24; }
+
+  /* ── Charts row ── */
+  .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 24px; }
+  .chart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+  }
+  .chart-title { font-size: 14px; font-weight: 600; margin-bottom: 16px; color: var(--text); }
+  canvas { display: block; }
+  .chart-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 40px 0; }
+
+  /* ── Market section ── */
+  .market-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px 24px;
+    margin-bottom: 24px;
+  }
+  .market-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .market-title { font-size: 15px; font-weight: 700; }
+  .market-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .market-filters select, .market-filters button {
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .market-filters button { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .market-filters button:hover { opacity: 0.88; }
+  .market-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .market-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+  .market-metric { font-size: 38px; font-weight: 700; line-height: 1; color: var(--accent); margin-bottom: 4px; }
+  .market-metric .unit { font-size: 18px; font-weight: 400; color: var(--muted); }
+  .market-label { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .market-sub { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .trending-company {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .trending-company:last-child { border-bottom: none; }
+  .trending-rank {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .trending-name { flex: 1; font-size: 13px; font-weight: 500; }
+  .trending-openings { font-size: 11px; color: var(--muted); background: var(--bg-hover); border-radius: 4px; padding: 2px 8px; }
+  .market-loading { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .market-error { color: var(--red); font-size: 13px; padding: 8px 0; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .dash-body { padding: 16px; }
+    .kpi-row { grid-template-columns: repeat(2, 1fr); }
+    .charts-row, .market-cards { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="dash-header">
+  <div class="dash-logo"><span>🎯</span> Job Match AI — דשבורד אנליטיקה</div>
+  <div class="dash-date" id="dateNow"></div>
+</div>
+
+<div class="dash-body">
+
+  <!-- KPI row -->
+  <div class="kpi-row">
+    <div class="kpi-card accent">
+      <div class="kpi-icon">📋</div>
+      <div class="kpi-value" id="kpiTotal">—</div>
+      <div class="kpi-label">סה"כ משרות שנותחו</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-icon">✅</div>
+      <div class="kpi-value" id="kpiSubmitted">—</div>
+      <div class="kpi-label">הגשות שבוצעו</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-icon">🤖</div>
+      <div class="kpi-value" id="kpiCvGenerated">—</div>
+      <div class="kpi-label">קורות חיים הוכנו</div>
+    </div>
+    <div class="kpi-card yellow">
+      <div class="kpi-icon">⭐</div>
+      <div class="kpi-value" id="kpiAvgScore">—</div>
+      <div class="kpi-label">ציון התאמה ממוצע</div>
+    </div>
+  </div>
+
+  <!-- Charts row -->
+  <div class="charts-row">
+    <div class="chart-card">
+      <div class="chart-title">📊 משפך המועמדות</div>
+      <div id="funnelEmpty" class="chart-empty" style="display:none">אין נתונים עדיין</div>
+      <canvas id="funnelCanvas" width="500" height="200"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">🥧 מקורות משרות</div>
+      <div id="platformEmpty" class="chart-empty" style="display:none">אין נתונים עדיין</div>
+      <canvas id="platformCanvas" width="500" height="200"></canvas>
+    </div>
+  </div>
+
+  <!-- Market benchmarking -->
+  <div class="market-section">
+    <div class="market-top">
+      <div class="market-title">🌍 מצב השוק לפרופיל שלך</div>
+      <div class="market-filters">
+        <select id="titleSelect">
+          <option value="Software Engineer">Software Engineer</option>
+          <option value="Backend Developer">Backend Developer</option>
+          <option value="Frontend Developer">Frontend Developer</option>
+          <option value="Full Stack Developer">Full Stack Developer</option>
+          <option value="Data Engineer">Data Engineer</option>
+          <option value="DevOps Engineer">DevOps Engineer</option>
+          <option value="ML Engineer">ML Engineer</option>
+          <option value="QA Engineer">QA Engineer</option>
+        </select>
+        <select id="yearsExpSelect">
+          <option value="1">0–1 שנים</option>
+          <option value="2">1–3 שנים</option>
+          <option value="4" selected>3–6 שנים</option>
+          <option value="7">6+ שנים</option>
+        </select>
+        <button id="btnRefreshMarket">עדכן</button>
+      </div>
+    </div>
+    <div class="market-cards" id="marketCards">
+      <div class="market-card"><div class="market-loading">⏳ טוען נתוני שוק...</div></div>
+      <div class="market-card"><div class="market-loading">⏳ טוען...</div></div>
+      <div class="market-card"><div class="market-loading">⏳ טוען...</div></div>
+    </div>
+  </div>
+
+</div><!-- /dash-body -->
+
+<script src="dashboard.js"></script>
+</body>
+</html>

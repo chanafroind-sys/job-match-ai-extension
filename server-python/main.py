@@ -843,6 +843,56 @@ async def get_clicks(app_ids: str = ""):
     return {"clicks": result}
 
 
+@app.get("/api/analytics/market-compare")
+async def market_compare(years_exp: int = 3, title: str = "Software Engineer"):
+    """
+    Return anonymised market-benchmark data for the requesting developer's profile.
+    Currently returns a stable mock; will be backed by aggregated opt-in telemetry.
+    """
+    # Tier buckets so the mock feels context-sensitive
+    if years_exp <= 1:
+        percentile, avg_days = 62, 11
+        companies = [
+            {"name": "WalkMe", "openings": 8},
+            {"name": "Fiverr", "openings": 6},
+            {"name": "IronSource", "openings": 5},
+        ]
+    elif years_exp <= 3:
+        percentile, avg_days = 74, 9
+        companies = [
+            {"name": "Monday.com", "openings": 18},
+            {"name": "Wix", "openings": 14},
+            {"name": "Amdocs", "openings": 11},
+        ]
+    elif years_exp <= 6:
+        percentile, avg_days = 81, 7
+        companies = [
+            {"name": "Microsoft IL", "openings": 24},
+            {"name": "Google IL", "openings": 19},
+            {"name": "Checkpoint", "openings": 16},
+        ]
+    else:
+        percentile, avg_days = 88, 6
+        companies = [
+            {"name": "Amazon IL", "openings": 31},
+            {"name": "Meta IL", "openings": 22},
+            {"name": "Nvidia IL", "openings": 20},
+        ]
+
+    return {
+        "percentile": percentile,
+        "avg_response_days": avg_days,
+        "top_trending_companies": companies,
+        "week_activity": {
+            "applications_avg_peers": 4,
+        },
+        "response_rate": {
+            "market_avg_pct": 21,
+        },
+        "profile": {"years_exp": years_exp, "title": title},
+    }
+
+
 @app.get("/api/v1/track")
 async def track_click(app_id: str, target: str, url: str):
     """Log a link click and redirect to the original URL."""

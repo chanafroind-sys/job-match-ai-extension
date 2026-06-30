@@ -358,6 +358,10 @@ document.getElementById('btnTracker').addEventListener('click', () => {
   showTrackerScreen();
 });
 
+document.getElementById('btnOpenDashboard').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+});
+
 document.getElementById('btnTrackerBack').addEventListener('click', () => {
   showScreen('main');
 });

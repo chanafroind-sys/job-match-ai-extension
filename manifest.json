@@ -3,7 +3,7 @@
   "name": "Job Match AI",
   "version": "3.2.0",
   "description": "ניתוח משרות חכם + קורות חיים מותאמים + מעקב הגשות",
-  "permissions": ["activeTab", "storage", "scripting"],
+  "permissions": ["activeTab", "storage", "scripting", "tabs"],
   "host_permissions": [
     "https://job-match-ai-extension.onrender.com/*",
     "https://*/*",
