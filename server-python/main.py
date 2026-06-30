@@ -851,32 +851,32 @@ async def market_compare(years_exp: int = 3, title: str = "Software Engineer"):
     """
     # Tier buckets so the mock feels context-sensitive
     if years_exp <= 1:
-        percentile, avg_days = 62, 11
+        percentile, avg_days = 45, 14
         companies = [
-            {"name": "WalkMe", "openings": 8},
-            {"name": "Fiverr", "openings": 6},
-            {"name": "IronSource", "openings": 5},
+            {"name": "WalkMe", "openings": 5},
+            {"name": "Fiverr", "openings": 4},
+            {"name": "IronSource", "openings": 3},
         ]
     elif years_exp <= 3:
-        percentile, avg_days = 74, 9
+        percentile, avg_days = 63, 10
         companies = [
-            {"name": "Monday.com", "openings": 18},
-            {"name": "Wix", "openings": 14},
-            {"name": "Amdocs", "openings": 11},
+            {"name": "Monday.com", "openings": 14},
+            {"name": "Wix", "openings": 11},
+            {"name": "Amdocs", "openings": 9},
         ]
     elif years_exp <= 6:
-        percentile, avg_days = 81, 7
+        percentile, avg_days = 79, 6
         companies = [
-            {"name": "Microsoft IL", "openings": 24},
-            {"name": "Google IL", "openings": 19},
-            {"name": "Checkpoint", "openings": 16},
+            {"name": "Microsoft IL", "openings": 31},
+            {"name": "Google IL", "openings": 26},
+            {"name": "Checkpoint", "openings": 22},
         ]
     else:
-        percentile, avg_days = 88, 6
+        percentile, avg_days = 93, 3
         companies = [
-            {"name": "Amazon IL", "openings": 31},
-            {"name": "Meta IL", "openings": 22},
-            {"name": "Nvidia IL", "openings": 20},
+            {"name": "Amazon IL", "openings": 48},
+            {"name": "Meta IL", "openings": 41},
+            {"name": "Nvidia IL", "openings": 37},
         ]
 
     return {

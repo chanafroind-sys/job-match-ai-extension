@@ -358,7 +358,7 @@ document.getElementById('btnTracker').addEventListener('click', () => {
   showTrackerScreen();
 });
 
-document.getElementById('btnOpenDashboard').addEventListener('click', () => {
+document.getElementById('btnDashboard').addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
 });
 
