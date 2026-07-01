@@ -254,18 +254,22 @@ async def verify_gumroad_license(license_key: str) -> dict:
 
     for pid in _product_ids_to_try:
         try:
+            payload: dict = {
+                "product_id": pid,
+                "license_key": license_key.strip(),
+                "increment_uses_count": "false",
+            }
+            if GUMROAD_ACCESS_TOKEN:
+                payload["access_token"] = GUMROAD_ACCESS_TOKEN
             async with httpx.AsyncClient(timeout=12) as client:
                 resp = await client.post(
                     "https://api.gumroad.com/v2/licenses/verify",
-                    data={
-                        "product_id": pid,
-                        "license_key": license_key.strip(),
-                        "increment_uses_count": "false",
-                    },
+                    data=payload,
                 )
             data = resp.json()
             print(f"[JMA:verify] Gumroad pid={pid!r} status={resp.status_code} "
-                  f"success={data.get('success')} msg={data.get('message','')!r}")
+                  f"success={data.get('success')} msg={data.get('message','')!r} "
+                  f"full={str(data)[:300]}")
             if data.get("success"):
                 break   # found the right product — stop trying
         except Exception as e:
