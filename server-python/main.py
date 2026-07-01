@@ -186,7 +186,7 @@ def increment_usage(license_key: str) -> int:
 
 _license_cache: dict[str, dict] = {}
 _CACHE_TTL_VALID   = 3600   # 1 h  — valid licenses
-_CACHE_TTL_INVALID = 300    # 5 min — bad/cancelled keys (rate-limit protection)
+_CACHE_TTL_INVALID = 30     # 30 s — failed lookups (short so mis-typed or mis-matched keys retry quickly)
 
 def _ck(license_key: str) -> str:
     return hashlib.sha256(license_key.strip().lower().encode()).hexdigest()
@@ -239,31 +239,50 @@ async def verify_gumroad_license(license_key: str) -> dict:
         print(f"[JMA:verify] CACHE HIT key={masked} tier={cached['data'].get('tier')}")
         return cached["data"]
 
-    # ── Gumroad API call ──────────────────────────────────────────────────────
-    try:
-        async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.post(
-                "https://api.gumroad.com/v2/licenses/verify",
-                data={
-                    "product_id": GUMROAD_PRODUCT_PERMALINK,
-                    "license_key": license_key.strip(),
-                    "increment_uses_count": "false",
-                },
-            )
-        data = resp.json()
-        print(f"[JMA:verify] Gumroad status={resp.status_code} success={data.get('success')}")
-    except Exception as e:
-        print(f"[JMA:verify] Gumroad network error: {e}")
-        # Grace fallback: serve stale cache rather than locking out existing users
-        stale = _license_cache.get(_ck(license_key))
-        if stale and stale["valid"] and stale["data"]:
-            print(f"[JMA:verify] serving stale cache (Gumroad unreachable) key={masked}")
-            return stale["data"]
-        raise HTTPException(status_code=503,
-            detail="לא הצלחנו להגיע לשירות אימות הרישיון. נסי שוב בעוד רגע.")
+    # ── Gumroad API call — try all known product IDs ──────────────────────────
+    # A license key is tied to whichever product the user purchased from.
+    # We try GUMROAD_PRODUCT_PERMALINK first, then fall back to GUMROAD_PRODUCT_ID
+    # (which may hold an older permalink like "oechku") so users who bought before
+    # a product rename are not locked out.
+    _product_ids_to_try: list[str] = list(dict.fromkeys(filter(None, [
+        GUMROAD_PRODUCT_PERMALINK,   # current permalink  (e.g. "job-match-ai")
+        GUMROAD_PRODUCT_ID,          # legacy env-var value (e.g. "oechku")
+    ])))
+
+    data: dict = {}
+    last_network_error: Exception | None = None
+
+    for pid in _product_ids_to_try:
+        try:
+            async with httpx.AsyncClient(timeout=12) as client:
+                resp = await client.post(
+                    "https://api.gumroad.com/v2/licenses/verify",
+                    data={
+                        "product_id": pid,
+                        "license_key": license_key.strip(),
+                        "increment_uses_count": "false",
+                    },
+                )
+            data = resp.json()
+            print(f"[JMA:verify] Gumroad pid={pid!r} status={resp.status_code} "
+                  f"success={data.get('success')} msg={data.get('message','')!r}")
+            if data.get("success"):
+                break   # found the right product — stop trying
+        except Exception as e:
+            print(f"[JMA:verify] Gumroad network error pid={pid!r}: {e}")
+            last_network_error = e
 
     if not data.get("success"):
-        print(f"[JMA:verify] Gumroad success=false: {data.get('message', '')}")
+        if last_network_error and not data:
+            # All attempts were network failures — try stale cache as grace fallback
+            stale = _license_cache.get(_ck(license_key))
+            if stale and stale["valid"] and stale["data"]:
+                print(f"[JMA:verify] serving stale cache (Gumroad unreachable) key={masked}")
+                return stale["data"]
+            raise HTTPException(status_code=503,
+                detail="לא הצלחנו להגיע לשירות אימות הרישיון. נסי שוב בעוד רגע.")
+
+        print(f"[JMA:verify] all product_ids rejected key={masked} tried={_product_ids_to_try}")
         _cache_set(license_key, None, valid=False)
         raise HTTPException(status_code=403, detail="Invalid or expired license key.")
 
