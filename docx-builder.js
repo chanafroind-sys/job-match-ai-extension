@@ -115,10 +115,17 @@ function makeRichRuns(text, baseOpts = {}) {
 
 function makeBulletParagraph(text, isRtl) {
   const align = isRtl ? 'right' : 'left';
-  const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360" w:hanging="180"/>`;
+  // RTL: indent from right with hanging so bullet hangs at the right margin.
+  // The hanging value (180 twips ≈ 0.25 cm) keeps the bullet flush-right while
+  // wrapped lines indent inward — matching standard Word RTL bullet layout.
+  const indent = isRtl
+    ? `<w:ind w:right="360" w:hanging="180"/>`
+    : `<w:ind w:left="360" w:hanging="180"/>`;
   const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}${indent}<w:spacing w:after="30" w:line="240" w:lineRule="auto"/></w:pPr>`;
   const bulletRun = makeRun('• ', { size: 21, color: '1f2937' });
   const contentRuns = makeRichRuns(text, { size: 21, color: '1f2937' });
+  // In RTL paragraphs Word renders runs right-to-left, so bullet run (first in XML)
+  // appears on the right side — correct for Hebrew layout.
   return `<w:p>${pPr}${bulletRun}${contentRuns}</w:p>`;
 }
 
@@ -465,12 +472,17 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <w:docDefaults>
     <w:rPrDefault>
       <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Arial"/>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Arial Unicode MS" w:eastAsia="Arial"/>
         <w:sz w:val="21"/>
         <w:szCs w:val="21"/>
-        <w:lang w:val="en-US" w:eastAsia="en-US" w:bidi="he-IL"/>
+        <w:lang w:val="he-IL" w:eastAsia="he-IL" w:bidi="he-IL"/>
       </w:rPr>
     </w:rPrDefault>
+    <w:pPrDefault>
+      <w:pPr>
+        <w:spacing w:after="60" w:line="252" w:lineRule="auto"/>
+      </w:pPr>
+    </w:pPrDefault>
   </w:docDefaults>
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
     <w:name w:val="Normal"/>

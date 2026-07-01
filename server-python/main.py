@@ -26,7 +26,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "https://job-match-ai-extension.onrender.
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
 
 # Gumroad — product permalink used as product_id in the API (both work)
-GUMROAD_PRODUCT_PERMALINK: str = os.getenv("GUMROAD_PRODUCT_PERMALINK", "oechku")
+GUMROAD_PRODUCT_PERMALINK: str = os.getenv("GUMROAD_PRODUCT_PERMALINK", "job-match-ai")
 GUMROAD_ACCESS_TOKEN: str   = os.getenv("GUMROAD_ACCESS_TOKEN", "")   # seller token, for future use
 GUMROAD_SELLER_HANDLE: str  = os.getenv("GUMROAD_SELLER_HANDLE", "expertdevai")
 UPGRADE_URL: str = f"https://{GUMROAD_SELLER_HANDLE}.gumroad.com/l/{GUMROAD_PRODUCT_PERMALINK}"

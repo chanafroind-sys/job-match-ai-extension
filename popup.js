@@ -965,46 +965,100 @@ document.getElementById('btnDownloadDocx').addEventListener('click', async () =>
 
 function buildCvPrintHtml(cvText, isRtl) {
   const dir = isRtl ? 'rtl' : 'ltr';
-  const ta = isRtl ? 'right' : 'left';
+  const ta  = isRtl ? 'right' : 'left';
   const secs = parseCVSections(cvText);
-  function renderInline(text) {
-    return text
-      .replace(/\[LINK:([^\|]*)\|([^\]]*)\]/g, (_, display, url) =>
-        `<a href="${url}" style="color:#7c3aed">${display}</a>`)
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Wrap English technical terms/sequences in <bdi> so the browser bidi algorithm
+  // keeps them inline-level LTR without disrupting the surrounding RTL flow.
+  function bdiWrap(text) {
+    if (!isRtl) return text;
+    // Match runs of ASCII letters/digits/common tech punctuation (URLs, versions, etc.)
+    return text.replace(/([A-Za-z][A-Za-z0-9_.+\-/#@]*(?:\s[A-Za-z][A-Za-z0-9_.+\-/#@]*)*)/g,
+      (m) => `<bdi>${m}</bdi>`);
   }
+
+  function renderInline(text) {
+    const linked = text
+      .replace(/\[LINK:([^\|]*)\|([^\]]*)\]/g, (_, display, url) =>
+        `<a href="${url}" style="color:#7c3aed"><bdi>${display}</bdi></a>`)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return bdiWrap(linked);
+  }
+
+  // Group consecutive bullet lines inside a <ul> so browser list styling applies.
   function ren(txt) {
     if (!txt) return '';
-    return txt.split('\n').map(l => {
-      l = l.trim(); if (!l) return '';
+    const lines = txt.split('\n').map(l => l.trim()).filter(Boolean);
+    const parts = [];
+    let inList = false;
+    for (const l of lines) {
       const isBul = l.startsWith('$ ') || l.startsWith('•') || l.startsWith('- ');
       const cl = isBul ? l.replace(/^\$\s+|^[•\-]\s*/, '') : l;
       const html = renderInline(cl);
-      return isBul ? `<li>${html}</li>` : `<p>${html}</p>`;
-    }).join('');
+      if (isBul) {
+        if (!inList) { parts.push(`<ul dir="${dir}">`); inList = true; }
+        parts.push(`<li>${html}</li>`);
+      } else {
+        if (inList) { parts.push('</ul>'); inList = false; }
+        parts.push(`<p>${html}</p>`);
+      }
+    }
+    if (inList) parts.push('</ul>');
+    return parts.join('');
   }
+
+  const labels = isRtl
+    ? { profile: 'פרופיל', experience: 'ניסיון', education: 'השכלה', skills: 'כישורים', languages: 'שפות' }
+    : { profile: 'Profile', experience: 'Experience', education: 'Education', skills: 'Skills', languages: 'Languages' };
+
   const secHtml = [
-    secs['[PROFILE]'] ? `<h2>Profile</h2>${ren(secs['[PROFILE]'])}` : '',
-    secs['[EXPERIENCE]'] ? `<h2>Experience</h2>${ren(secs['[EXPERIENCE]'])}` : '',
-    secs['[EDUCATION]'] ? `<h2>Education</h2>${ren(secs['[EDUCATION]'])}` : '',
-    secs['[SKILLS]'] ? `<h2>Skills</h2>${ren(secs['[SKILLS]'])}` : '',
-    secs['[LANGUAGES]'] ? `<h2>Languages</h2>${ren(secs['[LANGUAGES]'])}` : '',
+    secs['[PROFILE]']    ? `<h2>${labels.profile}</h2>${ren(secs['[PROFILE]'])}` : '',
+    secs['[EXPERIENCE]'] ? `<h2>${labels.experience}</h2>${ren(secs['[EXPERIENCE]'])}` : '',
+    secs['[EDUCATION]']  ? `<h2>${labels.education}</h2>${ren(secs['[EDUCATION]'])}` : '',
+    secs['[SKILLS]']     ? `<h2>${labels.skills}</h2>${ren(secs['[SKILLS]'])}` : '',
+    secs['[LANGUAGES]']  ? `<h2>${labels.languages}</h2>${ren(secs['[LANGUAGES]'])}` : '',
   ].join('');
-  return `<!DOCTYPE html><html dir="${dir}"><head><meta charset="UTF-8"><title>CV</title>
+
+  return `<!DOCTYPE html><html lang="${isRtl ? 'he' : 'en'}" dir="${dir}"><head><meta charset="UTF-8"><title>CV</title>
 <style>
   @media print { @page { margin: 1.5cm; } body { margin: 0; } }
-  body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1f2937; direction: ${dir}; text-align: ${ta}; margin: 1.5cm; }
+  body {
+    font-family: 'Arial', 'Calibri', sans-serif;
+    font-size: 11pt; color: #1f2937;
+    direction: ${dir} !important;
+    text-align: ${ta} !important;
+    unicode-bidi: plaintext;
+    margin: 1.5cm;
+  }
   h1 { text-align: center; font-size: 18pt; margin: 0 0 4px; }
   .hl { text-align: center; color: #7c3aed; font-size: 12pt; margin: 0 0 3px; }
   .ct { text-align: center; color: #6b7280; font-size: 10pt; margin: 0 0 14px; }
-  h2 { font-size: 11pt; color: #7c3aed; border-bottom: 1px solid #7c3aed; margin: 10px 0 3px; padding-bottom: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
-  p { margin: 2px 0; line-height: 1.35; }
-  li { margin: 1px 0; line-height: 1.35; }
-  ul, ol { margin: 2px 0; padding-${isRtl ? 'right' : 'left'}: 18px; }
+  h2 {
+    font-size: 11pt; color: #7c3aed;
+    border-bottom: 1px solid #7c3aed;
+    margin: 10px 0 3px; padding-bottom: 2px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    text-align: ${ta};
+  }
+  p { margin: 2px 0; line-height: 1.35; direction: ${dir}; text-align: ${ta}; }
+  ul, ol {
+    margin: 2px 0;
+    ${isRtl ? 'padding-right: 20px; padding-left: 0;' : 'padding-left: 20px; padding-right: 0;'}
+    list-style-position: outside;
+    direction: ${dir};
+    text-align: ${ta};
+  }
+  li {
+    margin: 1px 0; line-height: 1.4;
+    direction: ${dir}; text-align: ${ta};
+    unicode-bidi: plaintext;
+  }
+  bdi { unicode-bidi: isolate; }
+  strong { font-weight: 700; }
 </style></head><body>
-${secs['[NAME]'] ? `<h1>${secs['[NAME]']}</h1>` : ''}
+${secs['[NAME]']     ? `<h1>${secs['[NAME]']}</h1>` : ''}
 ${secs['[HEADLINE]'] ? `<p class="hl">${secs['[HEADLINE]']}</p>` : ''}
-${secs['[CONTACT]'] ? `<p class="ct">${secs['[CONTACT]'].split('\n').filter(l=>l.trim()).map(renderInline).join(' | ')}</p>` : ''}
+${secs['[CONTACT]']  ? `<p class="ct">${secs['[CONTACT]'].split('\n').filter(l=>l.trim()).map(renderInline).join(' ‏|‏ ')}</p>` : ''}
 ${secHtml}
 <script>window.onload=()=>{ setTimeout(()=>window.print(),300); };<\/script>
 </body></html>`;
