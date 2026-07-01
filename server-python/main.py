@@ -14,6 +14,7 @@ from typing import Optional
 
 import httpx
 from anthropic import AsyncAnthropic
+from json_repair import repair_json
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -417,31 +418,53 @@ async def call_claude(prompt: str, max_tokens: int = 1200) -> str:
     raise last_exc
 
 
-def parse_json_response(text: str) -> dict:
-    # 1. Try markdown code block (```json ... ```)
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if match:
-        raw = match.group(1).strip()
-    else:
-        # 2. Try to extract the first {...} JSON object from the text
-        #    (handles cases where Claude adds intro text before the JSON)
-        obj_match = re.search(r'\{[\s\S]*\}', text)
-        raw = obj_match.group(0) if obj_match else text.strip()
+def _extract_raw(text: str, opening: str = "{", closing: str = "}") -> str:
+    """Pull the first JSON object/array out of LLM text, stripping fences."""
+    # Strip markdown code fences first
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fence:
+        return fence.group(1).strip()
+    # Find the outermost {…} or […]
+    start = text.find(opening)
+    if start == -1:
+        return text.strip()
+    depth, end = 0, start
+    close_ch = closing
+    open_ch  = opening
+    for i, ch in enumerate(text[start:], start):
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    return text[start:end + 1]
+
+
+def _safe_json_loads(raw: str) -> any:
+    """json.loads with json_repair fallback for LLM-produced JSON."""
     try:
         return json.loads(raw)
-    except json.JSONDecodeError as e:
-        print(f"[JMA:parse] JSON decode error: {e} | raw_start={raw[:200]!r}")
-        raise
+    except json.JSONDecodeError:
+        repaired = repair_json(raw, return_objects=True)
+        # repair_json returns the parsed object when return_objects=True
+        return repaired
+
+
+def parse_json_response(text: str) -> dict:
+    raw = _extract_raw(text, "{", "}")
+    result = _safe_json_loads(raw)
+    if not isinstance(result, dict):
+        print(f"[JMA:parse] expected dict, got {type(result)} | raw_start={raw[:200]!r}")
+        raise ValueError("LLM did not return a JSON object")
+    return result
 
 
 def parse_json_array(text: str) -> list:
     """Parse Claude's response as a JSON array, stripping any markdown fences."""
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    raw = match.group(1).strip() if match else text.strip()
-    arr_match = re.search(r'\[[\s\S]*\]', raw)
-    if arr_match:
-        raw = arr_match.group(0)
-    result = json.loads(raw)
+    raw = _extract_raw(text, "[", "]")
+    result = _safe_json_loads(raw)
     return result if isinstance(result, list) else []
 
 
