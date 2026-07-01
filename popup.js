@@ -39,6 +39,13 @@ async function loadJobState(url) {
   return d;
 }
 
+function _applyUpgradeUrl(result) {
+  const url = result && result.upgradeUrl;
+  if (!url) return;
+  const link = document.getElementById('linkUpgradePremium');
+  if (link) link.href = url;
+}
+
 // Screen management
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -333,6 +340,7 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
     toSave.licenseValid = true;
     toSave.isPremium = !!(res.result && res.result.isPremium);
     state.licenseKey = newKey;
+    _applyUpgradeUrl(res.result);
     statusEl.textContent = `✅ אומת: ${newKey.slice(0, 4)}-****-****-${newKey.slice(-4)}${toSave.isPremium ? ' ⭐ פרימיום' : ' (בסיסי)'}`;
     statusEl.style.color = '#4caf50';
     document.getElementById('licenseKeySettings').value = '';
@@ -1329,6 +1337,7 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
   }
 
   state.licenseKey = key;
+  _applyUpgradeUrl(res.result);
   await chrome.storage.local.set({
     licenseKey: key,
     licenseValid: true,
