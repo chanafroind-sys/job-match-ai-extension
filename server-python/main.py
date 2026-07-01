@@ -481,8 +481,12 @@ STEP 2 — deduct from 100:
   Partial / theoretical match on a CRITICAL item: -5 to -12
   Years-of-experience shortfall: (required - actual) / required × 30 pts
   Seniority mismatch (Senior/Lead in title but not in CV): cap score at 65
-  Domain mismatch (e.g. embedded vs web, BI vs ML): cap score at 55
   Missing SECONDARY / nice-to-have: -2 to -5 per item (NEVER more than -5 each)
+
+DOMAIN MISMATCH — apply ONLY when the candidate lacks the critical skills themselves, not merely because their job title or background sounds different:
+  - If the candidate's background is in a different domain BUT they demonstrably possess the CRITICAL skills listed in the job, do NOT apply any domain-mismatch cap. Score purely on skill fit.
+  - Apply "cap at 55" ONLY when the candidate's skills are genuinely misaligned with the critical requirements (e.g. an embedded C developer applying for a React frontend role, with no transferable skills at all).
+  - Example: a backend developer applying for a BI role who has SQL + Power BI + ETL knowledge is NOT a domain mismatch — she has the required skills. Her background in AI does not penalise her.
 
 STEP 3 — positive partial offsets (apply only to secondary gaps):
   Strong relevant academic background: +5
@@ -491,6 +495,7 @@ STEP 3 — positive partial offsets (apply only to secondary gaps):
 
 CALIBRATION: 85+ strong shortlist | 70-84 interview-worthy | 55-69 real gaps | <40 wrong fit
 A candidate who meets all CRITICAL requirements but lacks all SECONDARY ones should score 65-75, not below 55.
+A score below 50 means the candidate is fundamentally missing most of the CRITICAL requirements — not merely that their background sounds different.
 
 - Return JSON only (no markdown, no explanations):
 {{
@@ -751,12 +756,14 @@ SCORING — start from 100 and deduct:
   Partial/theoretical on a CRITICAL item: -5 to -12
   Years shortfall: (required - actual) / required × 30 pts
   Seniority mismatch (Senior/Lead in title but not in CV): cap at 65
-  Domain mismatch (e.g. embedded vs web): cap at 55
   Missing SECONDARY / nice-to-have: -2 to -5 per item (never more than -5 each)
 Positive offsets (secondary gaps only): strong academics +5, adjacent skills +5, relevant projects +5
 
+DOMAIN MISMATCH — cap at 55 ONLY when the candidate genuinely lacks the critical skills. If they have the required skills but come from a different job-title background, do NOT cap — score on skill fit alone.
+
 CALIBRATION: 85+ shortlist | 70-84 interview | 55-69 real gaps | <40 wrong fit
 A candidate meeting all CRITICAL requirements but lacking all SECONDARY ones → 65-75, not below 55.
+A score below 50 means most CRITICAL requirements are missing — not just a different job background.
 
 Return ONLY valid JSON — no markdown, no explanation:
 {{"score": <0-100>, "pro": "<max 10 words — strongest match signal>", "con": "<max 10 words — biggest gap>"}}
@@ -784,10 +791,11 @@ CRITICAL gaps (each deduction is proportional to how critical the requirement ap
 - Missing core tech listed as "required": -15 to -25 per item depending on how central it is
 - Partial/theoretical match on a required skill: -5 to -12
 - Seniority mismatch: Senior/Lead/Staff title with no evidence of that level in CV → cap score at 65
-- Domain mismatch (e.g. embedded vs web): cap score at 55
+- Domain mismatch: cap score at 55 ONLY when the candidate genuinely lacks the critical skills. If they possess the required skills but come from a different job-title background, do NOT apply this cap — score purely on skill fit. A backend developer who has SQL + BI tools + ETL knowledge is NOT a domain mismatch for a BI role.
 
 SECONDARY gaps: -2 to -5 per missing item (NEVER more than -5 per item)
 IMPORTANT: A candidate who meets all CRITICAL requirements but lacks all SECONDARY ones should score 65-75, not below 55.
+A score below 50 means most CRITICAL requirements are absent — not that the job title on the CV sounds different.
 
 POSITIVE signals that can partially offset secondary gaps (not critical ones):
 - Strong relevant academic background: +5
