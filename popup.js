@@ -39,6 +39,23 @@ async function loadJobState(url) {
   return d;
 }
 
+function _prefKey(url) {
+  let h = 0;
+  for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
+  return `jma_pf_${Math.abs(h).toString(36)}`;
+}
+
+// Typewriter effect — fills el.textContent character by character
+function _typewriter(el, text, speed = 16) {
+  el.textContent = '';
+  let i = 0;
+  const timer = setInterval(() => {
+    if (i >= text.length) { clearInterval(timer); return; }
+    el.textContent += text[i++];
+  }, speed);
+  return timer;
+}
+
 function _applyUpgradeUrl(result) {
   const url = result && result.upgradeUrl;
   if (!url) return;
@@ -412,7 +429,7 @@ function hideMainLoading() {
   document.getElementById('loadingHint').style.display = 'none';
 }
 
-function showMainResult(analysis) {
+function showMainResult(analysis, doTypewriter = false) {
   hideMainLoading();
   document.getElementById('mainLoading').style.display = 'none';
   document.getElementById('mainError').style.display = 'none';
@@ -427,7 +444,12 @@ function showMainResult(analysis) {
   document.getElementById('jobTitleEl').textContent = analysis.jobTitle || 'תפקיד לא זוהה';
   document.getElementById('companyEl').textContent = analysis.company || '';
   document.getElementById('verdictEl').innerHTML = `<span class="verdict-badge ${verdict.cls}">${verdict.label}</span>`;
-  document.getElementById('summaryEl').textContent = analysis.summary || '';
+  const summaryEl = document.getElementById('summaryEl');
+  if (doTypewriter && analysis.summary) {
+    _typewriter(summaryEl, analysis.summary, 18);
+  } else {
+    summaryEl.textContent = analysis.summary || '';
+  }
 
   // Strengths
   const strengthsWrap = document.getElementById('strengthsTags');
@@ -467,6 +489,11 @@ function showMainResult(analysis) {
 }
 
 async function startFlow() {
+  // Reset parallel-gen state from any prior run
+  state.cvGenPromise = null;
+  const btn = document.getElementById('btnGenerateCV');
+  if (btn) { btn.disabled = false; btn.style.background = ''; btn.style.boxShadow = ''; btn.onclick = null; }
+
   showScreen('main');
   showMainLoading('מאתר שאלות רלוונטיות למשרה...');
 
@@ -504,6 +531,32 @@ async function startFlow() {
 
   console.log(`[JMA:analyze] startFlow jobText_len=${state.jobText.length} platform=${state.jobPlatform}`);
 
+  // ── Check for FAB-triggered preflight cache (instant path) ───────────────
+  const pKey = _prefKey(state.jobUrl);
+  const pCacheStore = await chrome.storage.local.get([pKey]);
+  const pCache = pCacheStore[pKey];
+  if (pCache && (Date.now() - pCache.ts) < 10 * 60 * 1000 && pCache.questions?.length > 0) {
+    console.log('[JMA:startFlow] using FAB preflight cache — zero wait');
+    state.baseScore = pCache.base_score ?? 0;
+    state.gapPct    = pCache.gap_pct    ?? 0;
+    state.analysis  = {
+      score:       pCache.base_score ?? 0,
+      jobTitle:    pCache.jobTitle   || '',
+      company:     pCache.company    || '',
+      jobLanguage: pCache.jobLanguage || 'hebrew',
+      summary:     pCache.summary    || '',
+      strengths:   pCache.strengths  || [],
+      hard_gaps:   pCache.hard_gaps  || [],
+    };
+    state.questions = pCache.questions;
+    await saveJobState({ analysis: state.analysis, baseScore: state.baseScore, gapPct: state.gapPct, questions: state.questions });
+    // Clear cache so it won't be reused on a re-analysis
+    chrome.storage.local.remove([pKey]);
+    showQuestionsScreen(pCache.questions);
+    return;
+  }
+
+  // ── Normal preflight path ─────────────────────────────────────────────────
   // Show "waking up" message after 15 s so user knows we're waiting for Render cold-start
   const wakeTimer = setTimeout(() => showMainLoading('השרת מתעורר, זה יכול לקחת עד דקה...'), 15000);
 
@@ -594,7 +647,10 @@ async function runFullAnalysis(answers) {
 }
 
 // Generate CV flow
-document.getElementById('btnGenerateCV').addEventListener('click', () => {
+document.getElementById('btnGenerateCV').addEventListener('click', (e) => {
+  // When _armCvButton is active it sets btn.onclick which fires first and calls
+  // stopImmediatePropagation; if cvGenPromise is set it means parallel flow is active
+  if (state.cvGenPromise) return; // handled by _armCvButton's onclick
   showCVOptionsScreen();
 });
 
@@ -697,6 +753,38 @@ function showQuestionsScreen(questions, savedAnswers) {
     _updateQuestionsScore();
   }
 
+  // ── Inline output options (language + format) ────────────────────────────
+  const autoLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
+  cvOptions.language = autoLang;
+  cvOptions.format = 'docx';
+  const outOpts = document.createElement('div');
+  outOpts.className = 'output-opts-inline';
+  outOpts.innerHTML = `
+    <div class="settings-label" style="margin:18px 0 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">📁 הגדרות הקובץ הסופי</div>
+    <div class="cv-opts-row" id="_qsLangRow">
+      <button class="cv-opt-btn ${autoLang === 'english' ? 'active' : ''}" data-lang="english">🇺🇸 English</button>
+      <button class="cv-opt-btn ${autoLang === 'hebrew' ? 'active' : ''}" data-lang="hebrew">🇮🇱 עברית</button>
+    </div>
+    <div class="cv-opts-row" style="margin-top:8px" id="_qsFmtRow">
+      <button class="cv-opt-btn active" data-fmt="docx">📄 Word (.docx)</button>
+      <button class="cv-opt-btn" data-fmt="pdf">🖨️ PDF</button>
+    </div>
+  `;
+  container.appendChild(outOpts);
+
+  outOpts.querySelectorAll('[data-lang]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cvOptions.language = btn.dataset.lang;
+      outOpts.querySelectorAll('[data-lang]').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+  outOpts.querySelectorAll('[data-fmt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cvOptions.format = btn.dataset.fmt;
+      outOpts.querySelectorAll('[data-fmt]').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+
   showScreen('questions');
 }
 
@@ -715,21 +803,104 @@ function collectAnswers() {
   return answers;
 }
 
-document.getElementById('btnContinueToCV').addEventListener('click', () => {
+document.getElementById('btnContinueToCV').addEventListener('click', async () => {
   const answers = collectAnswers();
-  // Compute slider-based final score and bake it into state.analysis so the
-  // result screen shows the user-adjusted score, not just the base.
+  state.answers = answers;
+  await saveJobState({ answers });
+
+  // Compute slider-based final score
   if (state.baseScore) {
     const bonus = answers.reduce((s, a) => s + ((a.sliderValue || 0) / 100) * (a.weight || 0), 0);
     const finalScore = Math.min(100, Math.round(state.baseScore + bonus));
     if (state.analysis) state.analysis.score = finalScore;
   }
-  runFullAnalysis(answers);
+
+  if (state.analysis) {
+    // ── Fast path: we have preflight analysis — show result instantly ─────
+    showScreen('main');
+    showMainResult(state.analysis, true /* typewriter */);
+
+    // Fire CV generation in the background (parallel)
+    state.cvGenPromise = _startCvGenBackground(answers, cvOptions.language, cvOptions.format);
+    _armCvButton(cvOptions.language);
+  } else {
+    // ── Fallback: no preflight data — full analysis first, then CV options ─
+    runFullAnalysis(answers);
+  }
 });
 
 document.getElementById('btnSkipQuestions').addEventListener('click', () => {
   runFullAnalysis([]);
 });
+
+// ── Parallel CV generation helpers ───────────────────────────────────────────
+
+function _startCvGenBackground(answers, language, format) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({
+      action: 'generateCV',
+      licenseKey: state.licenseKey,
+      cvText: state.cvText,
+      jobText: state.jobText,
+      jobLanguage: language || state.analysis?.jobLanguage || 'english',
+      answers,
+      cvUrls: state.cvHyperlinkUrls || [],
+      userConstraints: state.userConstraints || '',
+      generateCoverLetter: false,
+    }, resolve);
+  });
+}
+
+function _armCvButton(language) {
+  const btn = document.getElementById('btnGenerateCV');
+  if (!btn) return;
+  state.cvIsRtl = (language || 'english') === 'hebrew';
+  btn.style.display = 'block';
+  btn.textContent = '⏳ מכין קורות חיים ברקע...';
+  btn.disabled = true;
+
+  (state.cvGenPromise || Promise.resolve(null)).then(async resp => {
+    if (!resp || resp.error) {
+      // Fallback to old flow on error
+      btn.textContent = '✨ צור קורות חיים מותאמים';
+      btn.disabled = false;
+      btn.onclick = null; // restore original listener
+      return;
+    }
+
+    state.generatedCV = resp.cvText || '';
+    state.coverLetterText = resp.coverLetterText || '';
+    await saveJobState({ generatedCV: state.generatedCV, cvLanguage: language, coverLetterText: state.coverLetterText });
+
+    // Save to tracker
+    const record = {
+      id: Date.now().toString(),
+      date: new Date().toISOString(),
+      jobTitle: state.analysis?.jobTitle || 'לא זוהה',
+      company: state.analysis?.company || '',
+      platform: state.jobPlatform,
+      url: state.jobUrl,
+      score: state.analysis?.score || 0,
+      cvGenerated: true,
+      cvFilename: `CV_${(state.analysis?.jobTitle || 'job').replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`,
+      status: 'טרם טופל',
+      appId: resp.appId || null,
+    };
+    await saveJob(record);
+
+    btn.textContent = '📄 קורות חיים מוכנים — לחץ להורדה ←';
+    btn.disabled = false;
+    btn.style.background = 'var(--success)';
+    btn.style.boxShadow = '0 2px 8px rgba(22,163,74,0.35)';
+    btn.onclick = () => {
+      if (resp.sections && resp.sections.length > 0) {
+        renderDiffScreen(resp.sections);
+      } else {
+        showCVResult(state.generatedCV, state.coverLetterText);
+      }
+    };
+  });
+}
 
 // CV Options screen
 function showCVOptionsScreen() {

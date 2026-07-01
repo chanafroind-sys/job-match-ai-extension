@@ -103,6 +103,24 @@
       return true;
     }
 
+    if (req.action === 'preflightDone') {
+      const fab = document.getElementById('jma-job-fab');
+      if (fab) {
+        fab.className = 'jma-job-fab-ready';
+        fab.disabled = false;
+        fab.dataset.ready = '1';
+        fab.innerHTML = `<span class="jma-icon">✅</span><span class="jma-label">${req.score}% התאמה · פתח לניתוח</span>`;
+      }
+    }
+
+    if (req.action === 'preflightError') {
+      const fab = document.getElementById('jma-job-fab');
+      if (fab) {
+        fab.disabled = false;
+        fab.innerHTML = '<span class="jma-icon">⚡</span><span class="jma-label">בדיקת התאמה מהירה</span>';
+      }
+    }
+
     if (req.action === 'getJobText') {
       const text = extractJobText();
       sendResponse({
@@ -149,6 +167,51 @@
     'alljobs.co.il': { cards: '.job-item, [class*="job-box"]', title: '.job-title a, h2 a', company: '.company-name', snippet: '.job-description-short' },
     'drushim.co.il': { cards: '[class*="job-item"], .job-box', title: '.job-title, h3 a', company: '.company-name', snippet: '.job-brief' },
   };
+
+  // ── Single-job-page FAB (fires preflight on click) ───────────────────────
+
+  function _prefKey(url) {
+    let h = 0;
+    for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
+    return `jma_pf_${Math.abs(h).toString(36)}`;
+  }
+
+  function initJobFab() {
+    if (document.getElementById('jma-float-btn')) return; // listing page FAB present
+    if (document.getElementById('jma-job-fab')) return;
+    const jobText = extractJobText();
+    if (!jobText || jobText.length < 350) return;
+    chrome.storage.local.get(['licenseKey', 'cvText'], (conf) => {
+      if (!conf.licenseKey || !conf.cvText) return;
+      const cKey = _prefKey(location.href);
+      chrome.storage.local.get([cKey], (stored) => {
+        const cached = stored[cKey];
+        const fresh = cached && (Date.now() - cached.ts) < 10 * 60 * 1000;
+        _createJobFab(jobText, fresh ? cached : null);
+      });
+    });
+  }
+
+  function _createJobFab(jobText, cached) {
+    injectStyles();
+    const btn = document.createElement('button');
+    btn.id = 'jma-job-fab';
+    if (cached && cached.base_score != null) {
+      btn.className = 'jma-job-fab-ready';
+      btn.innerHTML = `<span class="jma-icon">⚡</span><span class="jma-label">${cached.base_score}% התאמה · פתח לניתוח</span>`;
+      btn.dataset.ready = '1';
+    } else {
+      btn.innerHTML = '<span class="jma-icon">⚡</span><span class="jma-label">בדיקת התאמה מהירה</span>';
+    }
+    document.body.appendChild(btn);
+
+    btn.addEventListener('click', () => {
+      if (btn.dataset.ready === '1') return; // popup is the next step
+      btn.innerHTML = '<span class="jma-icon">⏳</span><span class="jma-label">בודק התאמה...</span>';
+      btn.disabled = true;
+      chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
+    });
+  }
 
   // Keywords that indicate a job listing page — checked locally, zero API cost
   const JOB_KEYWORDS_HE = ['משרה', 'משרות', 'תפקיד', 'דרישות', 'ניסיון', 'קו"ח', 'גיוס', 'פיתוח', 'מפתח', 'הגש'];
@@ -346,6 +409,23 @@
       .jma-fit-row{font-size:11px;display:flex;gap:5px;align-items:flex-start;line-height:1.4;color:#e6edf3}
       .jma-err{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);border-radius:8px;padding:14px;color:#f85149;font-size:12px;text-align:center}
       .jma-empty{text-align:center;padding:30px;color:#8b949e;font-size:13px}
+      #jma-job-fab{
+        position:fixed;bottom:28px;right:28px;z-index:2147483646;
+        height:48px;padding:0 20px 0 16px;border-radius:24px;
+        background:rgba(109,40,217,0.88);backdrop-filter:blur(16px) saturate(160%);
+        -webkit-backdrop-filter:blur(16px) saturate(160%);
+        border:1px solid rgba(255,255,255,0.18);
+        box-shadow:0 4px 8px rgba(0,0,0,0.2),0 12px 28px rgba(109,40,217,0.45),inset 0 1px 0 rgba(255,255,255,0.15);
+        cursor:pointer;color:#fff;display:flex;align-items:center;gap:9px;
+        font-size:13px;font-weight:700;letter-spacing:.3px;direction:rtl;white-space:nowrap;
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+        transition:transform .2s ease,box-shadow .25s ease,background .3s ease;
+      }
+      #jma-job-fab:hover:not(:disabled){transform:translateY(-3px);box-shadow:0 8px 16px rgba(0,0,0,0.25),0 20px 40px rgba(109,40,217,0.58),inset 0 1px 0 rgba(255,255,255,0.22)}
+      #jma-job-fab:disabled{opacity:.75;cursor:default}
+      #jma-job-fab.jma-job-fab-ready{background:rgba(16,163,74,0.9);box-shadow:0 4px 8px rgba(0,0,0,0.2),0 12px 28px rgba(16,163,74,0.45),inset 0 1px 0 rgba(255,255,255,0.15)}
+      #jma-job-fab .jma-icon{font-size:18px;line-height:1;flex-shrink:0}
+      #jma-job-fab .jma-label{font-size:13px;font-weight:700}
     `;
     document.head.appendChild(style);
   }
@@ -517,6 +597,7 @@
   }
 
   setTimeout(initSidebar, 2000);
+  setTimeout(initJobFab, 2500);
 
   // Re-init on SPA navigation
   let _lastHref = location.href;
@@ -526,8 +607,10 @@
       _rankingDone = false; _collectedJobs = null; _sidebarOpen = false;
       document.getElementById('jma-float-btn')?.remove();
       document.getElementById('jma-sidebar')?.remove();
+      document.getElementById('jma-job-fab')?.remove();
       document.getElementById('jma-styles')?.remove();
       setTimeout(initSidebar, 2000);
+      setTimeout(initJobFab, 2500);
     }
   }, 1200);
 })();

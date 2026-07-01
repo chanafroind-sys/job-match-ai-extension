@@ -76,7 +76,7 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 1200
   }
 }
 
-async function backendPost(endpoint, body, licenseKey) {
+async function backendPost(endpoint, body, licenseKey, opts = {}) {
   return fetchWithRetry(endpoint, {
     method: 'POST',
     headers: {
@@ -84,7 +84,13 @@ async function backendPost(endpoint, body, licenseKey) {
       'x-license-key': licenseKey || '',
     },
     body: JSON.stringify(body),
-  });
+  }, opts.maxAttempts || 6, opts.delayMs || 12000);
+}
+
+function _prefKey(url) {
+  let h = 0;
+  for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
+  return `jma_pf_${Math.abs(h).toString(36)}`;
 }
 
 // LinkedIn SPA navigation detector
@@ -145,6 +151,37 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     // Fire-and-forget wake-up call to prevent Render cold start delay
     fetch(`${BACKEND_URL}/health`).catch(() => {});
     sendResponse({ ok: true });
+    return true;
+  }
+
+  if (req.action === 'startJobPreflight') {
+    const tabId = sender.tab?.id;
+    sendResponse({ ok: true }); // immediate ack so content script doesn't wait
+    chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls'], async (stored) => {
+      if (!stored.licenseKey || !stored.cvText) return;
+      try {
+        const data = await backendPost('/api/analyze', {
+          cvText: stored.cvText,
+          jobText: req.jobText,
+          answers: [],
+          preflight: true,
+        }, stored.licenseKey, { maxAttempts: 2, delayMs: 8000 });
+        const result = data?.result || data || {};
+        const cKey = _prefKey(req.url || '');
+        await chrome.storage.local.set({
+          [cKey]: { ...result, ts: Date.now(), url: req.url },
+        });
+        if (tabId) {
+          chrome.tabs.sendMessage(tabId, {
+            action: 'preflightDone',
+            score: result.base_score || result.score || 0,
+          }).catch(() => {});
+        }
+      } catch (e) {
+        console.log('[JMA:fab_preflight] error:', e.message);
+        if (tabId) chrome.tabs.sendMessage(tabId, { action: 'preflightError' }).catch(() => {});
+      }
+    });
     return true;
   }
 
