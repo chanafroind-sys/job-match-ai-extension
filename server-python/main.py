@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
+import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
@@ -22,7 +24,16 @@ load_dotenv()
 
 BACKEND_URL = os.getenv("BACKEND_URL", "https://job-match-ai-extension.onrender.com")
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
-GUMROAD_PRODUCT_ID: str = os.environ["GUMROAD_PRODUCT_ID"]
+
+# Gumroad — product permalink used as product_id in the API (both work)
+GUMROAD_PRODUCT_PERMALINK: str = os.getenv("GUMROAD_PRODUCT_PERMALINK", "oechku")
+GUMROAD_ACCESS_TOKEN: str   = os.getenv("GUMROAD_ACCESS_TOKEN", "")   # seller token, for future use
+GUMROAD_SELLER_HANDLE: str  = os.getenv("GUMROAD_SELLER_HANDLE", "expertdevai")
+UPGRADE_URL: str = f"https://{GUMROAD_SELLER_HANDLE}.gumroad.com/l/{GUMROAD_PRODUCT_PERMALINK}"
+
+# Keep old env var name for backward compat with existing Render config
+GUMROAD_PRODUCT_ID: str = os.getenv("GUMROAD_PRODUCT_ID", GUMROAD_PRODUCT_PERMALINK)
+
 MAX_DEVICES_PER_KEY: int = int(os.getenv("MAX_DEVICES_PER_KEY", "3"))
 MONTHLY_USAGE_LIMIT: int = int(os.getenv("MONTHLY_USAGE_LIMIT", "100"))
 USAGE_FILE = Path(__file__).parent / "usage.json"
@@ -170,26 +181,71 @@ def increment_usage(license_key: str) -> int:
     return usage[license_key][month]
 
 
+# ── License cache (in-memory, TTL-based) ──────────────────────────────────────
+# Keys are stored as SHA-256 hashes — never plaintext license strings in memory.
+
+_license_cache: dict[str, dict] = {}
+_CACHE_TTL_VALID   = 3600   # 1 h  — valid licenses
+_CACHE_TTL_INVALID = 300    # 5 min — bad/cancelled keys (rate-limit protection)
+
+def _ck(license_key: str) -> str:
+    return hashlib.sha256(license_key.strip().lower().encode()).hexdigest()
+
+def _cache_get(license_key: str) -> dict | None:
+    """Return cached entry or None if absent / expired."""
+    entry = _license_cache.get(_ck(license_key))
+    if not entry:
+        return None
+    ttl = _CACHE_TTL_VALID if entry["valid"] else _CACHE_TTL_INVALID
+    if time.monotonic() - entry["ts"] > ttl:
+        _license_cache.pop(_ck(license_key), None)
+        return None
+    return entry
+
+def _cache_set(license_key: str, data: dict | None, *, valid: bool) -> None:
+    _license_cache[_ck(license_key)] = {"data": data, "ts": time.monotonic(), "valid": valid}
+
+
 # ── Gumroad verification ──────────────────────────────────────────────────────
 
 TEST_LICENSE_KEY = "TEST-MICHAL-FAKE-KEY"
 
 
 async def verify_gumroad_license(license_key: str) -> dict:
-    """Verify license via Gumroad API. Returns email, uses, and isPremium from variants."""
+    """
+    Verify license via Gumroad API.
+
+    Returns a dict with:
+      email, uses, tier ("standard"|"premium"), isPremium (bool), subscriptionActive (bool)
+
+    Results are cached: 1 h for valid keys, 5 min for invalid ones.
+    On Gumroad network errors, serves stale cache so existing users aren't locked out.
+    """
     masked = license_key[:4] + "****" if len(license_key) > 4 else "****"
     print(f"[JMA:verify] key={masked} len={len(license_key.strip())}")
 
+    # ── Test key bypass ───────────────────────────────────────────────────────
     if license_key.strip() == TEST_LICENSE_KEY:
         print("[JMA:verify] TEST KEY — bypass OK")
-        return {"email": "test@internal", "uses": 1, "isPremium": True}
+        return {"email": "test@internal", "uses": 1, "tier": "premium",
+                "isPremium": True, "subscriptionActive": True}
 
+    # ── Cache hit ─────────────────────────────────────────────────────────────
+    cached = _cache_get(license_key)
+    if cached is not None:
+        if not cached["valid"]:
+            print(f"[JMA:verify] CACHED invalid key={masked}")
+            raise HTTPException(status_code=403, detail="Invalid or expired license key.")
+        print(f"[JMA:verify] CACHE HIT key={masked} tier={cached['data'].get('tier')}")
+        return cached["data"]
+
+    # ── Gumroad API call ──────────────────────────────────────────────────────
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=12) as client:
             resp = await client.post(
                 "https://api.gumroad.com/v2/licenses/verify",
                 data={
-                    "product_id": GUMROAD_PRODUCT_ID,
+                    "product_id": GUMROAD_PRODUCT_PERMALINK,
                     "license_key": license_key.strip(),
                     "increment_uses_count": "false",
                 },
@@ -198,43 +254,78 @@ async def verify_gumroad_license(license_key: str) -> dict:
         print(f"[JMA:verify] Gumroad status={resp.status_code} success={data.get('success')}")
     except Exception as e:
         print(f"[JMA:verify] Gumroad network error: {e}")
-        raise HTTPException(status_code=503, detail="לא הצלחנו להגיע לשירות אימות הרישיון. נסי שוב בעוד רגע.")
+        # Grace fallback: serve stale cache rather than locking out existing users
+        stale = _license_cache.get(_ck(license_key))
+        if stale and stale["valid"] and stale["data"]:
+            print(f"[JMA:verify] serving stale cache (Gumroad unreachable) key={masked}")
+            return stale["data"]
+        raise HTTPException(status_code=503,
+            detail="לא הצלחנו להגיע לשירות אימות הרישיון. נסי שוב בעוד רגע.")
 
     if not data.get("success"):
-        print(f"[JMA:verify] Gumroad returned success=false: {data.get('message', '')}")
+        print(f"[JMA:verify] Gumroad success=false: {data.get('message', '')}")
+        _cache_set(license_key, None, valid=False)
         raise HTTPException(status_code=403, detail="Invalid or expired license key.")
 
-    purchase = data.get("purchase") or {}
+    purchase: dict = data.get("purchase") or {}
+
+    # ── Subscription lifecycle checks ─────────────────────────────────────────
+    sub_failed   = purchase.get("subscription_failed_at")
+    chargebacked = purchase.get("chargebacked", False)
+    refunded     = purchase.get("refunded", False)
+    sub_cancelled = purchase.get("subscription_cancelled_at")
+
+    if sub_failed:
+        print(f"[JMA:verify] payment failed: {sub_failed}")
+        _cache_set(license_key, None, valid=False)
+        raise HTTPException(status_code=403,
+            detail="Subscription payment failed. Please update your payment method on Gumroad.")
+
+    if chargebacked or refunded:
+        print(f"[JMA:verify] chargeback={chargebacked} refunded={refunded}")
+        _cache_set(license_key, None, valid=False)
+        raise HTTPException(status_code=403,
+            detail="This license is no longer valid (refunded or disputed).")
+
+    # Cancelled but billing period not yet over — Gumroad will return success=false
+    # once it expires. We flag it so the UI can show a "cancels soon" warning.
+    subscription_active = not bool(sub_cancelled)
+
+    # ── Device / activation limit ─────────────────────────────────────────────
     uses: int = purchase.get("uses", 0)
     if uses > MAX_DEVICES_PER_KEY:
-        print(f"[JMA:verify] Too many devices: uses={uses} max={MAX_DEVICES_PER_KEY}")
-        raise HTTPException(
-            status_code=403,
-            detail=f"This license key is active on {uses} devices, which exceeds the maximum allowed ({MAX_DEVICES_PER_KEY}). Please purchase a separate license.",
-        )
+        print(f"[JMA:verify] too many devices: uses={uses} max={MAX_DEVICES_PER_KEY}")
+        raise HTTPException(status_code=403,
+            detail=f"This license key is active on {uses} devices (max {MAX_DEVICES_PER_KEY}). Please purchase a separate license.")
 
-    # Gumroad returns variants as a JSON-encoded string, e.g. '{"Plan": "Premium"}'
+    # ── Tier detection ────────────────────────────────────────────────────────
+    # Gumroad returns variants as a JSON-encoded string: '{"Plan": "Premium"}'
     variants_raw = purchase.get("variants", "")
     try:
-        if isinstance(variants_raw, str) and variants_raw:
-            variants = json.loads(variants_raw)
-        else:
-            variants = variants_raw or {}
+        variants = json.loads(variants_raw) if isinstance(variants_raw, str) and variants_raw else (variants_raw or {})
     except (json.JSONDecodeError, TypeError):
         variants = {}
 
-    plan = (variants.get("Plan") or variants.get("plan") or "").strip().lower()
-    print(f"[JMA:verify] OK email={purchase.get('email','')} uses={uses} plan={plan!r} isPremium={plan=='premium'}")
+    plan_raw = (variants.get("Plan") or variants.get("plan") or "").strip().lower()
+    tier     = "premium" if plan_raw == "premium" else "standard"
+    is_premium = tier == "premium" or license_key.strip() in STATIC_PREMIUM_KEYS
 
-    return {
-        "email": purchase.get("email", ""),
-        "uses": uses,
-        "isPremium": plan == "premium",
+    print(f"[JMA:verify] OK email={purchase.get('email','')} uses={uses} "
+          f"tier={tier!r} subscriptionActive={subscription_active}")
+
+    result = {
+        "email":              purchase.get("email", ""),
+        "uses":               uses,
+        "tier":               tier,
+        "isPremium":          is_premium,
+        "subscriptionActive": subscription_active,
     }
+    _cache_set(license_key, result, valid=True)
+    return result
 
 
 async def _verify_premium(license_key: str) -> bool:
-    """Real-time premium check. Admin/static keys bypass Gumroad instantly."""
+    """Premium gate check — uses cache, admin keys bypass Gumroad instantly."""
     k = license_key.strip()
     if k == TEST_LICENSE_KEY or k in STATIC_PREMIUM_KEYS:
         return True
@@ -248,19 +339,18 @@ async def _verify_premium(license_key: str) -> bool:
 
 
 async def require_license(license_key: str) -> str:
-    """Validate license and check monthly usage. Returns the license key on success."""
+    """Validate license and enforce monthly usage cap. Returns the license key on success."""
     if not license_key or not license_key.strip():
         print("[JMA:license] REJECTED — empty key")
-        raise HTTPException(status_code=401, detail="No license key provided. Please enter a valid license key in the extension settings.")
+        raise HTTPException(status_code=401,
+            detail="No license key provided. Please enter a valid license key in the extension settings.")
     await verify_gumroad_license(license_key)
     count = get_usage_count(license_key)
     print(f"[JMA:license] usage={count}/{MONTHLY_USAGE_LIMIT}")
     if count >= MONTHLY_USAGE_LIMIT:
-        print(f"[JMA:license] REJECTED — monthly limit reached")
-        raise HTTPException(
-            status_code=429,
-            detail=f"Monthly usage limit reached ({MONTHLY_USAGE_LIMIT} analyses). Resets on the 1st of next month.",
-        )
+        print("[JMA:license] REJECTED — monthly limit reached")
+        raise HTTPException(status_code=429,
+            detail=f"Monthly usage limit reached ({MONTHLY_USAGE_LIMIT} analyses). Resets on the 1st of next month.")
     return license_key
 
 
@@ -678,8 +768,11 @@ OUTPUT — return ONLY a valid JSON array, no markdown, no explanation:
 async def lifespan(app: FastAPI):
     if not ANTHROPIC_API_KEY:
         print("WARNING: ANTHROPIC_API_KEY is not set")
-    if not GUMROAD_PRODUCT_ID:
-        print("WARNING: GUMROAD_PRODUCT_ID is not set")
+    if not GUMROAD_PRODUCT_PERMALINK:
+        print("WARNING: GUMROAD_PRODUCT_PERMALINK is not set")
+    if not GUMROAD_ACCESS_TOKEN:
+        print("INFO: GUMROAD_ACCESS_TOKEN not set — seller-side API features disabled")
+    print(f"[JMA:startup] product={GUMROAD_PRODUCT_PERMALINK} upgrade_url={UPGRADE_URL}")
     yield
 
 app = FastAPI(title="Job Match AI Server", lifespan=lifespan)
@@ -701,12 +794,17 @@ async def health():
 async def verify_license(body: VerifyLicenseRequest):
     info = await verify_gumroad_license(body.licenseKey)
     usage_count = get_usage_count(body.licenseKey)
+    tier = info.get("tier", "standard")
     return {
-        "success": True,
-        "usageCount": usage_count,
-        "monthlyLimit": MONTHLY_USAGE_LIMIT,
-        "email": info["email"],
-        "isPremium": info.get("isPremium", False),
+        "success":            True,
+        "email":              info["email"],
+        "tier":               tier,
+        "isPremium":          info.get("isPremium", False),
+        "subscriptionActive": info.get("subscriptionActive", True),
+        "usageCount":         usage_count,
+        "monthlyLimit":       MONTHLY_USAGE_LIMIT,
+        # upgradeUrl is only returned for Standard users — Premium users don't need it
+        "upgradeUrl":         UPGRADE_URL if tier == "standard" else None,
     }
 
 
