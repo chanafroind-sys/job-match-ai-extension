@@ -13,6 +13,8 @@ let state = {
   answers: [],
   generatedCV: '',
   cvIsRtl: false,
+  baseScore: 0,   // score before user answers (from preflight pass-1)
+  gapPct: 0,      // max points available from answering questions
 };
 
 let cvOptions = { language: 'english', format: 'docx', coverLetter: false };
@@ -518,8 +520,32 @@ async function startFlow() {
   }
 
   console.log('[JMA:preflight] resp=', JSON.stringify(prefResp));
-  const newQuestions = (!prefResp?.error && prefResp?.result?.questions) || [];
-  console.log('[JMA:preflight] questions count=', newQuestions.length);
+  const preflightResult = prefResp?.result || {};
+  const newQuestions = (!prefResp?.error && preflightResult.questions) || [];
+  console.log('[JMA:preflight] questions count=', newQuestions.length,
+    'base=', preflightResult.base_score, 'gap=', preflightResult.gap_pct);
+
+  // Store base analysis from preflight pass-1 (summary, strengths, etc.)
+  if (!prefResp?.error && preflightResult.base_score != null) {
+    state.baseScore = preflightResult.base_score ?? 0;
+    state.gapPct    = preflightResult.gap_pct    ?? 0;
+    // Merge preflight analysis into state so main result screen can show it
+    // even before the full analyze call
+    state.analysis = {
+      score:        preflightResult.base_score,
+      jobTitle:     preflightResult.jobTitle    || '',
+      company:      preflightResult.company     || '',
+      jobLanguage:  preflightResult.jobLanguage || 'hebrew',
+      summary:      preflightResult.summary     || '',
+      strengths:    preflightResult.strengths   || [],
+      hard_gaps:    preflightResult.hard_gaps   || [],
+    };
+    await saveJobState({
+      analysis:  state.analysis,
+      baseScore: state.baseScore,
+      gapPct:    state.gapPct,
+    });
+  }
 
   if (newQuestions.length > 0) {
     // Fresh questions from preflight — save and show
@@ -565,11 +591,44 @@ document.getElementById('btnGenerateCV').addEventListener('click', () => {
 });
 
 // Questions screen
+// ── Live score computation from sliders ────────────────────────────────────
+function _updateQuestionsScore() {
+  const base = state.baseScore || 0;
+  let bonus = 0;
+  (state.questions || []).forEach(q => {
+    const slider = document.getElementById(`qs_slider_${q.id}`);
+    if (slider) bonus += (parseInt(slider.value, 10) / 100) * (q.weight || 0);
+  });
+  const score = Math.min(100, Math.round(base + bonus));
+  const fill = document.getElementById('qsScoreFill');
+  const val  = document.getElementById('qsScoreValue');
+  if (fill) fill.style.width = `${score}%`;
+  if (val)  val.textContent  = `${score}%`;
+}
+
+function _sliderToPct(el) {
+  const pct = Math.round((parseInt(el.value, 10) / parseInt(el.max, 10)) * 100);
+  el.style.setProperty('--pct', `${pct}%`);
+}
+
 function showQuestionsScreen(questions, savedAnswers) {
   const container = document.getElementById('questionsContainer');
   container.innerHTML = '';
 
+  // ── Live score bar (only if we have base score from preflight) ────────────
+  const base = state.baseScore || 0;
+  const scoreBar = document.createElement('div');
+  scoreBar.className = 'questions-score-bar';
+  scoreBar.innerHTML = `
+    <span class="qs-score-label">ציון נוכחי</span>
+    <div class="qs-score-track"><div class="qs-score-fill" id="qsScoreFill" style="width:${base}%"></div></div>
+    <span class="qs-score-value" id="qsScoreValue">${base}%</span>
+  `;
+  container.appendChild(scoreBar);
+
+  // ── Question cards with sliders ───────────────────────────────────────────
   questions.forEach((q, idx) => {
+    const sliderId = `qs_slider_${q.id || idx}`;
     const card = document.createElement('div');
     card.className = 'question-card';
     card.innerHTML = `
@@ -578,37 +637,56 @@ function showQuestionsScreen(questions, savedAnswers) {
       <div class="question-why">${q.why}</div>
       ${q.heExplanation ? `<div class="question-he-exp">💡 ${q.heExplanation}</div>` : ''}
       <div class="quick-answers">
-        <button class="qa-btn" data-idx="${idx}" data-val="כן, יש לי ניסיון">✅ כן, יש לי ניסיון</button>
-        <button class="qa-btn" data-idx="${idx}" data-val="ידע תיאורטי בלבד">📚 תיאורטי בלבד</button>
-        <button class="qa-btn" data-idx="${idx}" data-val="לא, אין לי">❌ לא, אין לי</button>
+        <button class="qa-btn" data-idx="${idx}" data-slider="${sliderId}" data-val="0">❌ לא, אין לי</button>
+        <button class="qa-btn" data-idx="${idx}" data-slider="${sliderId}" data-val="50">📚 חלקי</button>
+        <button class="qa-btn" data-idx="${idx}" data-slider="${sliderId}" data-val="100">✅ כן, יש לי</button>
       </div>
-      <textarea class="question-textarea" data-idx="${idx}" placeholder="או כתוב תשובה חופשית..."></textarea>
+      <div class="question-slider-wrap">
+        <div class="slider-labels"><span>אין ניסיון</span><span>חלקי</span><span>ניסיון מלא</span></div>
+        <input type="range" class="q-slider" id="${sliderId}"
+          min="0" max="100" value="0" data-idx="${idx}" style="--pct:0%">
+      </div>
     `;
     container.appendChild(card);
   });
 
-  // Quick answer buttons
+  // Quick answer buttons → set slider + update score
   container.querySelectorAll('.qa-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const idx = btn.dataset.idx;
+      const idx      = btn.dataset.idx;
+      const sliderId = btn.dataset.slider;
+      const newVal   = btn.dataset.val;
       container.querySelectorAll(`.qa-btn[data-idx="${idx}"]`).forEach(b => b.classList.remove('selected'));
       btn.classList.add('selected');
-      const ta = container.querySelector(`.question-textarea[data-idx="${idx}"]`);
-      ta.value = btn.dataset.val;
+      const slider = document.getElementById(sliderId);
+      if (slider) { slider.value = newVal; _sliderToPct(slider); }
+      _updateQuestionsScore();
     });
+  });
+
+  // Slider drag → update score
+  container.querySelectorAll('.q-slider').forEach(slider => {
+    slider.addEventListener('input', () => { _sliderToPct(slider); _updateQuestionsScore(); });
   });
 
   // Restore previously saved answers
   if (savedAnswers && savedAnswers.length > 0) {
     savedAnswers.forEach((a, idx) => {
-      const val = a.answer || '';
-      if (!val || val === 'לא ענה') return;
-      const ta = container.querySelector(`.question-textarea[data-idx="${idx}"]`);
-      if (ta) ta.value = val;
+      const q = questions[idx];
+      if (!q || !a.answer || a.answer === 'לא ענה') return;
+      const sliderId = `qs_slider_${q.id || idx}`;
+      const slider   = document.getElementById(sliderId);
+      // Map saved text answer back to a slider value
+      const val = a.answer.includes('מלא') || a.answer.startsWith('כן') ? 100
+                : a.answer.includes('חלקי') || a.answer.includes('תיאורטי') ? 50
+                : 0;
+      if (slider) { slider.value = val; _sliderToPct(slider); }
+      // highlight matching quick-answer button
       container.querySelectorAll(`.qa-btn[data-idx="${idx}"]`).forEach(btn => {
-        if (btn.dataset.val === val) btn.classList.add('selected');
+        if (parseInt(btn.dataset.val, 10) === val) btn.classList.add('selected');
       });
     });
+    _updateQuestionsScore();
   }
 
   showScreen('questions');
@@ -618,15 +696,26 @@ function collectAnswers() {
   const questions = state.questions || [];
   const answers = [];
   questions.forEach((q, idx) => {
-    const ta = document.querySelector(`.question-textarea[data-idx="${idx}"]`);
-    const val = ta ? ta.value.trim() : '';
-    answers.push({ skill: q.skill, answer: val || 'לא ענה' });
+    const sliderId = `qs_slider_${q.id || idx}`;
+    const slider   = document.getElementById(sliderId);
+    const val      = slider ? parseInt(slider.value, 10) : 0;
+    const text     = val >= 80 ? 'כן, יש לי ניסיון מלא'
+                   : val >= 40 ? `ידע חלקי (${val}%)`
+                   : 'לא, אין לי ניסיון';
+    answers.push({ skill: q.skill, answer: text, sliderValue: val, weight: q.weight || 0 });
   });
   return answers;
 }
 
 document.getElementById('btnContinueToCV').addEventListener('click', () => {
   const answers = collectAnswers();
+  // Compute slider-based final score and bake it into state.analysis so the
+  // result screen shows the user-adjusted score, not just the base.
+  if (state.baseScore) {
+    const bonus = answers.reduce((s, a) => s + ((a.sliderValue || 0) / 100) * (a.weight || 0), 0);
+    const finalScore = Math.min(100, Math.round(state.baseScore + bonus));
+    if (state.analysis) state.analysis.score = finalScore;
+  }
   runFullAnalysis(answers);
 });
 
@@ -1382,8 +1471,10 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
       state.jobLanguage = saved.jobLanguage || 'english';
       state.jobPlatform = saved.jobPlatform || '';
       state.jobUrl = saved.url || '';
-      state.answers = saved.answers || [];
+      state.answers   = saved.answers   || [];
       state.questions = saved.questions || [];
+      state.baseScore = saved.baseScore ?? 0;
+      state.gapPct    = saved.gapPct    ?? 0;
 
       if (saved.generatedCV) {
         state.generatedCV = saved.generatedCV;

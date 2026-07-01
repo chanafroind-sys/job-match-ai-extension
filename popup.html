@@ -505,6 +505,59 @@
   .ready-meta-text { font-size: 12px; color: var(--text-muted); flex: 1; }
   .ready-meta-text strong { color: var(--text-primary); display: block; font-size: 13px; font-weight: 600; }
   .ready-warning { font-size: 12px; color: var(--text-dim); margin-bottom: 18px; }
+
+  /* ── Questions live-score bar ────────────────────────────────────────────── */
+  .questions-score-bar {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--border-radius); padding: 12px 16px;
+    margin-bottom: 16px; box-shadow: var(--shadow-sm);
+  }
+  .qs-score-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+  .qs-score-track {
+    flex: 1; height: 8px; background: var(--border);
+    border-radius: 4px; overflow: hidden;
+  }
+  .qs-score-fill {
+    height: 100%; background: linear-gradient(90deg, var(--accent), #818CF8);
+    border-radius: 4px; transition: width 0.4s cubic-bezier(.4,0,.2,1);
+  }
+  .qs-score-value {
+    font-size: 18px; font-weight: 700; color: var(--accent);
+    min-width: 44px; text-align: left; transition: all 0.3s;
+  }
+
+  /* ── Per-question slider ─────────────────────────────────────────────────── */
+  .question-slider-wrap { margin-top: 14px; }
+  .slider-labels {
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: var(--text-dim); margin-bottom: 6px;
+  }
+  input[type="range"].q-slider {
+    width: 100%; -webkit-appearance: none; appearance: none;
+    height: 6px; border-radius: 3px; outline: none; cursor: pointer;
+    background: linear-gradient(
+      to right,
+      var(--accent) 0%,
+      var(--accent) var(--pct, 0%),
+      var(--border) var(--pct, 0%),
+      var(--border) 100%
+    );
+  }
+  input[type="range"].q-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--accent);
+    box-shadow: 0 2px 8px rgba(99,102,241,0.45); cursor: pointer;
+    border: 2px solid #fff; transition: transform 0.15s, box-shadow 0.15s;
+  }
+  input[type="range"].q-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2); box-shadow: 0 3px 12px rgba(99,102,241,0.6);
+  }
+  input[type="range"].q-slider::-moz-range-thumb {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent); border: 2px solid #fff;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.45); cursor: pointer;
+  }
 </style>
 </head>
 <body>

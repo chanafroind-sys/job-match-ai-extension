@@ -418,6 +418,40 @@ async def call_claude(prompt: str, max_tokens: int = 1200) -> str:
     raise last_exc
 
 
+async def call_claude_cached(
+    system_blocks: list,
+    user_content: str,
+    max_tokens: int = 1200,
+) -> str:
+    """Call Claude with a cached system prompt (cache_control: ephemeral on CV block)."""
+    total_sys = sum(len(b.get("text", "")) for b in system_blocks)
+    print(f"[JMA:claude] cached call sys_len={total_sys} user_len={len(user_content)} max_tokens={max_tokens}")
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            message = await anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=max_tokens,
+                system=system_blocks,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            result = "".join(block.text for block in message.content if hasattr(block, "text"))
+            usage  = message.usage
+            print(
+                f"[JMA:claude] attempt={attempt} response_len={len(result)} "
+                f"stop={message.stop_reason} "
+                f"cache_read={getattr(usage,'cache_read_input_tokens',0)} "
+                f"cache_write={getattr(usage,'cache_creation_input_tokens',0)}"
+            )
+            return result
+        except Exception as e:
+            last_exc = e
+            print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
+            if attempt < 3:
+                await asyncio.sleep(3)
+    raise last_exc
+
+
 def _extract_raw(text: str, opening: str = "{", closing: str = "}") -> str:
     """Pull the first JSON object/array out of LLM text, stripping fences."""
     # Strip markdown code fences first
@@ -490,21 +524,97 @@ def parse_cv_sections_py(cv_text: str) -> dict:
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-QUESTIONS_PROMPT = """You are a recruiter screening a candidate. Read the CV and job description carefully, then identify the most important skills or experiences that are either missing from the CV or mentioned too vaguely to evaluate — and that are clearly required or strongly preferred by this job.
+# ── Preflight system block builder ───────────────────────────────────────────
 
-Return between 3 and 5 questions:
-- If the job requirements are straightforward and the CV covers them well: return 3 questions focusing on the most critical gaps.
-- If the job has many requirements or the CV has significant gaps across multiple areas: return up to 5 questions.
-- Always return at least 3 questions. Even if the CV seems like a strong match, pick the skills most important to verify.
+def _cv_system_blocks(cv_text: str) -> list:
+    """Return a system-prompt block list with the CV cached via ephemeral cache_control."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                "You are a senior recruitment expert and screening specialist.\n\n"
+                "=== CANDIDATE CV ===\n"
+                f"{cv_text}\n"
+                "=== END CV ==="
+            ),
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
-ALL text fields (question, why, heExplanation) MUST be written in Hebrew (עברית). Keep only skill names in English.
 
-Return JSON only — no markdown, no explanation, no text before or after:
-{{"questions":[{{"id":"q1","skill":"<skill name in English>","question":"<שאלת הבהרה קצרה בעברית>","why":"<למה זה חשוב לתפקיד זה בעברית, עד 15 מילים>","heExplanation":"<הסבר פשוט בעברית מה המיומנות הזו אומרת בפועל, עד 20 מילים>"}}]}}
-=== CV ===
-{cv_text}
+# ── Pass-1 prompt: fast base score + gap percentage ───────────────────────────
+
+_SCORING_RULES = """\
+SCORING RULES:
+STEP 1 — classify every requirement:
+  CRITICAL = "must"/"required"/"mandatory" or listed in the primary requirements section
+  SECONDARY = "nice to have"/"preferred"/"advantage"/"bonus" or in a lower-priority section
+
+STEP 2 — deduct from 100:
+  Missing CRITICAL requirement: -15 to -25 per item (proportional to centrality)
+  Partial/theoretical on a CRITICAL item: -5 to -12
+  Years shortfall: (required - actual) / required × 30 pts
+  Seniority mismatch (Senior/Lead in title but not in CV): cap at 65
+  Missing SECONDARY/nice-to-have: -2 to -5 per item (NEVER more than -5 each)
+
+DOMAIN MISMATCH: cap at 55 ONLY when the candidate genuinely lacks the critical skills.
+  If they have the required skills but come from a different job-title background, do NOT cap — score on skill fit alone.
+
+STEP 3 — positive partial offsets (secondary gaps only):
+  Strong relevant academics +5 | Adjacent transferable skills +5 | Relevant projects +5
+
+CALIBRATION: 85+ shortlist | 70-84 interview | 55-69 gaps | <40 wrong fit
+A candidate meeting all CRITICALs but lacking all SECONDARYs → 65-75, not below 55.
+Score <50 means most CRITICALs are missing — not just a different background.\
+"""
+
+BASE_ANALYSIS_USER = """Analyse the fit between the candidate CV (in your system prompt) and this job posting.
+
+{scoring_rules}
+
+Additionally compute:
+  gap_pct = integer 0-40 — how many score points COULD be gained if the candidate could fully clarify all uncertain/missing areas through follow-up questions. 0 means the CV is fully self-explanatory; 35 means strong potential to improve with answers.
+
+Return ONLY valid JSON — no markdown:
+{{
+  "base_score": <integer 0-100>,
+  "gap_pct": <integer 0-40>,
+  "jobTitle": "<job title>",
+  "company": "<company name>",
+  "jobLanguage": "hebrew" | "english",
+  "summary": "<2 sentences in Hebrew describing overall fit>",
+  "strengths": ["<Hebrew sentence with skill names in English>", ...],
+  "hard_gaps": ["<Hebrew sentence with skill names in English>", ...]
+}}
+
 === JOB DESCRIPTION ===
 {job_text}"""
+
+
+# ── Pass-2 prompt: weighted questions ─────────────────────────────────────────
+
+QUESTIONS_USER = """The candidate CV is in your system prompt.
+The initial match score is {base_score}% with {gap_pct} improvement points available through clarifying questions.
+
+Identify the {n_questions} most important skills or experiences that are unclear or missing in the CV and are clearly required or strongly preferred by this job.
+
+For EACH question assign an integer `weight` (1-{gap_pct}). The weights MUST sum to exactly {gap_pct}.
+The weight reflects how much a perfect answer could raise the score for that skill gap.
+
+ALL text fields (question, why, heExplanation) MUST be in Hebrew. Skill names stay in English.
+
+Return ONLY valid JSON — no markdown:
+{{"questions":[
+  {{"id":"q1","skill":"<English>","question":"<שאלה קצרה>","why":"<עד 15 מילים>","heExplanation":"<עד 20 מילים>","weight":<integer>}},
+  ...
+]}}
+
+=== JOB DESCRIPTION ===
+{job_text}"""
+
+
+# kept for backward-compat with non-preflight full analysis path
+QUESTIONS_PROMPT = ""  # unused — see BASE_ANALYSIS_USER / QUESTIONS_USER above
 
 ANALYZE_PROMPT = """You are a senior recruitment expert. Analyze the fit between the candidate's CV and the job posting.
 
@@ -913,19 +1023,75 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
     print(f"[JMA:analyze] cv_len={len(body.cvText)} job_len={len(body.jobText)} preflight={body.preflight} answers={len(body.answers)}")
 
     if body.preflight:
-        # Lightweight: return questions only, verify license but don't count usage
+        # Two-pass preflight with CV cached in system prompt:
+        # Pass 1 (fast): base score + gap_pct + full analysis fields
+        # Pass 2 (fast): weighted questions using gap_pct from pass 1
         await verify_gumroad_license(license_key)
-        prompt = QUESTIONS_PROMPT.format(cv_text=body.cvText[:1500], job_text=body.jobText[:2000])
+
+        cv_text  = body.cvText[:3000]   # cache up to 3 k chars of CV
+        job_text = body.jobText[:2500]
+        sys_blocks = _cv_system_blocks(cv_text)
+
+        # ── Pass 1: base analysis ─────────────────────────────────────────
         try:
-            raw = await call_claude(prompt, max_tokens=900)
-            print(f"[JMA:preflight] raw_len={len(raw)} raw_start={raw[:200]!r}")
-            result = parse_json_response(raw)
-            q_count = len(result.get("questions", []))
-            print(f"[JMA:preflight] parsed ok, questions={q_count}")
-            return {"result": result, "preflight": True}
+            raw1 = await call_claude_cached(
+                system_blocks=sys_blocks,
+                user_content=BASE_ANALYSIS_USER.format(
+                    scoring_rules=_SCORING_RULES,
+                    job_text=job_text,
+                ),
+                max_tokens=700,
+            )
+            analysis = parse_json_response(raw1)
+            base_score: int = max(0, min(100, int(analysis.get("base_score", 65))))
+            gap_pct:    int = max(0, min(40,  int(analysis.get("gap_pct",    20))))
+            print(f"[JMA:preflight] pass1 base={base_score} gap={gap_pct}")
         except Exception as e:
-            print(f"[JMA:preflight] error: {type(e).__name__}: {e}")
-            return {"result": {"questions": []}, "preflight": True}
+            print(f"[JMA:preflight] pass1 error: {type(e).__name__}: {e}")
+            analysis   = {}
+            base_score = 65
+            gap_pct    = 20
+
+        # ── Pass 2: weighted questions ────────────────────────────────────
+        questions: list = []
+        if gap_pct > 0:
+            n_q = 4 if gap_pct >= 20 else 3
+            try:
+                raw2 = await call_claude_cached(
+                    system_blocks=sys_blocks,
+                    user_content=QUESTIONS_USER.format(
+                        base_score=base_score,
+                        gap_pct=gap_pct,
+                        n_questions=n_q,
+                        job_text=job_text,
+                    ),
+                    max_tokens=900,
+                )
+                q_data   = parse_json_response(raw2)
+                questions = q_data.get("questions", [])
+                # Normalise weights so they sum exactly to gap_pct
+                total_w = sum(q.get("weight", 0) for q in questions)
+                if total_w > 0 and total_w != gap_pct:
+                    scale = gap_pct / total_w
+                    rem   = gap_pct
+                    for i, q in enumerate(questions):
+                        if i < len(questions) - 1:
+                            q["weight"] = max(1, round(q.get("weight", 0) * scale))
+                            rem -= q["weight"]
+                        else:
+                            q["weight"] = max(1, rem)
+                print(f"[JMA:preflight] pass2 questions={len(questions)} weights={[q.get('weight') for q in questions]}")
+            except Exception as e:
+                print(f"[JMA:preflight] pass2 error: {type(e).__name__}: {e}")
+
+        result = {
+            **analysis,
+            "base_score": base_score,
+            "gap_pct":    gap_pct,
+            "score":      base_score,   # shown on main screen before answers
+            "questions":  questions,
+        }
+        return {"result": result, "preflight": True}
 
     await require_license(license_key)
 
