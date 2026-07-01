@@ -103,21 +103,31 @@
       return true;
     }
 
+    if (req.action === 'toggleSidebar') {
+      _togglePanel();
+      sendResponse({ ok: true });
+    }
+
     if (req.action === 'preflightDone') {
-      const fab = document.getElementById('jma-job-fab');
-      if (fab) {
-        fab.className = 'jma-job-fab-ready';
-        fab.disabled = false;
-        fab.dataset.ready = '1';
-        fab.innerHTML = `<span class="jma-icon">✅</span><span class="jma-label">${req.score}% התאמה · פתח לניתוח</span>`;
-      }
+      _fabSetScore(req.score);
+      // Auto-open the panel so the user jumps straight into questions
+      if (!_panelOpen) _togglePanel();
     }
 
     if (req.action === 'preflightError') {
-      const fab = document.getElementById('jma-job-fab');
-      if (fab) {
-        fab.disabled = false;
-        fab.innerHTML = '<span class="jma-icon">⚡</span><span class="jma-label">בדיקת התאמה מהירה</span>';
+      clearInterval(_fabProgressTimer);
+      _fabState = 'idle';
+      _updateFabArc(0, false);
+      const inner = document.getElementById('jma-fab-inner');
+      if (inner) inner.innerHTML = '<span class="jma-fab-icon">⚡</span><span class="jma-fab-text">בדיקה<br>מהירה</span>';
+    }
+
+    if (req.action === 'updateFabScore') {
+      if (_fabState === 'ready') {
+        _fabSetScore(req.score);
+      } else {
+        // During questions: update arc without switching inner text to score
+        _updateFabArc(req.score, true);
       }
     }
 
@@ -168,7 +178,7 @@
     'drushim.co.il': { cards: '[class*="job-item"], .job-box', title: '.job-title, h3 a', company: '.company-name', snippet: '.job-brief' },
   };
 
-  // ── Single-job-page FAB (fires preflight on click) ───────────────────────
+  // ── Single-job-page circular FAB + injected sidebar panel ────────────────
 
   function _prefKey(url) {
     let h = 0;
@@ -176,9 +186,16 @@
     return `jma_pf_${Math.abs(h).toString(36)}`;
   }
 
+  // FAB state: 'idle' | 'loading' | 'ready'
+  let _fabState = 'idle';
+  let _fabProgress = 0;
+  let _fabProgressTimer = null;
+  let _panelOpen = false;
+  const FAB_CIRC = 188.5; // 2π×30
+
   function initJobFab() {
-    if (document.getElementById('jma-float-btn')) return; // listing page FAB present
-    if (document.getElementById('jma-job-fab')) return;
+    if (document.getElementById('jma-float-btn')) return; // listing page has own FAB
+    if (document.getElementById('jma-fab-wrap')) return;
     const jobText = extractJobText();
     if (!jobText || jobText.length < 350) return;
     chrome.storage.local.get(['licenseKey', 'cvText'], (conf) => {
@@ -187,30 +204,101 @@
       chrome.storage.local.get([cKey], (stored) => {
         const cached = stored[cKey];
         const fresh = cached && (Date.now() - cached.ts) < 10 * 60 * 1000;
-        _createJobFab(jobText, fresh ? cached : null);
+        _createFabGauge(jobText, fresh ? cached : null);
       });
     });
   }
 
-  function _createJobFab(jobText, cached) {
+  function _createFabGauge(jobText, cached) {
     injectStyles();
-    const btn = document.createElement('button');
-    btn.id = 'jma-job-fab';
-    if (cached && cached.base_score != null) {
-      btn.className = 'jma-job-fab-ready';
-      btn.innerHTML = `<span class="jma-icon">⚡</span><span class="jma-label">${cached.base_score}% התאמה · פתח לניתוח</span>`;
-      btn.dataset.ready = '1';
-    } else {
-      btn.innerHTML = '<span class="jma-icon">⚡</span><span class="jma-label">בדיקת התאמה מהירה</span>';
-    }
-    document.body.appendChild(btn);
+    const wrap = document.createElement('div');
+    wrap.id = 'jma-fab-wrap';
+    wrap.innerHTML = `
+      <svg viewBox="0 0 76 76" width="76" height="76">
+        <circle class="jma-fab-bg" cx="38" cy="38" r="36"/>
+        <circle class="jma-fab-track" cx="38" cy="38" r="30"/>
+        <circle class="jma-fab-arc" id="jma-fab-arc" cx="38" cy="38" r="30"/>
+      </svg>
+      <div class="jma-fab-inner" id="jma-fab-inner">
+        <span class="jma-fab-icon">⚡</span>
+        <span class="jma-fab-text">בדיקה<br>מהירה</span>
+      </div>`;
+    document.body.appendChild(wrap);
 
-    btn.addEventListener('click', () => {
-      if (btn.dataset.ready === '1') return; // popup is the next step
-      btn.innerHTML = '<span class="jma-icon">⏳</span><span class="jma-label">בודק התאמה...</span>';
-      btn.disabled = true;
-      chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
+    if (cached && cached.base_score != null) {
+      _fabSetScore(cached.base_score);
+    }
+
+    wrap.addEventListener('click', () => {
+      if (_fabState === 'idle') {
+        _fabState = 'loading';
+        _fabStartProgress();
+        chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
+      } else {
+        // loading or ready → toggle panel
+        _togglePanel();
+      }
     });
+  }
+
+  function _fabStartProgress() {
+    _fabProgress = 5;
+    _updateFabArc(_fabProgress, false);
+    const inner = document.getElementById('jma-fab-inner');
+    if (inner) inner.innerHTML = '<span class="jma-fab-text" style="font-size:10px">מנתח...<br>⏳</span>';
+    clearInterval(_fabProgressTimer);
+    _fabProgressTimer = setInterval(() => {
+      if (_fabProgress >= 87) return;
+      const step = _fabProgress < 40 ? 3 : _fabProgress < 70 ? 1.2 : 0.4;
+      _fabProgress = Math.min(87, _fabProgress + step);
+      _updateFabArc(_fabProgress, false);
+    }, 380);
+  }
+
+  function _fabSetScore(score) {
+    clearInterval(_fabProgressTimer);
+    _fabState = 'ready';
+    _updateFabArc(score, true);
+    const wrap = document.getElementById('jma-fab-wrap');
+    if (wrap) wrap.classList.add('jma-fab-ready');
+    const inner = document.getElementById('jma-fab-inner');
+    if (inner) {
+      const color = score >= 75 ? '#3fb950' : score >= 55 ? '#d29922' : score >= 35 ? '#e3812b' : '#f85149';
+      inner.innerHTML = `
+        <span class="jma-fab-score-num" style="color:${color}">${score}</span>
+        <span class="jma-fab-score-pct">%</span>
+        <span class="jma-fab-score-lbl">התאמה</span>`;
+    }
+  }
+
+  function _updateFabArc(pct, colorByScore) {
+    const arc = document.getElementById('jma-fab-arc');
+    if (!arc) return;
+    arc.style.strokeDashoffset = FAB_CIRC - (pct / 100) * FAB_CIRC;
+    if (colorByScore) {
+      arc.style.stroke = pct >= 75 ? '#3fb950' : pct >= 55 ? '#d29922' : pct >= 35 ? '#e3812b' : '#f85149';
+    }
+  }
+
+  // ── Injected sidebar panel (contains popup.html as iframe) ────────────────
+
+  function _ensurePanel() {
+    if (document.getElementById('jma-panel')) return;
+    const panel = document.createElement('div');
+    panel.id = 'jma-panel';
+    const iframe = document.createElement('iframe');
+    iframe.id = 'jma-panel-iframe';
+    iframe.src = chrome.runtime.getURL('popup.html');
+    iframe.setAttribute('allowtransparency', 'true');
+    panel.appendChild(iframe);
+    document.body.appendChild(panel);
+  }
+
+  function _togglePanel() {
+    _ensurePanel();
+    _panelOpen = !_panelOpen;
+    const panel = document.getElementById('jma-panel');
+    if (panel) panel.classList.toggle('jma-panel-open', _panelOpen);
   }
 
   // Keywords that indicate a job listing page — checked locally, zero API cost
@@ -409,23 +497,44 @@
       .jma-fit-row{font-size:11px;display:flex;gap:5px;align-items:flex-start;line-height:1.4;color:#e6edf3}
       .jma-err{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);border-radius:8px;padding:14px;color:#f85149;font-size:12px;text-align:center}
       .jma-empty{text-align:center;padding:30px;color:#8b949e;font-size:13px}
-      #jma-job-fab{
-        position:fixed;bottom:28px;right:28px;z-index:2147483646;
-        height:48px;padding:0 20px 0 16px;border-radius:24px;
-        background:rgba(109,40,217,0.88);backdrop-filter:blur(16px) saturate(160%);
-        -webkit-backdrop-filter:blur(16px) saturate(160%);
-        border:1px solid rgba(255,255,255,0.18);
-        box-shadow:0 4px 8px rgba(0,0,0,0.2),0 12px 28px rgba(109,40,217,0.45),inset 0 1px 0 rgba(255,255,255,0.15);
-        cursor:pointer;color:#fff;display:flex;align-items:center;gap:9px;
-        font-size:13px;font-weight:700;letter-spacing:.3px;direction:rtl;white-space:nowrap;
+      /* ── Circular FAB gauge ── */
+      #jma-fab-wrap{
+        position:fixed;top:80px;right:20px;width:76px;height:76px;
+        z-index:2147483646;cursor:pointer;user-select:none;
+        filter:drop-shadow(0 4px 10px rgba(109,40,217,0.55));
+        transition:filter .3s,transform .2s;
         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-        transition:transform .2s ease,box-shadow .25s ease,background .3s ease;
       }
-      #jma-job-fab:hover:not(:disabled){transform:translateY(-3px);box-shadow:0 8px 16px rgba(0,0,0,0.25),0 20px 40px rgba(109,40,217,0.58),inset 0 1px 0 rgba(255,255,255,0.22)}
-      #jma-job-fab:disabled{opacity:.75;cursor:default}
-      #jma-job-fab.jma-job-fab-ready{background:rgba(16,163,74,0.9);box-shadow:0 4px 8px rgba(0,0,0,0.2),0 12px 28px rgba(16,163,74,0.45),inset 0 1px 0 rgba(255,255,255,0.15)}
-      #jma-job-fab .jma-icon{font-size:18px;line-height:1;flex-shrink:0}
-      #jma-job-fab .jma-label{font-size:13px;font-weight:700}
+      #jma-fab-wrap:hover{transform:scale(1.1);filter:drop-shadow(0 6px 18px rgba(109,40,217,0.75))}
+      #jma-fab-wrap.jma-fab-ready{filter:drop-shadow(0 4px 10px rgba(16,163,74,0.5))}
+      #jma-fab-wrap.jma-fab-ready:hover{filter:drop-shadow(0 6px 18px rgba(16,163,74,0.7))}
+      .jma-fab-bg{fill:rgba(109,40,217,0.94)}
+      .jma-fab-track{fill:none;stroke:rgba(255,255,255,0.18);stroke-width:5}
+      .jma-fab-arc{
+        fill:none;stroke:rgba(255,255,255,0.9);stroke-width:5;stroke-linecap:round;
+        stroke-dasharray:188.5;stroke-dashoffset:188.5;
+        transform-origin:38px 38px;transform:rotate(-90deg);
+        transition:stroke-dashoffset .5s ease,stroke .4s ease;
+      }
+      .jma-fab-inner{
+        position:absolute;inset:0;display:flex;flex-direction:column;
+        align-items:center;justify-content:center;color:#fff;text-align:center;
+        pointer-events:none;
+      }
+      .jma-fab-icon{font-size:20px;line-height:1}
+      .jma-fab-text{font-size:9px;font-weight:700;line-height:1.4;margin-top:2px}
+      .jma-fab-score-num{font-size:22px;font-weight:800;line-height:1}
+      .jma-fab-score-pct{font-size:10px;font-weight:700;margin-top:-2px}
+      .jma-fab-score-lbl{font-size:8px;opacity:.82;margin-top:2px}
+      /* ── Injected sidebar panel ── */
+      #jma-panel{
+        position:fixed;top:0;right:-410px;width:400px;height:100vh;
+        z-index:2147483647;border-left:1px solid #e2e8f0;
+        box-shadow:-6px 0 28px rgba(0,0,0,0.15);
+        transition:right .3s cubic-bezier(.4,0,.2,1);
+      }
+      #jma-panel.jma-panel-open{right:0}
+      #jma-panel iframe{width:100%;height:100%;border:none;display:block}
     `;
     document.head.appendChild(style);
   }
@@ -607,8 +716,11 @@
       _rankingDone = false; _collectedJobs = null; _sidebarOpen = false;
       document.getElementById('jma-float-btn')?.remove();
       document.getElementById('jma-sidebar')?.remove();
-      document.getElementById('jma-job-fab')?.remove();
+      document.getElementById('jma-fab-wrap')?.remove();
+      document.getElementById('jma-panel')?.remove();
       document.getElementById('jma-styles')?.remove();
+      _fabState = 'idle'; _panelOpen = false;
+      clearInterval(_fabProgressTimer);
       setTimeout(initSidebar, 2000);
       setTimeout(initJobFab, 2500);
     }

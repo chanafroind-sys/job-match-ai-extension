@@ -93,6 +93,19 @@ function _prefKey(url) {
   return `jma_pf_${Math.abs(h).toString(36)}`;
 }
 
+// Extension icon click → toggle injected sidebar panel
+chrome.action.onClicked.addListener(async (tab) => {
+  try {
+    await chrome.tabs.sendMessage(tab.id, { action: 'toggleSidebar' });
+  } catch {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+      await new Promise(r => setTimeout(r, 400));
+      chrome.tabs.sendMessage(tab.id, { action: 'toggleSidebar' }).catch(() => {});
+    } catch (e) { console.log('[JMA:sidebar] inject failed:', e.message); }
+  }
+});
+
 // LinkedIn SPA navigation detector
 // When the user browses between job postings inside LinkedIn, the URL changes
 // but the page never fully reloads, so the old analysis would re-appear.
@@ -144,6 +157,30 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     }, req.licenseKey)
       .then(data => sendResponse({ cvText: data.cvText, appId: data.appId, sections: data.sections || [], coverLetterText: data.coverLetterText || '' }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));
+    return true;
+  }
+
+  if (req.action === 'updateFabScore') {
+    // Relay: popup iframe → background → content script of active tab
+    chrome.tabs.query({ active: true }, (tabs) => {
+      if (tabs[0]) chrome.tabs.sendMessage(tabs[0].id, { action: 'updateFabScore', score: req.score }).catch(() => {});
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (req.action === 'scoreAnswer') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey || !(req.answer || '').trim()) { sendResponse({ score_pct: 0 }); return; }
+      try {
+        const data = await backendPost('/api/score-answer', {
+          question: req.question || '',
+          skill: req.skill || '',
+          answer: req.answer,
+        }, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ score_pct: data.score_pct ?? 50 });
+      } catch { sendResponse({ score_pct: 50 }); }
+    });
     return true;
   }
 

@@ -655,24 +655,35 @@ document.getElementById('btnGenerateCV').addEventListener('click', (e) => {
 });
 
 // Questions screen
-// ── Live score computation from sliders ────────────────────────────────────
+// ── Live score computation from textarea answers ────────────────────────────
+let _scoreDebounceTimer = null;
+
+function _localScore(text) {
+  if (!text || text.trim().length < 4) return 0;
+  const t = text.trim().toLowerCase();
+  if (/אין לי|no experience|don't have|לא מכיר|לא יודע|never|never used/.test(t)) return 8;
+  let s = Math.min(68, Math.round((t.length / 150) * 58) + 10);
+  if (/שנ(תיים|ה|ות|י)|years|year/.test(t)) s = Math.min(88, s + 14);
+  if (/ניסיון|experience|worked|עבדתי|פרויקט|project|built|developed|managed/.test(t)) s = Math.min(88, s + 10);
+  if (/מומחה|expert|advanced|proficient|lead|מוביל|architect/.test(t)) s = Math.min(96, s + 14);
+  return Math.max(5, s);
+}
+
 function _updateQuestionsScore() {
   const base = state.baseScore || 0;
   let bonus = 0;
-  (state.questions || []).forEach(q => {
-    const slider = document.getElementById(`qs_slider_${q.id}`);
-    if (slider) bonus += (parseInt(slider.value, 10) / 100) * (q.weight || 0);
+  (state.questions || []).forEach((q, idx) => {
+    const ta = document.getElementById(`qs_ta_${q.id || idx}`);
+    if (!ta) return;
+    bonus += (_localScore(ta.value) / 100) * (q.weight || 0);
   });
   const score = Math.min(100, Math.round(base + bonus));
   const fill = document.getElementById('qsScoreFill');
   const val  = document.getElementById('qsScoreValue');
   if (fill) fill.style.width = `${score}%`;
   if (val)  val.textContent  = `${score}%`;
-}
-
-function _sliderToPct(el) {
-  const pct = Math.round((parseInt(el.value, 10) / parseInt(el.max, 10)) * 100);
-  el.style.setProperty('--pct', `${pct}%`);
+  // Relay to FAB in the background page via background.js
+  chrome.runtime.sendMessage({ action: 'updateFabScore', score });
 }
 
 function showQuestionsScreen(questions, savedAnswers) {
@@ -690,47 +701,28 @@ function showQuestionsScreen(questions, savedAnswers) {
   `;
   container.appendChild(scoreBar);
 
-  // ── Question cards with sliders ───────────────────────────────────────────
+  // ── Question cards with open text fields ──────────────────────────────────
   questions.forEach((q, idx) => {
-    const sliderId = `qs_slider_${q.id || idx}`;
+    const taId = `qs_ta_${q.id || idx}`;
     const card = document.createElement('div');
     card.className = 'question-card';
     card.innerHTML = `
       <div class="question-skill">${q.skill}</div>
       <div class="question-text">${q.question}</div>
-      <div class="question-why">${q.why}</div>
       ${q.heExplanation ? `<div class="question-he-exp">💡 ${q.heExplanation}</div>` : ''}
-      <div class="quick-answers">
-        <button class="qa-btn" data-idx="${idx}" data-slider="${sliderId}" data-val="0">❌ לא, אין לי</button>
-        <button class="qa-btn" data-idx="${idx}" data-slider="${sliderId}" data-val="50">📚 חלקי</button>
-        <button class="qa-btn" data-idx="${idx}" data-slider="${sliderId}" data-val="100">✅ כן, יש לי</button>
-      </div>
-      <div class="question-slider-wrap">
-        <div class="slider-labels"><span>אין ניסיון</span><span>חלקי</span><span>ניסיון מלא</span></div>
-        <input type="range" class="q-slider" id="${sliderId}"
-          min="0" max="100" value="0" data-idx="${idx}" style="--pct:0%">
-      </div>
+      <textarea class="q-textarea" id="${taId}"
+        placeholder="תאר את הניסיון שלך... (לדוגמה: עבדתי 2 שנים עם Python כולל pandas ו-scikit-learn)"
+        rows="3" data-idx="${idx}" data-weight="${q.weight || 0}"></textarea>
     `;
     container.appendChild(card);
   });
 
-  // Quick answer buttons → set slider + update score
-  container.querySelectorAll('.qa-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const idx      = btn.dataset.idx;
-      const sliderId = btn.dataset.slider;
-      const newVal   = btn.dataset.val;
-      container.querySelectorAll(`.qa-btn[data-idx="${idx}"]`).forEach(b => b.classList.remove('selected'));
-      btn.classList.add('selected');
-      const slider = document.getElementById(sliderId);
-      if (slider) { slider.value = newVal; _sliderToPct(slider); }
-      _updateQuestionsScore();
+  // Textarea input → debounced local score → update score bar + FAB
+  container.querySelectorAll('.q-textarea').forEach(ta => {
+    ta.addEventListener('input', () => {
+      clearTimeout(_scoreDebounceTimer);
+      _scoreDebounceTimer = setTimeout(_updateQuestionsScore, 600);
     });
-  });
-
-  // Slider drag → update score
-  container.querySelectorAll('.q-slider').forEach(slider => {
-    slider.addEventListener('input', () => { _sliderToPct(slider); _updateQuestionsScore(); });
   });
 
   // Restore previously saved answers
@@ -738,17 +730,8 @@ function showQuestionsScreen(questions, savedAnswers) {
     savedAnswers.forEach((a, idx) => {
       const q = questions[idx];
       if (!q || !a.answer || a.answer === 'לא ענה') return;
-      const sliderId = `qs_slider_${q.id || idx}`;
-      const slider   = document.getElementById(sliderId);
-      // Map saved text answer back to a slider value
-      const val = a.answer.includes('מלא') || a.answer.startsWith('כן') ? 100
-                : a.answer.includes('חלקי') || a.answer.includes('תיאורטי') ? 50
-                : 0;
-      if (slider) { slider.value = val; _sliderToPct(slider); }
-      // highlight matching quick-answer button
-      container.querySelectorAll(`.qa-btn[data-idx="${idx}"]`).forEach(btn => {
-        if (parseInt(btn.dataset.val, 10) === val) btn.classList.add('selected');
-      });
+      const ta = document.getElementById(`qs_ta_${q.id || idx}`);
+      if (ta) ta.value = a.answer;
     });
     _updateQuestionsScore();
   }
@@ -789,18 +772,12 @@ function showQuestionsScreen(questions, savedAnswers) {
 }
 
 function collectAnswers() {
-  const questions = state.questions || [];
-  const answers = [];
-  questions.forEach((q, idx) => {
-    const sliderId = `qs_slider_${q.id || idx}`;
-    const slider   = document.getElementById(sliderId);
-    const val      = slider ? parseInt(slider.value, 10) : 0;
-    const text     = val >= 80 ? 'כן, יש לי ניסיון מלא'
-                   : val >= 40 ? `ידע חלקי (${val}%)`
-                   : 'לא, אין לי ניסיון';
-    answers.push({ skill: q.skill, answer: text, sliderValue: val, weight: q.weight || 0 });
+  return (state.questions || []).map((q, idx) => {
+    const ta     = document.getElementById(`qs_ta_${q.id || idx}`);
+    const answer = ta ? ta.value.trim() : '';
+    const scorePct = _localScore(answer);
+    return { skill: q.skill, answer: answer || 'לא ענה', sliderValue: scorePct, weight: q.weight || 0 };
   });
-  return answers;
 }
 
 document.getElementById('btnContinueToCV').addEventListener('click', async () => {

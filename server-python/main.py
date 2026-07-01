@@ -29,8 +29,13 @@ ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
 # Gumroad — product permalink used as product_id in the API (both work)
 GUMROAD_PRODUCT_PERMALINK: str = os.getenv("GUMROAD_PRODUCT_PERMALINK", "job-match-ai")
 GUMROAD_ACCESS_TOKEN: str   = os.getenv("GUMROAD_ACCESS_TOKEN", "")   # seller token, for future use
-GUMROAD_SELLER_HANDLE: str  = os.getenv("GUMROAD_SELLER_HANDLE", "expertdevai")
-UPGRADE_URL: str = f"https://{GUMROAD_SELLER_HANDLE}.gumroad.com/l/{GUMROAD_PRODUCT_PERMALINK}"
+GUMROAD_SELLER_HANDLE: str  = os.getenv("GUMROAD_SELLER_HANDLE", "expert-dev-ai")
+# Premium is a variant of the same product — append ?variant=Premium so Gumroad
+# pre-selects the Premium tier on the checkout page.
+UPGRADE_URL: str = (
+    f"https://{GUMROAD_SELLER_HANDLE}.gumroad.com/l/{GUMROAD_PRODUCT_PERMALINK}"
+    "?variant=Premium"
+)
 
 # Keep old env var name for backward compat with existing Render config
 GUMROAD_PRODUCT_ID: str = os.getenv("GUMROAD_PRODUCT_ID", GUMROAD_PRODUCT_PERMALINK)
@@ -997,6 +1002,37 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+class ScoreAnswerRequest(BaseModel):
+    question: str = ""
+    skill: str = ""
+    answer: str = ""
+
+
+@app.post("/api/score-answer")
+async def score_answer(body: ScoreAnswerRequest, x_license_key: Optional[str] = Header(None)):
+    """Fast single-answer scorer used for real-time FAB score updates."""
+    if not body.answer.strip():
+        return {"score_pct": 0}
+    prompt = (
+        f"Rate how well this answer demonstrates the required competency.\n\n"
+        f"Skill: {body.skill}\nQuestion: {body.question}\nAnswer: {body.answer[:400]}\n\n"
+        f"Score 0-100 only (0-15 none, 16-40 basic, 41-65 partial, 66-85 solid, 86-100 expert).\n"
+        f'Reply JSON only: {{"score":<integer>}}'
+    )
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=12,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        data = _safe_json_loads(raw)
+        score = max(0, min(100, int(data.get("score", 50))))
+        return {"score_pct": score}
+    except Exception:
+        return {"score_pct": 50}
 
 
 @app.post("/api/verify-license")
