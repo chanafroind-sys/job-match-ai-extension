@@ -466,8 +466,28 @@ ANALYZE_PROMPT = """You are a senior recruitment expert. Analyze the fit between
 
 MANDATORY LANGUAGE RULE: The fields summary, strengths, and hard_gaps MUST be written in Hebrew (עברית) — no exceptions, regardless of the job's language. Technical terms, skill names, and technologies stay in English inside the Hebrew sentences.
 
-Rules:
-- Score 0-100 based on how well real experience matches the requirements (be honest, do not inflate)
+SCORING RULES — read carefully before assigning a score:
+
+STEP 1 — classify every requirement in the job posting:
+  CRITICAL = explicitly labelled "must", "required", "mandatory", or listed in the primary requirements section
+  SECONDARY = labelled "nice to have", "preferred", "advantage", "bonus", or listed in a separate lower-priority section
+
+STEP 2 — deduct from 100:
+  Missing CRITICAL requirement: -15 to -25 per item (how central it is to the role)
+  Partial / theoretical match on a CRITICAL item: -5 to -12
+  Years-of-experience shortfall: (required - actual) / required × 30 pts
+  Seniority mismatch (Senior/Lead in title but not in CV): cap score at 65
+  Domain mismatch (e.g. embedded vs web, BI vs ML): cap score at 55
+  Missing SECONDARY / nice-to-have: -2 to -5 per item (NEVER more than -5 each)
+
+STEP 3 — positive partial offsets (apply only to secondary gaps):
+  Strong relevant academic background: +5
+  Adjacent skills that transfer: +5
+  Relevant projects / portfolio: +5
+
+CALIBRATION: 85+ strong shortlist | 70-84 interview-worthy | 55-69 real gaps | <40 wrong fit
+A candidate who meets all CRITICAL requirements but lacks all SECONDARY ones should score 65-75, not below 55.
+
 - Return JSON only (no markdown, no explanations):
 {{
   "score": <0-100>,
@@ -716,17 +736,23 @@ class ImportJobsRequest(BaseModel):
     minScore: int = 70
     timeRange: str = "3days"  # "3days" | "since_last"
 
-RANK_SINGLE_JOB_PROMPT = """You are a strict senior engineering hiring manager. Score this single job posting against the candidate's CV.
+RANK_SINGLE_JOB_PROMPT = """You are a strict but fair senior hiring manager. Score this single job posting against the candidate's CV.
+
+STEP 1 — classify every requirement:
+  CRITICAL = "must", "required", "mandatory", or listed in the main requirements section
+  SECONDARY = "nice to have", "preferred", "advantage", "bonus", or in a lower-priority section
 
 SCORING — start from 100 and deduct:
-- Experience shortfall: (required_yrs - actual_yrs) / required_yrs × 35 pts
-- Missing required tech: -15 to -25 per item (proportional to how central it is)
-- Seniority mismatch (Senior/Lead/Staff/Principal not in CV): cap at 65
-- Domain mismatch (e.g. embedded vs web): cap at 55
-- Missing preferred/nice-to-have: -3 to -8 each
-Partial offsets (secondary gaps only): strong academics +5, adjacent skills +5, relevant projects +5
+  Missing CRITICAL requirement: -15 to -25 per item (proportional to centrality)
+  Partial/theoretical on a CRITICAL item: -5 to -12
+  Years shortfall: (required - actual) / required × 30 pts
+  Seniority mismatch (Senior/Lead in title but not in CV): cap at 65
+  Domain mismatch (e.g. embedded vs web): cap at 55
+  Missing SECONDARY / nice-to-have: -2 to -5 per item (never more than -5 each)
+Positive offsets (secondary gaps only): strong academics +5, adjacent skills +5, relevant projects +5
 
 CALIBRATION: 85+ shortlist | 70-84 interview | 55-69 real gaps | <40 wrong fit
+A candidate meeting all CRITICAL requirements but lacking all SECONDARY ones → 65-75, not below 55.
 
 Return ONLY valid JSON — no markdown, no explanation:
 {{"score": <0-100>, "pro": "<max 10 words — strongest match signal>", "con": "<max 10 words — biggest gap>"}}
@@ -749,13 +775,15 @@ STEP 2 — SCORE BASED ON ACTUAL FIT:
 Start from 100 and deduct based on what is missing:
 
 CRITICAL gaps (each deduction is proportional to how critical the requirement appears):
-- Years of experience shortfall: required N yrs, CV shows M yrs → deduct ~(N-M)/N × 35 pts
-  (e.g. 4yr req, 2yr CV → -17; 5yr req, 0yr CV → -35)
+- Years of experience shortfall: required N yrs, CV shows M yrs → deduct ~(N-M)/N × 30 pts
+  (e.g. 4yr req, 2yr CV → -15; 5yr req, 0yr CV → -30)
 - Missing core tech listed as "required": -15 to -25 per item depending on how central it is
+- Partial/theoretical match on a required skill: -5 to -12
 - Seniority mismatch: Senior/Lead/Staff title with no evidence of that level in CV → cap score at 65
 - Domain mismatch (e.g. embedded vs web): cap score at 55
 
-SECONDARY gaps: -3 to -8 per missing item
+SECONDARY gaps: -2 to -5 per missing item (NEVER more than -5 per item)
+IMPORTANT: A candidate who meets all CRITICAL requirements but lacks all SECONDARY ones should score 65-75, not below 55.
 
 POSITIVE signals that can partially offset secondary gaps (not critical ones):
 - Strong relevant academic background: +5
