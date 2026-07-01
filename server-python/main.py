@@ -259,24 +259,36 @@ async def verify_gumroad_license(license_key: str) -> dict:
 
     for pid in _product_ids_to_try:
         try:
-            payload: dict = {
-                "product_id": pid,
+            # Gumroad v2 API accepts either product_permalink or product_id
+            # (they're the same value — the URL slug). Try both field names
+            # to maximise compatibility across API versions.
+            base_payload: dict = {
                 "license_key": license_key.strip(),
                 "increment_uses_count": "false",
             }
             if GUMROAD_ACCESS_TOKEN:
-                payload["access_token"] = GUMROAD_ACCESS_TOKEN
-            async with httpx.AsyncClient(timeout=12) as client:
-                resp = await client.post(
-                    "https://api.gumroad.com/v2/licenses/verify",
-                    data=payload,
-                )
-            data = resp.json()
-            print(f"[JMA:verify] Gumroad pid={pid!r} status={resp.status_code} "
-                  f"success={data.get('success')} msg={data.get('message','')!r} "
-                  f"full={str(data)[:300]}")
+                base_payload["access_token"] = GUMROAD_ACCESS_TOKEN
+
+            headers: dict = {}
+            if GUMROAD_ACCESS_TOKEN:
+                headers["Authorization"] = f"Bearer {GUMROAD_ACCESS_TOKEN}"
+
+            for field in ("product_permalink", "product_id"):
+                payload = {field: pid, **base_payload}
+                async with httpx.AsyncClient(timeout=12) as client:
+                    resp = await client.post(
+                        "https://api.gumroad.com/v2/licenses/verify",
+                        data=payload,
+                        headers=headers,
+                    )
+                data = resp.json()
+                print(f"[JMA:verify] Gumroad field={field!r} pid={pid!r} "
+                      f"status={resp.status_code} success={data.get('success')} "
+                      f"msg={data.get('message','')!r}")
+                if data.get("success"):
+                    break
             if data.get("success"):
-                break   # found the right product — stop trying
+                break   # found the right product+field combo — stop outer loop
         except Exception as e:
             print(f"[JMA:verify] Gumroad network error pid={pid!r}: {e}")
             last_network_error = e
