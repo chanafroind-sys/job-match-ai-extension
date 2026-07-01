@@ -224,10 +224,15 @@ async def verify_gumroad_license(license_key: str) -> dict:
     masked = license_key[:4] + "****" if len(license_key) > 4 else "****"
     print(f"[JMA:verify] key={masked} len={len(license_key.strip())}")
 
-    # ── Test key bypass ───────────────────────────────────────────────────────
-    if license_key.strip() == TEST_LICENSE_KEY:
+    # ── Static / admin key bypass (TEST key + PREMIUM_KEYS env var) ──────────
+    k = license_key.strip()
+    if k == TEST_LICENSE_KEY:
         print("[JMA:verify] TEST KEY — bypass OK")
         return {"email": "test@internal", "uses": 1, "tier": "premium",
+                "isPremium": True, "subscriptionActive": True}
+    if k in STATIC_PREMIUM_KEYS:
+        print(f"[JMA:verify] STATIC PREMIUM KEY — bypass OK key={masked}")
+        return {"email": "admin@internal", "uses": 1, "tier": "premium",
                 "isPremium": True, "subscriptionActive": True}
 
     # ── Cache hit ─────────────────────────────────────────────────────────────
