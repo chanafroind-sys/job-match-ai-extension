@@ -347,13 +347,23 @@
     wrap.addEventListener('click', () => {
       if (_fabState === 'idle') {
         // No CV or matcher unavailable — fall back to animated progress + Stage 2
-        _fabState = 'loading';
-        _fabStartProgress();
-        chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
+        // _fabState = 'loading';
+        // _fabStartProgress();
+        // chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
       } else if (_fabState === 'quick_ready') {
         // ── Stage B: open popup → auto-start streaming questions immediately ──
-        chrome.storage.local.set({ jma_auto_stream: true, jma_job_text: jobText });
-        chrome.action.openPopup();
+        // chrome.storage.local.set({ jma_auto_stream: true, jma_job_text: jobText });
+        // chrome.action.openPopup();
+        const currentJobText = extractJobText(); 
+    
+    // שמירה בסטורג' (שעכשיו מוגן ומנותב אוטומטית לפי URL בזכות הדריסה שלנו)
+    chrome.storage.local.set({ 
+        jma_auto_stream: true, 
+        jma_job_text: currentJobText 
+    });
+    
+    // הפעלה של הפאנל הפנימי במקום ה-openPopup החסום!
+    _togglePanel();
       } else {
         // 'loading' or 'ready' → just toggle panel visibility
         _togglePanel();
