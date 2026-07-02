@@ -1148,7 +1148,7 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
     if not body.cvText or len(body.cvText.strip()) < 50:
         raise HTTPException(status_code=422, detail="CV text too short")
 
-    prompt = EXTRACT_PROFILE_PROMPT.format(cv_text=body.cvText[:6000])
+    prompt = EXTRACT_PROFILE_PROMPT.replace("{cv_text}", body.cvText[:6000])
     try:
         raw = await call_claude(prompt, max_tokens=1400)
         profile = parse_json_response(raw)
