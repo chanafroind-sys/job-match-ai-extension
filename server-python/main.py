@@ -16,9 +16,9 @@ import httpx
 from anthropic import AsyncAnthropic
 from json_repair import repair_json
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse, StreamingResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 from pydantic import BaseModel
 
 load_dotenv()
@@ -44,6 +44,32 @@ MAX_DEVICES_PER_KEY: int = int(os.getenv("MAX_DEVICES_PER_KEY", "3"))
 MONTHLY_USAGE_LIMIT: int = int(os.getenv("MONTHLY_USAGE_LIMIT", "100"))
 USAGE_FILE = Path(__file__).parent / "usage.json"
 CLICKS_FILE = Path(__file__).parent / "clicks.json"
+
+# ── WebSocket push-notification registry (in-memory, reset on restart) ────────
+# user_id (sha256[:16] of license key) → set of active WebSocket connections
+_ws_connections: dict[str, set] = {}
+# app_id → {"user_id": str, "job_title": str, "company": str}
+_app_id_registry: dict[str, dict] = {}
+
+def _ws_user_id(license_key: str) -> str:
+    """Stable, short, opaque identifier for a license key."""
+    return hashlib.sha256(license_key.encode()).hexdigest()[:16]
+
+async def _ws_push(user_id: str, payload: dict) -> None:
+    """Send payload to all active WebSocket connections for this user."""
+    conns = _ws_connections.get(user_id, set())
+    if not conns:
+        return
+    msg = json.dumps(payload)
+    dead: set = set()
+    for ws in list(conns):
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.add(ws)
+    conns -= dead
+    if not conns:
+        _ws_connections.pop(user_id, None)
 
 # ── Premium ───────────────────────────────────────────────────────────────────
 
@@ -427,28 +453,30 @@ async def call_claude_cached(
     system_blocks: list,
     user_content: str,
     max_tokens: int = 1200,
-) -> str:
-    """Call Claude with a cached system prompt (cache_control: ephemeral on CV block)."""
+    model: str = "claude-sonnet-4-6",
+) -> tuple[str, str]:
+    """Call Claude with a cached system prompt. Returns (text, stop_reason)."""
     total_sys = sum(len(b.get("text", "")) for b in system_blocks)
-    print(f"[JMA:claude] cached call sys_len={total_sys} user_len={len(user_content)} max_tokens={max_tokens}")
+    print(f"[JMA:claude] cached call sys_len={total_sys} user_len={len(user_content)} max_tokens={max_tokens} model={model}")
     last_exc: Exception | None = None
     for attempt in range(1, 4):
         try:
             message = await anthropic_client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=model,
                 max_tokens=max_tokens,
                 system=system_blocks,
                 messages=[{"role": "user", "content": user_content}],
             )
             result = "".join(block.text for block in message.content if hasattr(block, "text"))
+            stop   = message.stop_reason or "end_turn"
             usage  = message.usage
             print(
                 f"[JMA:claude] attempt={attempt} response_len={len(result)} "
-                f"stop={message.stop_reason} "
+                f"stop={stop} "
                 f"cache_read={getattr(usage,'cache_read_input_tokens',0)} "
                 f"cache_write={getattr(usage,'cache_creation_input_tokens',0)}"
             )
-            return result
+            return result, stop
         except Exception as e:
             last_exc = e
             print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
@@ -604,13 +632,12 @@ The initial match score is {base_score}% with {gap_pct} improvement points avail
 Identify the {n_questions} most important skills or experiences that are unclear or missing in the CV and are clearly required or strongly preferred by this job.
 
 For EACH question assign an integer `weight` (1-{gap_pct}). The weights MUST sum to exactly {gap_pct}.
-The weight reflects how much a perfect answer could raise the score for that skill gap.
 
-ALL text fields (question, why, heExplanation) MUST be in Hebrew. Skill names stay in English.
+ALL text (question, explanation) MUST be in Hebrew. Skill names stay in English.
 
-Return ONLY valid JSON — no markdown:
+Return ONLY valid JSON — no markdown, no extra fields:
 {{"questions":[
-  {{"id":"q1","skill":"<English>","question":"<שאלה קצרה>","why":"<עד 15 מילים>","heExplanation":"<עד 20 מילים>","weight":<integer>}},
+  {{"id":"q1","skill":"<English>","question":"<שאלה מקצועית קצרה>","explanation":"<הסבר ממוקד עד 15 מילים>","weight":<integer>}},
   ...
 ]}}
 
@@ -841,6 +868,12 @@ Rules:
 {job_context}"""
 
 
+def _resolve_model(model_alias: str) -> str:
+    """Map user-facing alias ('sonnet', 'fable') to actual Anthropic model ID."""
+    if model_alias == "fable":
+        return "claude-fable-5"
+    return "claude-sonnet-4-6"  # default
+
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class VerifyLicenseRequest(BaseModel):
@@ -852,6 +885,7 @@ class AnalyzeRequest(BaseModel):
     jobText: str
     answers: list = []
     preflight: bool = False
+    model: str = "sonnet"
 
 class GenerateCVRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -862,6 +896,9 @@ class GenerateCVRequest(BaseModel):
     cvUrls: list[str] = []
     userConstraints: str = ""
     generateCoverLetter: bool = False
+    enableTracking: bool = True
+    jobTitle: str = ""
+    company: str = ""
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -991,17 +1028,333 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Job Match AI Server", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ── CORS — raw ASGI middleware ────────────────────────────────────────────────
+# We use a raw ASGI middleware class instead of Starlette's CORSMiddleware or
+# @app.middleware("http").  Both of those go through BaseHTTPMiddleware which,
+# in some Starlette versions, intercepts WebSocket upgrade requests and can send
+# a rejection before websocket.accept() is ever called.  A raw ASGI class that
+# explicitly passes scope["type"] == "websocket" straight through is the only
+# reliable way to keep WebSocket connections unaffected by CORS logic.
+_CORS_HEADERS: list[tuple[bytes, bytes]] = [
+    (b"access-control-allow-origin",  b"*"),
+    (b"access-control-allow-methods", b"GET, POST, PUT, DELETE, OPTIONS"),
+    (b"access-control-allow-headers", b"*"),
+]
+
+
+class _CORSMiddleware:
+    """Adds CORS headers to all HTTP responses; WebSocket scopes pass through untouched."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # WebSocket or lifespan — pass directly to the app, zero interference.
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        # Preflight — short-circuit with 200 + CORS headers.
+        if scope.get("method") == "OPTIONS":
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": _CORS_HEADERS + [(b"access-control-max-age", b"86400")],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        # All other HTTP — inject CORS headers into whatever the app returns.
+        async def send_with_cors(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                existing = list(message.get("headers", []))
+                message = {**message, "headers": existing + _CORS_HEADERS}
+            await send(message)
+
+        await self._app(scope, receive, send_with_cors)
+
+
+app.add_middleware(_CORSMiddleware)
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── CV Profile Extraction ─────────────────────────────────────────────────────
+
+EXTRACT_PROFILE_PROMPT = """\
+You are an expert tech-recruiter talent analyst. Analyse the CV text below and extract a \
+structured JSON profile. Follow every instruction exactly.
+
+OUTPUT: Return ONLY valid JSON — no markdown, no explanation, no extra keys.
+
+JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
+{{
+  "industry_summary": {{
+    "total_years_industry": <float>,
+    "domain_years": {{
+      "<domain>": <float>
+      // only domains actually found: backend, frontend, fullstack, mobile, devops_cloud,
+      // ai_ml_llm, data_bi, cyber, qa, embedded, other
+    }}
+  }},
+  "traits": [<string>],
+  "experience": {{
+    "backend":      {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
+    "frontend":     {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
+    "ai_ml_llm":    {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
+    "data_bi":      {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
+    "devops_cloud": {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
+    "mobile":       {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
+    "other_domains":{{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }}
+  }},
+  "tools_and_methods": {{ "<tool>": <bool> }},
+  "languages": {{ "<lang>": "<level>" }}
+}}
+
+CRITICAL RULES:
+1. SEPARATION: `industry_years` = verified paid employment only. \
+`personal_years` = side projects, academia, bootcamps, online courses.
+2. DURATION INFERENCE: If a tech is listed inside a job role that has explicit dates, \
+compute its duration from those dates. If dates are missing, default to 1.0 year.
+3. TRAITS: English adjective/noun phrases only. Examples: "Analytically-Minded", \
+"Self-Directed", "Team-Player".
+4. DOMAIN YEARS in `industry_summary.domain_years` = sum of `industry_years` across all \
+techs in that domain, capped at total career years.
+5. FULLSTACK INFERENCE: If the person has ≥1 year backend AND ≥1 year frontend \
+(industry), add "fullstack" to domain_years with min(backend_years, frontend_years).
+6. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
+microservices, rest, graphql, tdd, and any others found. Value = true if found.
+
+=== CV TEXT ===
+{cv_text}"""
+
+
+class ExtractProfileRequest(BaseModel):
+    cvText: str
+
+
+@app.post("/api/extract-profile")
+async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[str] = Header(None)):
+    """Extract a structured skills/experience profile from raw CV text using Claude."""
+    license_key = x_license_key or ""
+    try:
+        await verify_gumroad_license(license_key)
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid license")
+
+    if not body.cvText or len(body.cvText.strip()) < 50:
+        raise HTTPException(status_code=422, detail="CV text too short")
+
+    prompt = EXTRACT_PROFILE_PROMPT.format(cv_text=body.cvText[:6000])
+    try:
+        raw = await call_claude(prompt, max_tokens=1400)
+        profile = parse_json_response(raw)
+        if not isinstance(profile, dict) or "experience" not in profile:
+            raise ValueError("Invalid profile shape")
+        return {"profile": profile}
+    except Exception as e:
+        print(f"[JMA:extract_profile] {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail="Profile extraction failed")
+
+
+class QuickScoreRequest(BaseModel):
+    cvText: str = ""
+    jobText: str = ""
+
+
+@app.post("/api/quick-score")
+async def quick_score(body: QuickScoreRequest):
+    """Ultra-fast match percentage + short reason bullets. Uses cheapest model, no auth."""
+    if not body.cvText or not body.jobText:
+        return {"score": 0, "bullets": []}
+    he_chars = sum(1 for c in body.jobText[:300] if "א" <= c <= "ת")
+    lang = "Hebrew" if he_chars > 20 else "English"
+    prompt = (
+        f"Score how well this CV matches this job (0–100). Reply JSON only.\n\n"
+        f"CV:\n{body.cvText[:900]}\n\nJob:\n{body.jobText[:900]}\n\n"
+        f'Reply: {{"score": <0-100>, "bullets": ["✅ short reason", "❌ short reason", "✅ short reason"]}}\n'
+        f"3–4 bullets, each under 35 chars, in {lang}. No extra text."
+    )
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=110,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        data = _safe_json_loads(resp.content[0].text.strip())
+        return {
+            "score": max(0, min(100, int(data.get("score", 0)))),
+            "bullets": (data.get("bullets") or [])[:4],
+        }
+    except Exception as e:
+        print(f"[JMA:quick_score] {e}")
+        return {"score": 0, "bullets": []}
+
+
+class AnalyzeStreamRequest(BaseModel):
+    cvText: str = ""
+    jobText: str = ""
+    answers: list[dict] = []
+    userConstraints: str = ""
+    model: str = "sonnet"
+
+
+STREAM_ANALYSIS_PROMPT = """\
+You are a senior career consultant. The candidate CV is in your system prompt.
+
+Job Description:
+{job_text}
+{answers_block}{constraints_block}
+
+Write a concise, direct, actionable match analysis in {lang}. Cover:
+(1) overall match verdict, (2) strongest alignment points, (3) key gaps to address,
+(4) specific recommendations.
+Use short paragraphs. Max 350 words.
+
+IMPORTANT — emit output iteratively: write and flush each paragraph as soon as it is complete. \
+Do NOT buffer the entire response before outputting."""
+
+STREAM_QUESTIONS_PROMPT = """\
+You are a senior career consultant. The candidate CV is in your system prompt.
+
+The initial match score is {base_score}% with {gap_pct} improvement points available.
+{answers_block}
+Identify the {n_questions} most important skill gaps that are unclear or missing in the CV \
+and clearly required by the job below.
+
+CRITICAL STREAMING RULE — output each question the MOMENT you identify it, one at a time:
+1. Identify gap #1 → immediately output its JSON object on its own line.
+2. Identify gap #2 → immediately output its JSON object on its own line.
+Continue until all {n_questions} gaps are output.
+
+For EACH gap output exactly one line of valid JSON (no markdown, no wrapper array):
+{{"id":"q1","skill":"<English name>","question":"<מקצועית קצרה>","explanation":"<עד 15 מילים בעברית>","weight":<integer>}}
+
+The integer weights MUST sum to exactly {gap_pct}.
+ALL Hebrew text fields must be in Hebrew. Skill names stay in English.
+
+After the last question output exactly:
+[QUESTIONS_DONE]
+
+=== JOB DESCRIPTION ===
+{job_text}"""
+
+
+@app.post("/api/analyze-stream")
+async def analyze_stream(body: AnalyzeStreamRequest, x_license_key: Optional[str] = Header(None)):
+    """Stream iterative question-by-question analysis with prompt caching on the CV block."""
+    if not body.cvText or not body.jobText:
+        async def _empty():
+            yield 'data: {"error": "לא נמצאו נתונים לניתוח."}\n\n'
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_empty(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    license_key = x_license_key or ""
+    try:
+        await verify_gumroad_license(license_key)
+    except Exception:
+        async def _auth_err():
+            yield 'data: {"error": "רישיון לא תקף."}\n\n'
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_auth_err(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    he_chars = sum(1 for c in body.jobText[:300] if "א" <= c <= "ת")
+    lang = "Hebrew" if he_chars > 15 else "English"
+
+    answers_block = ""
+    if body.answers:
+        lines = "\n".join(
+            f"- {a.get('skill','')}: {a.get('answer','')}"
+            for a in body.answers if a.get("answer") and a["answer"] != "לא ענה"
+        )
+        if lines:
+            answers_block = f"\nCandidate self-assessment:\n{lines}\n"
+
+    constraints_block = (
+        f"\n\nUser personal constraints:\n{body.userConstraints.strip()}"
+        if body.userConstraints and body.userConstraints.strip() else ""
+    )
+
+    cv_text  = body.cvText[:3000]
+    job_text = body.jobText[:2500]
+    sys_blocks = _cv_system_blocks(cv_text)
+
+    # Determine gap_pct from preflight cache data embedded in answers (weight sum), fallback 20
+    gap_pct  = min(40, max(10, sum(a.get("weight", 0) for a in (body.answers or [])) or 20))
+    base_score_guess = 65  # used only for question prompt context
+    n_q = 4 if gap_pct >= 20 else 3
+
+    resolved_model = _resolve_model(body.model)
+
+    question_prompt = STREAM_QUESTIONS_PROMPT.format(
+        base_score=base_score_guess,
+        gap_pct=gap_pct,
+        n_questions=n_q,
+        answers_block=answers_block,
+        job_text=job_text,
+    )
+
+    analysis_prompt = STREAM_ANALYSIS_PROMPT.format(
+        job_text=job_text,
+        answers_block=answers_block,
+        constraints_block=constraints_block,
+        lang=lang,
+    )
+
+    async def generate():
+        # ── Phase 1: stream questions one-by-one ──────────────────────────
+        try:
+            buffer = ""
+            async with anthropic_client.messages.stream(
+                model=resolved_model,
+                max_tokens=600,
+                system=sys_blocks,
+                messages=[{"role": "user", "content": question_prompt}],
+            ) as stream:
+                async for chunk in stream.text_stream:
+                    buffer += chunk
+                    # Emit each complete JSON line immediately as it arrives
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line == "[QUESTIONS_DONE]":
+                            break
+                        if line.startswith("{"):
+                            try:
+                                q = json.loads(repair_json(line))
+                                yield f"data: {json.dumps({'question': q})}\n\n"
+                            except Exception:
+                                pass
+        except Exception as e:
+            print(f"[JMA:stream_questions] {e}")
+
+        yield f"data: {json.dumps({'phase': 'analysis'})}\n\n"
+
+        # ── Phase 2: stream narrative analysis ────────────────────────────
+        try:
+            async with anthropic_client.messages.stream(
+                model=resolved_model,
+                max_tokens=500,
+                system=sys_blocks,
+                messages=[{"role": "user", "content": analysis_prompt}],
+            ) as stream:
+                async for chunk in stream.text_stream:
+                    yield f"data: {json.dumps({'text': chunk})}\n\n"
+        except Exception as e:
+            print(f"[JMA:stream_analysis] {e}")
+            yield f'data: {json.dumps({"text": "שגיאה בניתוח. אנא נסה שוב."})}\n\n'
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 class ScoreAnswerRequest(BaseModel):
@@ -1068,24 +1421,30 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
         job_text = body.jobText[:2500]
         sys_blocks = _cv_system_blocks(cv_text)
 
+        resolved_model = _resolve_model(body.model)
         # ── Pass 1: base analysis ─────────────────────────────────────────
         try:
-            raw1 = await call_claude_cached(
+            raw1, stop1 = await call_claude_cached(
                 system_blocks=sys_blocks,
                 user_content=BASE_ANALYSIS_USER.format(
                     scoring_rules=_SCORING_RULES,
                     job_text=job_text,
                 ),
-                max_tokens=700,
+                max_tokens=1200,
+                model=resolved_model,
             )
+            if stop1 == "max_tokens":
+                raise HTTPException(status_code=422, detail="Analysis body too long")
             analysis = parse_json_response(raw1)
-            base_score: int = max(0, min(100, int(analysis.get("base_score", 65))))
+            base_score: int = max(0, min(100, int(analysis.get("base_score", 50))))
             gap_pct:    int = max(0, min(40,  int(analysis.get("gap_pct",    20))))
-            print(f"[JMA:preflight] pass1 base={base_score} gap={gap_pct}")
+            print(f"[JMA:preflight] pass1 base={base_score} gap={gap_pct} model={resolved_model}")
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"[JMA:preflight] pass1 error: {type(e).__name__}: {e}")
             analysis   = {}
-            base_score = 65
+            base_score = 50
             gap_pct    = 20
 
         # ── Pass 2: weighted questions ────────────────────────────────────
@@ -1093,7 +1452,7 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
         if gap_pct > 0:
             n_q = 4 if gap_pct >= 20 else 3
             try:
-                raw2 = await call_claude_cached(
+                raw2, stop2 = await call_claude_cached(
                     system_blocks=sys_blocks,
                     user_content=QUESTIONS_USER.format(
                         base_score=base_score,
@@ -1101,8 +1460,11 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
                         n_questions=n_q,
                         job_text=job_text,
                     ),
-                    max_tokens=900,
+                    max_tokens=1200,
+                    model=resolved_model,
                 )
+                if stop2 == "max_tokens":
+                    raise HTTPException(status_code=422, detail="Analysis body too long")
                 q_data   = parse_json_response(raw2)
                 questions = q_data.get("questions", [])
                 # Normalise weights so they sum exactly to gap_pct
@@ -1117,6 +1479,8 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
                         else:
                             q["weight"] = max(1, rem)
                 print(f"[JMA:preflight] pass2 questions={len(questions)} weights={[q.get('weight') for q in questions]}")
+            except HTTPException:
+                raise
             except Exception as e:
                 print(f"[JMA:preflight] pass2 error: {type(e).__name__}: {e}")
 
@@ -1216,9 +1580,18 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     ) + url_instruction + constraints_block
     cv_final = await call_claude(pass2_prompt, max_tokens=2000)
 
-    # Inject tracking links only when original CV had GitHub/LinkedIn URLs
+    # Inject tracking links only when original CV had GitHub/LinkedIn URLs and tracking is enabled
     app_id = str(uuid.uuid4())[:8]
-    cv_final = inject_tracking_links(cv_final, app_id)
+    if body.enableTracking:
+        cv_final = inject_tracking_links(cv_final, app_id)
+        # Register for WebSocket push-notifications
+        _app_id_registry[app_id] = {
+            "user_id": _ws_user_id(license_key),
+            "job_title": body.jobTitle or "",
+            "company": body.company or "",
+        }
+    else:
+        app_id = ""  # no tracking — return empty appId so client skips analytics
 
     # ── Diff pass: compare original CV to adapted CV, generate Hebrew explanations ──
     sections: list = []
@@ -1267,6 +1640,38 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
 
     increment_usage(license_key)
     return {"cvText": cv_final, "appId": app_id, "sections": sections, "coverLetterText": cover_letter_text}
+
+
+@app.websocket("/ws/clicks")
+async def ws_clicks(websocket: WebSocket, user_id: str = ""):
+    """Persistent push channel — client receives click events without polling."""
+    origin = websocket.headers.get("origin", "unknown")
+    # Accept unconditionally — extension origins (chrome-extension://) must not be blocked.
+    await websocket.accept()
+    uid = user_id.strip()
+    if uid:
+        _ws_connections.setdefault(uid, set()).add(websocket)
+        print(f"[JMA:ws] connected user_id={uid} origin={origin} total_users={len(_ws_connections)}")
+    else:
+        print(f"[JMA:ws] anonymous connection from origin={origin} (no user_id)")
+    try:
+        while True:
+            text = await websocket.receive_text()
+            try:
+                msg = json.loads(text)
+                if msg.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if uid:
+            conns = _ws_connections.get(uid, set())
+            conns.discard(websocket)
+            if not conns:
+                _ws_connections.pop(uid, None)
+            print(f"[JMA:ws] disconnected user_id={uid}")
 
 
 @app.get("/api/v1/clicks")
@@ -1341,21 +1746,30 @@ async def market_compare(years_exp: int = 3, title: str = "Software Engineer"):
 
 @app.get("/api/v1/track")
 async def track_click(app_id: str, target: str, url: str):
-    """Log a link click and redirect to the original URL."""
+    """Log a link click, push via WebSocket, and redirect to the original URL."""
+    ts = datetime.utcnow().isoformat()
     try:
         clicks: list = json.loads(CLICKS_FILE.read_text()) if CLICKS_FILE.exists() else []
     except (json.JSONDecodeError, OSError):
         clicks = []
-    clicks.append({
-        "app_id": app_id,
-        "target": target,
-        "url": url,
-        "ts": datetime.utcnow().isoformat(),
-    })
+    clicks.append({"app_id": app_id, "target": target, "url": url, "ts": ts})
     try:
         CLICKS_FILE.write_text(json.dumps(clicks, indent=2))
     except OSError:
         pass
+
+    # Push real-time notification to the owner's open WebSocket (if any)
+    info = _app_id_registry.get(app_id)
+    if info:
+        asyncio.create_task(_ws_push(info["user_id"], {
+            "type": "click",
+            "app_id": app_id,
+            "target": target,
+            "jobTitle": info.get("job_title", ""),
+            "company": info.get("company", ""),
+            "ts": ts,
+        }))
+
     return RedirectResponse(url=url, status_code=302)
 
 

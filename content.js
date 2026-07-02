@@ -108,37 +108,68 @@
       sendResponse({ ok: true });
     }
 
+    if (req.action === 'preflightQuickScore') {
+      // Stage-1 result: cheap fast score + reason bullets — show IMMEDIATELY
+      clearInterval(_fabProgressTimer);
+      _fabState = 'quick_ready';
+      _updateFabArc(req.score, true);
+      const wrap = document.getElementById('jma-fab-wrap');
+      if (wrap) { wrap.classList.remove('jma-fab-loading'); wrap.classList.add('jma-fab-ready'); }
+      const inner = document.getElementById('jma-fab-inner');
+      if (inner) {
+        const color = req.score >= 75 ? '#3fb950' : req.score >= 55 ? '#d29922' : req.score >= 35 ? '#e3812b' : '#f85149';
+        inner.innerHTML = `
+          <span class="jma-fab-score-num" style="color:${color}">${req.score}</span>
+          <span class="jma-fab-score-pct">%</span>
+          <span class="jma-fab-score-lbl" style="font-size:7px;opacity:.7">⏳ מעמיק...</span>`;
+      }
+      if (req.bullets && req.bullets.length > 0) _showFabReasons(req.bullets);
+    }
+
     if (req.action === 'preflightDone') {
       _fabSetScore(req.score);
-      // Auto-open the panel so the user jumps straight into questions
-      if (!_panelOpen) _togglePanel();
+      document.getElementById('jma-fab-reasons')?.remove();
+      // Do NOT auto-open panel — user clicks FAB to open when ready
     }
 
     if (req.action === 'preflightError') {
       clearInterval(_fabProgressTimer);
       _fabState = 'idle';
       _updateFabArc(0, false);
+      document.getElementById('jma-fab-reasons')?.remove();
       const inner = document.getElementById('jma-fab-inner');
       if (inner) inner.innerHTML = '<span class="jma-fab-icon">⚡</span><span class="jma-fab-text">בדיקה<br>מהירה</span>';
     }
 
     if (req.action === 'updateFabScore') {
-      if (_fabState === 'ready') {
-        _fabSetScore(req.score);
-      } else {
-        // During questions: update arc without switching inner text to score
-        _updateFabArc(req.score, true);
+      // Always update arc; if FAB is showing score text, update the number too
+      _updateFabArc(req.score, true);
+      const inner = document.getElementById('jma-fab-inner');
+      const numEl = inner?.querySelector('.jma-fab-score-num');
+      if (numEl) {
+        const color = req.score >= 75 ? '#3fb950' : req.score >= 55 ? '#d29922' : req.score >= 35 ? '#e3812b' : '#f85149';
+        numEl.style.color = color;
+        numEl.textContent = req.score;
       }
+    }
+
+    if (req.action === 'showClickToast') {
+      _showToast(req.jobTitle, req.company, req.target);
     }
 
     if (req.action === 'getJobText') {
       const text = extractJobText();
+      // Try to extract a clean job title from the page
+      const h1 = document.querySelector('h1')?.innerText?.trim() || '';
+      const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
       sendResponse({
         text,
         language: detectLanguage(text),
         platform: detectPlatform(),
         url: window.location.href,
         title: document.title,
+        h1Title: h1,
+        ogTitle,
       });
     }
     return true;
@@ -180,6 +211,52 @@
 
   // ── Single-job-page circular FAB + injected sidebar panel ────────────────
 
+  // Build a minimal profile stub from raw CV text for users without a jma_user_profile yet.
+  // Accuracy is lower than the AI-extracted version but good enough as a fallback.
+  function _profileFromCvText(cvText) {
+    const lo = (cvText || '').toLowerCase();
+    const TECH_DOMAIN_LOCAL = {
+      java:'backend','c#':'backend','.net':'backend',python:'backend',ruby:'backend',
+      go:'backend',golang:'backend',rust:'backend',php:'backend',scala:'backend',
+      kotlin:'backend','node.js':'backend',nodejs:'backend',
+      react:'frontend','vue':'frontend',angular:'frontend','next.js':'frontend',
+      nextjs:'frontend',javascript:'frontend',typescript:'frontend',
+      tensorflow:'ai_ml_llm',pytorch:'ai_ml_llm','machine learning':'ai_ml_llm',
+      spark:'data_bi',sql:'data_bi',postgresql:'data_bi',pandas:'data_bi',
+      docker:'devops_cloud',kubernetes:'devops_cloud',aws:'devops_cloud',
+      azure:'devops_cloud',gcp:'devops_cloud',terraform:'devops_cloud',
+      swift:'mobile',flutter:'mobile','react native':'mobile',android:'mobile',
+    };
+    const totalMatch = lo.match(/(\d+)\+?\s*years?\s*(?:of\s*)?(?:professional\s*)?experience/i)
+                    || lo.match(/(\d+)\s*שנות?\s*ניסיון/i);
+    const totalYears = totalMatch ? parseFloat(totalMatch[1]) : 0;
+
+    const exp = { backend:{}, frontend:{}, ai_ml_llm:{}, data_bi:{}, devops_cloud:{}, mobile:{}, other_domains:{} };
+    const domainYears = {};
+
+    for (const [tech, domain] of Object.entries(TECH_DOMAIN_LOCAL)) {
+      const escaped = tech.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('(?<![a-z0-9])' + escaped + '(?![a-z0-9])', 'i');
+      if (!re.test(lo)) continue;
+      // Try to find a year near the tech
+      const idx = lo.search(re);
+      const win = lo.slice(Math.max(0, idx - 150), idx + 150);
+      const ym = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?)/i);
+      const yrs = ym ? parseFloat(ym[1]) : (totalYears > 0 ? Math.round(totalYears * 0.5 * 10) / 10 : 1.0);
+      exp[domain][tech] = { industry_years: yrs, personal_years: 0 };
+      domainYears[domain] = (domainYears[domain] || 0) + yrs;
+    }
+
+    return {
+      industry_summary: { total_years_industry: totalYears, domain_years: domainYears },
+      traits: [],
+      experience: exp,
+      tools_and_methods: {},
+      languages: {},
+      _isFallback: true,
+    };
+  }
+
   function _prefKey(url) {
     let h = 0;
     for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
@@ -191,14 +268,15 @@
   let _fabProgress = 0;
   let _fabProgressTimer = null;
   let _panelOpen = false;
-  const FAB_CIRC = 188.5; // 2π×30
+  const FAB_CIRC = 207.3; // 2π×33
 
   function initJobFab() {
     if (document.getElementById('jma-float-btn')) return; // listing page has own FAB
     if (document.getElementById('jma-fab-wrap')) return;
+    if (!pageHasJobKeywords()) return; // must look like a job page
     const jobText = extractJobText();
     if (!jobText || jobText.length < 350) return;
-    chrome.storage.local.get(['licenseKey', 'cvText'], (conf) => {
+    chrome.storage.local.get(['licenseKey', 'cvText', 'jma_user_profile'], (conf) => {
       if (!conf.licenseKey || !conf.cvText) return;
       const cKey = _prefKey(location.href);
       chrome.storage.local.get([cKey], (stored) => {
@@ -214,10 +292,16 @@
     const wrap = document.createElement('div');
     wrap.id = 'jma-fab-wrap';
     wrap.innerHTML = `
-      <svg viewBox="0 0 76 76" width="76" height="76">
-        <circle class="jma-fab-bg" cx="38" cy="38" r="36"/>
-        <circle class="jma-fab-track" cx="38" cy="38" r="30"/>
-        <circle class="jma-fab-arc" id="jma-fab-arc" cx="38" cy="38" r="30"/>
+      <svg viewBox="0 0 84 84" width="84" height="84">
+        <defs>
+          <radialGradient id="jma-grad" cx="40%" cy="35%" r="65%">
+            <stop offset="0%" stop-color="#A78BFA"/>
+            <stop offset="100%" stop-color="#5B21B6"/>
+          </radialGradient>
+        </defs>
+        <circle class="jma-fab-bg" cx="42" cy="42" r="41"/>
+        <circle class="jma-fab-track" cx="42" cy="42" r="33"/>
+        <circle class="jma-fab-arc" id="jma-fab-arc" cx="42" cy="42" r="33"/>
       </svg>
       <div class="jma-fab-inner" id="jma-fab-inner">
         <span class="jma-fab-icon">⚡</span>
@@ -226,16 +310,57 @@
     document.body.appendChild(wrap);
 
     if (cached && cached.base_score != null) {
+      // Preflight cache already has a full AI score — use it directly
       _fabSetScore(cached.base_score);
+    } else {
+      // ── Stage A: run local matcher immediately, zero network cost ───────
+      // Uses the AI-extracted profile (jma_user_profile) when available.
+      // Falls back to a stub profile built from raw cvText for users who haven't re-saved yet.
+      chrome.storage.local.get(['jma_user_profile', 'cvText'], (s) => {
+        if (!window.JMA_Matcher) return;
+        let profile = s.jma_user_profile || null;
+        if (!profile && s.cvText) {
+          // Minimal stub so the matcher has something to work with
+          profile = _profileFromCvText(s.cvText);
+        }
+        if (!profile) return;
+        const { score, bullets } = window.JMA_Matcher.computeScore(profile, jobText);
+        _fabState = 'quick_ready';
+        _updateFabArc(score, true);
+        wrap.classList.remove('jma-fab-loading');
+        wrap.classList.add('jma-fab-ready');
+        const inner2 = document.getElementById('jma-fab-inner');
+        if (inner2) {
+          const color = score >= 75 ? '#3fb950' : score >= 55 ? '#d29922' : score >= 35 ? '#e3812b' : '#f85149';
+          inner2.innerHTML = `
+            <span class="jma-fab-score-num" style="color:${color}">${score}</span>
+            <span class="jma-fab-score-pct">%</span>
+            <span class="jma-fab-score-lbl">התאמה</span>`;
+        }
+        // Persist local score so popup can read it as initial baseScore
+        chrome.storage.local.set({ jma_local_score: score, jma_local_bullets: bullets });
+        // Show reason pills briefly (staggered fade-in)
+        if (bullets.length > 0) setTimeout(() => _showFabReasons(bullets), 600);
+      });
     }
 
     wrap.addEventListener('click', () => {
       if (_fabState === 'idle') {
+        // No CV or matcher unavailable — fall back to animated progress + Stage 2
         _fabState = 'loading';
         _fabStartProgress();
         chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
+      } else if (_fabState === 'quick_ready') {
+        // ── Stage B: panel opens → trigger deep AI analysis in background ──
+        _fabState = 'loading';
+        // Keep score visible, update subtext to indicate Stage 2 in progress
+        const inner = document.getElementById('jma-fab-inner');
+        const lbl = inner?.querySelector('.jma-fab-score-lbl');
+        if (lbl) lbl.textContent = '⏳ מעמיק...';
+        chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
+        _togglePanel();
       } else {
-        // loading or ready → toggle panel
+        // 'loading' or 'ready' → just toggle panel visibility
         _togglePanel();
       }
     });
@@ -244,6 +369,8 @@
   function _fabStartProgress() {
     _fabProgress = 5;
     _updateFabArc(_fabProgress, false);
+    const wrap = document.getElementById('jma-fab-wrap');
+    if (wrap) wrap.classList.add('jma-fab-loading');
     const inner = document.getElementById('jma-fab-inner');
     if (inner) inner.innerHTML = '<span class="jma-fab-text" style="font-size:10px">מנתח...<br>⏳</span>';
     clearInterval(_fabProgressTimer);
@@ -280,12 +407,71 @@
     }
   }
 
+  function _showToast(jobTitle, company, target) {
+    document.getElementById('jma-toast')?.remove();
+    const toast = document.createElement('div');
+    toast.id = 'jma-toast';
+    toast.className = 'jma-toast';
+    const companyStr = company ? ` בחברת <strong>${escHtml(company)}</strong>` : '';
+    toast.innerHTML = `
+      <div class="jma-toast-flame">🔥</div>
+      <div class="jma-toast-body">
+        <div class="jma-toast-title">מגייס מגלה עניין עכשיו!</div>
+        <div class="jma-toast-sub">קורות החיים עבור <strong>${escHtml(jobTitle)}</strong>${companyStr} נפתחו ב-${escHtml(target)}</div>
+      </div>
+      <button class="jma-toast-x" title="סגור">✕</button>`;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('jma-toast-in'));
+    toast.querySelector('.jma-toast-x').addEventListener('click', () => toast.remove());
+    setTimeout(() => document.getElementById('jma-toast')?.remove(), 13000);
+  }
+
+  function _showFabReasons(bullets) {
+    document.getElementById('jma-fab-reasons')?.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'jma-fab-reasons';
+    document.body.appendChild(wrap);
+    bullets.forEach((b, i) => {
+      setTimeout(() => {
+        if (!document.getElementById('jma-fab-reasons')) return;
+        const pill = document.createElement('div');
+        pill.className = 'jma-fab-reason-pill';
+        pill.textContent = b;
+        wrap.appendChild(pill);
+        requestAnimationFrame(() => pill.classList.add('jma-fab-reason-in'));
+      }, i * 190);
+    });
+    // Auto-dismiss after 8 s
+    setTimeout(() => wrap.remove(), 8000);
+  }
+
   // ── Injected sidebar panel (contains popup.html as iframe) ────────────────
 
   function _ensurePanel() {
     if (document.getElementById('jma-panel')) return;
     const panel = document.createElement('div');
     panel.id = 'jma-panel';
+
+    // ── Collapse / expand grab tab on the left edge of the panel ────────
+    const tab = document.createElement('button');
+    tab.id = 'jma-panel-tab';
+    tab.setAttribute('aria-label', 'כווץ/הרחב פאנל');
+    tab.innerHTML = `
+      <span class="jma-tab-arrow">◀</span>
+      <span class="jma-tab-dots">
+        <span class="jma-tab-dot"></span>
+        <span class="jma-tab-dot"></span>
+        <span class="jma-tab-dot"></span>
+      </span>`;
+    tab.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _togglePanel();
+      const arrow = tab.querySelector('.jma-tab-arrow');
+      // ▶ when open (click closes), ◀ when closed (click opens)
+      if (arrow) arrow.textContent = _panelOpen ? '▶' : '◀';
+    });
+    panel.appendChild(tab);
+
     const iframe = document.createElement('iframe');
     iframe.id = 'jma-panel-iframe';
     iframe.src = chrome.runtime.getURL('popup.html');
@@ -299,6 +485,7 @@
     _panelOpen = !_panelOpen;
     const panel = document.getElementById('jma-panel');
     if (panel) panel.classList.toggle('jma-panel-open', _panelOpen);
+    if (_panelOpen) document.getElementById('jma-fab-reasons')?.remove();
   }
 
   // Keywords that indicate a job listing page — checked locally, zero API cost
@@ -498,22 +685,28 @@
       .jma-err{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);border-radius:8px;padding:14px;color:#f85149;font-size:12px;text-align:center}
       .jma-empty{text-align:center;padding:30px;color:#8b949e;font-size:13px}
       /* ── Circular FAB gauge ── */
+      @keyframes jma-pulse{
+        0%,100%{transform:scale(1);filter:drop-shadow(0 5px 14px rgba(109,40,217,0.6))}
+        50%{transform:scale(1.06);filter:drop-shadow(0 8px 22px rgba(109,40,217,0.85))}
+      }
       #jma-fab-wrap{
-        position:fixed;top:80px;right:20px;width:76px;height:76px;
+        position:fixed;top:80px;left:20px;width:84px;height:84px;
         z-index:2147483646;cursor:pointer;user-select:none;
-        filter:drop-shadow(0 4px 10px rgba(109,40,217,0.55));
+        filter:drop-shadow(0 5px 14px rgba(109,40,217,0.6));
         transition:filter .3s,transform .2s;
         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+        animation:jma-pulse 3s ease-in-out infinite;
       }
-      #jma-fab-wrap:hover{transform:scale(1.1);filter:drop-shadow(0 6px 18px rgba(109,40,217,0.75))}
-      #jma-fab-wrap.jma-fab-ready{filter:drop-shadow(0 4px 10px rgba(16,163,74,0.5))}
-      #jma-fab-wrap.jma-fab-ready:hover{filter:drop-shadow(0 6px 18px rgba(16,163,74,0.7))}
-      .jma-fab-bg{fill:rgba(109,40,217,0.94)}
-      .jma-fab-track{fill:none;stroke:rgba(255,255,255,0.18);stroke-width:5}
+      #jma-fab-wrap.jma-fab-loading{animation:none}
+      #jma-fab-wrap:hover{transform:scale(1.12)!important;filter:drop-shadow(0 8px 22px rgba(109,40,217,0.9))!important}
+      #jma-fab-wrap.jma-fab-ready{animation:none;filter:drop-shadow(0 5px 14px rgba(16,163,74,0.6))}
+      #jma-fab-wrap.jma-fab-ready:hover{filter:drop-shadow(0 8px 22px rgba(16,163,74,0.85))!important}
+      .jma-fab-bg{fill:url(#jma-grad)}
+      .jma-fab-track{fill:none;stroke:rgba(255,255,255,0.2);stroke-width:6}
       .jma-fab-arc{
-        fill:none;stroke:rgba(255,255,255,0.9);stroke-width:5;stroke-linecap:round;
-        stroke-dasharray:188.5;stroke-dashoffset:188.5;
-        transform-origin:38px 38px;transform:rotate(-90deg);
+        fill:none;stroke:rgba(255,255,255,0.95);stroke-width:6;stroke-linecap:round;
+        stroke-dasharray:207.3;stroke-dashoffset:207.3;
+        transform-origin:42px 42px;transform:rotate(-90deg);
         transition:stroke-dashoffset .5s ease,stroke .4s ease;
       }
       .jma-fab-inner{
@@ -521,20 +714,86 @@
         align-items:center;justify-content:center;color:#fff;text-align:center;
         pointer-events:none;
       }
-      .jma-fab-icon{font-size:20px;line-height:1}
+      .jma-fab-icon{font-size:22px;line-height:1}
       .jma-fab-text{font-size:9px;font-weight:700;line-height:1.4;margin-top:2px}
-      .jma-fab-score-num{font-size:22px;font-weight:800;line-height:1}
-      .jma-fab-score-pct{font-size:10px;font-weight:700;margin-top:-2px}
-      .jma-fab-score-lbl{font-size:8px;opacity:.82;margin-top:2px}
+      .jma-fab-score-num{font-size:24px;font-weight:800;line-height:1}
+      .jma-fab-score-pct{font-size:11px;font-weight:700;margin-top:-2px}
+      .jma-fab-score-lbl{font-size:8px;opacity:.85;margin-top:2px}
+      /* ── Recruiter click toast ── */
+      #jma-toast{
+        position:fixed;bottom:28px;left:50%;
+        transform:translateX(-50%) translateY(90px);
+        z-index:2147483647;
+        display:flex;align-items:center;gap:14px;
+        background:#0f172a;color:#f8fafc;
+        border-radius:16px;padding:14px 18px 14px 16px;
+        max-width:400px;width:max-content;
+        box-shadow:0 8px 32px rgba(0,0,0,0.45);
+        border:1px solid rgba(234,88,12,0.45);
+        opacity:0;transition:transform .35s cubic-bezier(.4,0,.2,1),opacity .35s;
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+      }
+      #jma-toast.jma-toast-in{transform:translateX(-50%) translateY(0);opacity:1}
+      .jma-toast-flame{font-size:28px;line-height:1;flex-shrink:0}
+      .jma-toast-body{flex:1;min-width:0}
+      .jma-toast-title{font-size:13px;font-weight:700;color:#fb923c;margin-bottom:4px;direction:rtl}
+      .jma-toast-sub{font-size:12px;color:#e2e8f0;line-height:1.45;direction:rtl}
+      .jma-toast-sub strong{color:#fff}
+      .jma-toast-x{
+        background:none;border:none;color:#64748b;cursor:pointer;
+        font-size:14px;padding:2px 4px;flex-shrink:0;line-height:1;
+        transition:color .15s;
+      }
+      .jma-toast-x:hover{color:#f8fafc}
+      /* ── Quick-score reason bullets ── */
+      #jma-fab-reasons{
+        position:fixed;top:80px;left:116px;
+        z-index:2147483646;display:flex;flex-direction:column;gap:7px;
+        max-width:210px;pointer-events:none;
+      }
+      .jma-fab-reason-pill{
+        background:rgba(15,23,42,0.90);color:#f8fafc;
+        border-radius:10px;padding:6px 11px;
+        font-size:12px;font-weight:500;line-height:1.35;
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+        border:1px solid rgba(255,255,255,0.12);
+        backdrop-filter:blur(6px);
+        opacity:0;transform:translateX(-10px);
+        transition:opacity .22s ease,transform .22s ease;
+        white-space:nowrap;
+      }
+      .jma-fab-reason-pill.jma-fab-reason-in{opacity:1;transform:translateX(0)}
       /* ── Injected sidebar panel ── */
+      /* Default: panel body off-screen but grab tab (36px wide at left:-36px) is fully
+         visible at the viewport's right edge. right = -(panel_width - tab_width) = -364px */
       #jma-panel{
-        position:fixed;top:0;right:-410px;width:400px;height:100vh;
+        position:fixed;top:0;right:-364px;width:400px;height:100vh;
         z-index:2147483647;border-left:1px solid #e2e8f0;
         box-shadow:-6px 0 28px rgba(0,0,0,0.15);
-        transition:right .3s cubic-bezier(.4,0,.2,1);
+        transition:right .35s cubic-bezier(.4,0,.2,1);
       }
       #jma-panel.jma-panel-open{right:0}
       #jma-panel iframe{width:100%;height:100%;border:none;display:block}
+      /* Grab tab — always visible at right edge; slides with the panel */
+      #jma-panel-tab{
+        position:absolute;top:50%;left:-36px;transform:translateY(-50%);
+        width:36px;height:72px;
+        background:linear-gradient(160deg,#7c3aed 0%,#6d28d9 100%);
+        color:#fff;border:none;
+        border-radius:12px 0 0 12px;cursor:pointer;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+        box-shadow:-4px 0 16px rgba(109,40,217,0.45),-1px 0 0 rgba(255,255,255,0.1);
+        transition:background .15s,box-shadow .15s;
+        z-index:1;
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+      }
+      #jma-panel-tab:hover{
+        background:linear-gradient(160deg,#8b5cf6 0%,#7c3aed 100%);
+        box-shadow:-6px 0 20px rgba(109,40,217,0.65),-1px 0 0 rgba(255,255,255,0.15);
+      }
+      .jma-tab-arrow{font-size:14px;line-height:1;transition:transform .3s ease}
+      .jma-tab-dots{display:flex;flex-direction:column;gap:3px;align-items:center}
+      .jma-tab-dot{width:4px;height:4px;border-radius:50%;background:rgba(255,255,255,0.55)}
     `;
     document.head.appendChild(style);
   }
@@ -684,29 +943,103 @@
     });
   }
 
-  // Ping backend immediately when job keywords detected — wakes up Render cold start
-  // so by the time user clicks the button the server is already ready
-  if (pageHasJobKeywords()) {
-    chrome.runtime.sendMessage({ action: 'pingBackend' });
+  // ── SPA navigation detection + page init ────────────────────────────────────
 
-    // Silent crowdsourced scraping — fires 5s after page load.
-    // Skipped on listing pages (FAB present means cards were detected by initSidebar at 2s).
-    // Only sends when the extracted text looks like a real job description (≥400 chars).
-    setTimeout(() => {
-      if (document.getElementById('jma-float-btn')) return; // listing page — skip
-      const text = extractJobText();
-      if (!text || text.length < 400) return;
-      chrome.runtime.sendMessage({
-        action: 'scrapeJob',
-        url: location.href,
-        text: text.substring(0, 5000),
-        title: document.title || '',
-      });
-    }, 5000);
+  let _currentUrl = location.href;
+  let _navDebounceTimer = null;
+
+  // Tear down all per-page FAB state so _initPage() starts fresh.
+  function _teardownFab() {
+    clearInterval(_fabProgressTimer);
+    document.getElementById('jma-fab-wrap')?.remove();
+    document.getElementById('jma-fab-reasons')?.remove();
+    document.getElementById('jma-float-btn')?.remove();
+    document.getElementById('jma-sidebar')?.remove();
+    _fabState = 'idle';
+    _fabProgress = 0;
+    _panelOpen = false;
+    _sidebarOpen = false;
+    _rankingDone = false;
+    _collectedJobs = null;
+    // Close panel so next page starts closed (panel element persists)
+    const panel = document.getElementById('jma-panel');
+    if (panel) {
+      panel.classList.remove('jma-panel-open');
+      const arrow = panel.querySelector('.jma-tab-arrow');
+      if (arrow) { arrow.textContent = '◀'; arrow.style.transform = ''; }
+    }
   }
 
-  setTimeout(initSidebar, 2000);
-  setTimeout(initJobFab, 2500);
+  // Full page init: always inject panel, then conditionally run job logic.
+  function _initPage() {
+    injectStyles();
+    _ensurePanel(); // panel present on EVERY page so user can always open it
+
+    if (pageHasJobKeywords()) {
+      chrome.runtime.sendMessage({ action: 'pingBackend' });
+
+      // Listing page: delayed to let SPA finish rendering cards
+      setTimeout(() => {
+        if (!document.getElementById('jma-float-btn')) initSidebar();
+      }, 1800);
+
+      // Single-job FAB: slightly later so page content is fully rendered
+      setTimeout(() => {
+        if (!document.getElementById('jma-fab-wrap')) initJobFab();
+      }, 2200);
+
+      // Crowdsourced scraping — only for single-job pages
+      setTimeout(() => {
+        if (document.getElementById('jma-float-btn')) return;
+        const text = extractJobText();
+        if (!text || text.length < 400) return;
+        chrome.runtime.sendMessage({
+          action: 'scrapeJob',
+          url: location.href,
+          text: text.substring(0, 5000),
+          title: document.title || '',
+        });
+      }, 5000);
+    }
+  }
+
+  // Called whenever a navigation to a new URL is detected.
+  function _onUrlChange() {
+    if (location.href === _currentUrl) return;
+    _currentUrl = location.href;
+    clearTimeout(_navDebounceTimer);
+    // Debounce: SPA routers often fire multiple events in rapid succession.
+    _navDebounceTimer = setTimeout(() => {
+      _teardownFab();
+      _initPage();
+    }, 400);
+  }
+
+  // 1. popstate — back/forward navigation
+  window.addEventListener('popstate', _onUrlChange);
+
+  // 2. Intercept history.pushState / replaceState — the main SPA navigation method.
+  //    These are synchronous calls that don't fire any native events we can listen to,
+  //    so we wrap them ourselves.
+  (function _patchHistory() {
+    const wrap = (orig) => function (...args) {
+      const ret = orig.apply(this, args);
+      _onUrlChange();
+      return ret;
+    };
+    history.pushState    = wrap(history.pushState);
+    history.replaceState = wrap(history.replaceState);
+  })();
+
+  // 3. MutationObserver on <title> — final safety net for frameworks that update
+  //    the document title when routing (virtually all of them do).
+  new MutationObserver(() => _onUrlChange()).observe(
+    document.querySelector('title') || document.head,
+    { childList: true, subtree: true, characterData: true }
+  );
+
+  // ── Initial page load ──────────────────────────────────────────────────────
+  _initPage();
 
   // Re-init on SPA navigation
   let _lastHref = location.href;

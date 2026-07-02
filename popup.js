@@ -17,7 +17,73 @@ let state = {
   gapPct: 0,      // max points available from answering questions
 };
 
-let cvOptions = { language: 'english', format: 'docx', coverLetter: false };
+let cvOptions = { language: 'english', format: 'docx', coverLetter: false, tracking: true, model: 'sonnet' };
+
+// ── Monthly quota constants ────────────────────────────────────────────────────
+const QUOTA_STORAGE_KEY = 'jma_usage';
+const QUOTA_LIMITS = {
+  standard: { sonnet: 30, fable: 5  },
+  premium:  { sonnet: Infinity, fable: 20 },
+};
+
+async function _getUsage() {
+  const s = await chrome.storage.local.get([QUOTA_STORAGE_KEY, 'jma_is_premium']);
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  let usage = s[QUOTA_STORAGE_KEY] || {};
+  if (usage.month !== month) usage = { month, sonnet: 0, fable: 0 }; // monthly reset
+  return { usage, isPremium: !!s.jma_is_premium };
+}
+
+async function _checkQuota(model) {
+  const { usage, isPremium } = await _getUsage();
+  const tier = isPremium ? 'premium' : 'standard';
+  const limit = QUOTA_LIMITS[tier][model] ?? 0;
+  const used  = usage[model] || 0;
+  return { allowed: used < limit, used, limit, isPremium };
+}
+
+async function _incrementUsage(model) {
+  const { usage } = await _getUsage();
+  usage[model] = (usage[model] || 0) + 1;
+  await chrome.storage.local.set({ [QUOTA_STORAGE_KEY]: usage });
+}
+
+async function _updateQuotaDisplay() {
+  const { usage, isPremium } = await _getUsage();
+  const tier = isPremium ? 'premium' : 'standard';
+  const limits = QUOTA_LIMITS[tier];
+  const sq = document.getElementById('sonnetQuota');
+  const fq = document.getElementById('fableQuota');
+  const fb = document.getElementById('fableBtn');
+  if (sq) sq.textContent = limits.sonnet === Infinity ? '' : `${usage.sonnet || 0}/${limits.sonnet}`;
+  if (fq) fq.textContent = `${usage.fable || 0}/${limits.fable}`;
+  if (fb) {
+    const fableOver = (usage.fable || 0) >= limits.fable;
+    fb.disabled = fableOver;
+    fb.title = fableOver ? `הגעת למכסה החודשית (${limits.fable} Fable)` : '';
+    fb.style.opacity = fableOver ? '0.45' : '';
+  }
+}
+
+// Strip platform suffixes and noise from page/og/h1 titles to get a clean job title
+function _cleanPageTitle(raw) {
+  if (!raw) return '';
+  return raw
+    .replace(/\s*[\|–\-]\s*(LinkedIn|Indeed|Glassdoor|Drushim|AllJobs|JobMaster|Comeet|Greenhouse|Lever|Workable|SmartRecruiters|Gotfriends|HeyAnter|Jobify360|Nvidia Jobs|Jobs).*/i, '')
+    .replace(/\s*[\|–\-]\s*(דרושים|כל הג'ובים|ג'ובמסטר|חיפוש עבודה|משרות|לינקדאין).*/i, '')
+    .replace(/Apply.*$/i, '')
+    .trim()
+    .slice(0, 80);
+}
+
+// Best job title: AI result first, then page-extracted, then fallback
+function _bestJobTitle() {
+  return state.analysis?.jobTitle?.trim() || state.jobTitle?.trim() || 'לא זוהה';
+}
+function _bestCompany() {
+  return state.analysis?.company?.trim() || '';
+}
 
 // ── Per-URL job state persistence ────────────────────────────────────────────
 function jobStateKey(url) {
@@ -231,6 +297,37 @@ const CONSTRAINT_MAP = {
   constraintBoldKeywords: 'הנחיה: סמן בכתב מודגש (Bold) מילות מפתח, טכנולוגיות וכלים קריטיים שמופיעים בדרישות המשרה לאורך קורות החיים.',
 };
 
+// ── CV Profile Extraction ─────────────────────────────────────────────────────
+// Called once after a new CV is saved. Sends the text to the backend, which uses
+// Claude to produce a structured jma_user_profile JSON, then stores it locally.
+// The FAB matcher reads jma_user_profile instead of raw cvText, giving accurate scoring.
+async function _extractAndSaveProfile(cvText) {
+  const { licenseKey } = await chrome.storage.local.get(['licenseKey']);
+  if (!licenseKey || !cvText) return;
+
+  // Show a subtle status on the settings upload area
+  const statusEl = document.getElementById('uploadSuccess');
+  if (statusEl) { statusEl.textContent = '⏳ מנתח פרופיל מיומנויות...'; statusEl.style.display = 'block'; }
+
+  const BACKEND = 'https://job-match-ai-extension.onrender.com';
+  try {
+    const resp = await fetch(`${BACKEND}/api/extract-profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
+      body: JSON.stringify({ cvText }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (!data.profile) throw new Error('empty profile');
+    await chrome.storage.local.set({ jma_user_profile: data.profile });
+    if (statusEl) statusEl.textContent = '✅ פרופיל מיומנויות עודכן — ניקוד המשרות ישתפר מיידית';
+    console.log('[JMA] profile extracted and saved', data.profile);
+  } catch (e) {
+    console.warn('[JMA] profile extraction failed:', e.message);
+    if (statusEl) statusEl.textContent = '⚠️ שגיאה בחילוץ פרופיל. הניתוח המהיר ימשיך לפעול.';
+  }
+}
+
 // Settings screen
 async function loadSettings() {
   const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints']);
@@ -356,6 +453,7 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
     toSave.licenseKey = newKey;
     toSave.licenseValid = true;
     toSave.isPremium = !!(res.result && res.result.isPremium);
+    toSave.jma_is_premium = toSave.isPremium;
     state.licenseKey = newKey;
     _applyUpgradeUrl(res.result);
     statusEl.textContent = `✅ אומת: ${newKey.slice(0, 4)}-****-****-${newKey.slice(-4)}${toSave.isPremium ? ' ⭐ פרימיום' : ' (בסיסי)'}`;
@@ -365,6 +463,10 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
 
   if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
   document.getElementById('btnSaveSettings').textContent = '✅ נשמר!';
+
+  // If a new CV was uploaded, extract the structured profile in the background.
+  if (toSave.cvText) _extractAndSaveProfile(toSave.cvText);
+
   setTimeout(async () => {
     document.getElementById('btnSaveSettings').textContent = '💾 שמור הגדרות';
     await loadSettings();
@@ -382,7 +484,17 @@ document.getElementById('btnSettings').addEventListener('click', () => {
 });
 
 document.getElementById('btnTracker').addEventListener('click', () => {
+  // Clear NEW badge from extension icon and tracker dot
+  chrome.action.setBadgeText({ text: '' });
+  document.getElementById('trackerNewDot').style.display = 'none';
   showTrackerScreen();
+});
+
+// Show NEW dot on tracker button if extension badge is currently set
+chrome.action.getBadgeText({}, (text) => {
+  if (text && text.trim()) {
+    document.getElementById('trackerNewDot').style.display = 'block';
+  }
 });
 
 document.getElementById('btnDashboard').addEventListener('click', () => {
@@ -488,24 +600,68 @@ function showMainResult(analysis, doTypewriter = false) {
   btnCV.style.display = score >= 40 ? 'block' : 'none';
 }
 
+// Load preflight cache into state
+function _loadPreflightCache(pCache) {
+  // Prefer AI score, but if it looks like the server's uncertainty fallback (50–65)
+  // AND we already have a local-matcher score, keep whichever is higher.
+  const aiScore = pCache.base_score ?? 0;
+  const localScore = state.baseScore || 0; // set earlier from jma_local_score
+  state.baseScore = aiScore > 0 ? Math.max(aiScore, localScore > 0 ? localScore : 0) : localScore;
+  state.gapPct    = pCache.gap_pct    ?? 0;
+  state.questions = pCache.questions  || [];
+  state.analysis  = {
+    score:       pCache.base_score  ?? 0,
+    jobTitle:    pCache.jobTitle    || '',
+    company:     pCache.company     || '',
+    jobLanguage: pCache.jobLanguage || state.jobLanguage || 'english',
+    summary:     pCache.summary     || '',
+    strengths:   pCache.strengths   || [],
+    hard_gaps:   pCache.hard_gaps   || [],
+  };
+  saveJobState({ analysis: state.analysis, baseScore: state.baseScore, gapPct: state.gapPct, questions: state.questions });
+}
+
+// Show animated waiting screen inside questionsContainer while Stage 2 runs
+function _showQuestionsWaiting() {
+  showScreen('questions');
+  const container = document.getElementById('questionsContainer');
+  container.innerHTML = `
+    <div class="pf-wait-wrap">
+      <div class="pf-wait-icon">🔍</div>
+      <div class="pf-wait-title" id="pfWaitLabel">מנתח את המשרה...</div>
+      <div class="pf-wait-bar"><div class="pf-wait-fill" id="pfWaitFill"></div></div>
+      <div class="pf-wait-hint">מכינים שאלות פער ממוקדות עבורך</div>
+    </div>`;
+  // Rotate label
+  const labels = ['מנתח את המשרה...', 'מזהה פערי מיומנויות...', 'מחשב משקלים...', 'מכין שאלות ממוקדות...', 'כמעט מוכן...'];
+  let i = 0;
+  const t = setInterval(() => {
+    const el = document.getElementById('pfWaitLabel');
+    if (!el) { clearInterval(t); return; }
+    el.textContent = labels[i++ % labels.length];
+  }, 1800);
+  return () => clearInterval(t);
+}
+
 async function startFlow() {
-  // Reset parallel-gen state from any prior run
   state.cvGenPromise = null;
   const btn = document.getElementById('btnGenerateCV');
   if (btn) { btn.disabled = false; btn.style.background = ''; btn.style.boxShadow = ''; btn.onclick = null; }
 
   showScreen('main');
-  showMainLoading('מאתר שאלות רלוונטיות למשרה...');
+  showMainLoading('טוען...');
 
-  const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls', 'userConstraints']);
+  // ── 1. Load credentials ───────────────────────────────────────────────────
+  const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls', 'userConstraints', 'enableTracking']);
   if (!stored.licenseKey) { showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.'); return; }
-  if (!stored.cvText) { showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ בפינה כדי להוסיף.'); return; }
-  state.licenseKey = stored.licenseKey;
-  state.cvText = stored.cvText;
+  if (!stored.cvText)     { showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ כדי להוסיף.'); return; }
+  state.licenseKey      = stored.licenseKey;
+  state.cvText          = stored.cvText;
   state.cvHyperlinkUrls = stored.cvHyperlinkUrls || [];
   state.userConstraints = stored.userConstraints || '';
+  cvOptions.tracking    = stored.enableTracking !== false;
 
-  // Get job text from active tab
+  // ── 2. Get job text from active tab ──────────────────────────────────────
   let tabResult;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -516,108 +672,77 @@ async function startFlow() {
       await new Promise(r => setTimeout(r, 300));
       tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
     }
-  } catch { showMainError('לא הצלחנו לקרוא את הדף הנוכחי. נסי לרענן (F5) ואז לפתוח שוב.'); return; }
+  } catch { showMainError('לא הצלחנו לקרוא את הדף. נסי לרענן (F5) ואז לפתוח שוב.'); return; }
 
-  if (!tabResult || !tabResult.text || tabResult.text.length < 100) {
+  if (!tabResult?.text || tabResult.text.length < 100) {
     showMainError('לא זוהתה משרה בעמוד זה. פתחי את דף המשרה הספציפי ונסי שוב.');
     return;
   }
 
-  state.jobText = tabResult.text;
+  state.jobText     = tabResult.text;
   state.jobLanguage = tabResult.language || 'english';
   state.jobPlatform = tabResult.platform || '';
-  state.jobUrl = tabResult.url || '';
+  state.jobUrl      = tabResult.url || '';
+  state.jobTitle    = _cleanPageTitle(tabResult.h1Title || tabResult.ogTitle || tabResult.title || '');
+  // Seed baseScore from local matcher (fixes arbitrary 65% default from AI fallback)
+  const localStored = await chrome.storage.local.get(['jma_local_score', 'jma_is_premium']);
+  if (localStored.jma_local_score) state.baseScore = localStored.jma_local_score;
+  // Save premium flag to cvOptions for model selector rendering
+  cvOptions._isPremium = !!localStored.jma_is_premium;
   await saveJobState({ jobText: state.jobText, jobLanguage: state.jobLanguage, jobPlatform: state.jobPlatform });
 
-  console.log(`[JMA:analyze] startFlow jobText_len=${state.jobText.length} platform=${state.jobPlatform}`);
-
-  // ── Check for FAB-triggered preflight cache (instant path) ───────────────
+  // ── 3. Check FAB preflight cache ─────────────────────────────────────────
   const pKey = _prefKey(state.jobUrl);
-  const pCacheStore = await chrome.storage.local.get([pKey]);
-  const pCache = pCacheStore[pKey];
-  if (pCache && (Date.now() - pCache.ts) < 10 * 60 * 1000 && pCache.questions?.length > 0) {
-    console.log('[JMA:startFlow] using FAB preflight cache — zero wait');
-    state.baseScore = pCache.base_score ?? 0;
-    state.gapPct    = pCache.gap_pct    ?? 0;
-    state.analysis  = {
-      score:       pCache.base_score ?? 0,
-      jobTitle:    pCache.jobTitle   || '',
-      company:     pCache.company    || '',
-      jobLanguage: pCache.jobLanguage || 'hebrew',
-      summary:     pCache.summary    || '',
-      strengths:   pCache.strengths  || [],
-      hard_gaps:   pCache.hard_gaps  || [],
-    };
-    state.questions = pCache.questions;
-    await saveJobState({ analysis: state.analysis, baseScore: state.baseScore, gapPct: state.gapPct, questions: state.questions });
-    // Clear cache so it won't be reused on a re-analysis
+  const pCache = (await chrome.storage.local.get([pKey]))[pKey];
+  const fresh = pCache && (Date.now() - pCache.ts) < 10 * 60 * 1000 && pCache.questions?.length > 0;
+
+  if (fresh) {
+    // Perfect: Stage 2 already done — show questions immediately
+    _loadPreflightCache(pCache);
     chrome.storage.local.remove([pKey]);
     showQuestionsScreen(pCache.questions);
     return;
   }
 
-  // ── Normal preflight path ─────────────────────────────────────────────────
-  // Show "waking up" message after 15 s so user knows we're waiting for Render cold-start
-  const wakeTimer = setTimeout(() => showMainLoading('השרת מתעורר, זה יכול לקחת עד דקה...'), 15000);
+  // ── 4. Stage 2 still running — show waiting UI + poll for up to 60 s ─────
+  const stopWaitAnim = _showQuestionsWaiting();
+  const wakeTimer = setTimeout(() => {
+    const lbl = document.getElementById('pfWaitLabel');
+    if (lbl) lbl.textContent = 'השרת מתעורר... עוד רגע ☕';
+  }, 15000);
 
-  // Preflight: get questions only (no score, no usage count)
-  const preflightMsg = {
-    action: 'analyzeJob',
-    licenseKey: state.licenseKey,
-    cvText: state.cvText,
-    jobText: state.jobText,
-    preflight: true,
-    answers: [],
-  };
-  let prefResp = await chrome.runtime.sendMessage(preflightMsg);
+  let found = null;
+  const pollEnd = Date.now() + 60000;
+  while (Date.now() < pollEnd) {
+    await new Promise(r => setTimeout(r, 600));
+    const s = (await chrome.storage.local.get([pKey]))[pKey];
+    if (s && (Date.now() - s.ts) < 10 * 60 * 1000 && s.questions?.length > 0) {
+      found = s;
+      break;
+    }
+  }
   clearTimeout(wakeTimer);
+  stopWaitAnim();
 
-  // On cold-start the first preflight may time out before Render + Claude finish.
-  // If we got an error (not just empty questions), retry once — server is now awake.
-  if (prefResp?.error) {
-    console.log('[JMA:preflight] first attempt errored, retrying:', prefResp.error);
-    showMainLoading('כמעט שם, מנסה שוב...');
-    prefResp = await chrome.runtime.sendMessage(preflightMsg);
+  if (found) {
+    _loadPreflightCache(found);
+    chrome.storage.local.remove([pKey]);
+    showQuestionsScreen(found.questions);
+    return;
   }
 
-  console.log('[JMA:preflight] resp=', JSON.stringify(prefResp));
-  const preflightResult = prefResp?.result || {};
-  const newQuestions = (!prefResp?.error && preflightResult.questions) || [];
-  console.log('[JMA:preflight] questions count=', newQuestions.length,
-    'base=', preflightResult.base_score, 'gap=', preflightResult.gap_pct);
+  // ── 5. Fallback: run inline preflight (FAB was never clicked or timed out) ─
+  const pfMsg = { action: 'analyzeJob', licenseKey: state.licenseKey, cvText: state.cvText, jobText: state.jobText, preflight: true, answers: [] };
+  let pfResp = await chrome.runtime.sendMessage(pfMsg);
+  if (pfResp?.error) pfResp = await chrome.runtime.sendMessage(pfMsg); // one retry on cold start
 
-  // Store base analysis from preflight pass-1 (summary, strengths, etc.)
-  if (!prefResp?.error && preflightResult.base_score != null) {
-    state.baseScore = preflightResult.base_score ?? 0;
-    state.gapPct    = preflightResult.gap_pct    ?? 0;
-    // Merge preflight analysis into state so main result screen can show it
-    // even before the full analyze call
-    state.analysis = {
-      score:        preflightResult.base_score,
-      jobTitle:     preflightResult.jobTitle    || '',
-      company:      preflightResult.company     || '',
-      jobLanguage:  preflightResult.jobLanguage || 'hebrew',
-      summary:      preflightResult.summary     || '',
-      strengths:    preflightResult.strengths   || [],
-      hard_gaps:    preflightResult.hard_gaps   || [],
-    };
-    await saveJobState({
-      analysis:  state.analysis,
-      baseScore: state.baseScore,
-      gapPct:    state.gapPct,
-    });
+  const pfResult = pfResp?.result || {};
+  if (pfResult.base_score != null) {
+    _loadPreflightCache({ ...pfResult, ts: Date.now() });
   }
-
-  if (newQuestions.length > 0) {
-    // Fresh questions from preflight — save and show
-    state.questions = newQuestions;
-    await saveJobState({ questions: newQuestions });
-    showQuestionsScreen(newQuestions);
-  } else if (state.questions && state.questions.length > 0) {
-    // Preflight returned empty but we have saved questions from this session — reuse them
-    showQuestionsScreen(state.questions, state.answers || []);
+  if ((pfResult.questions || []).length > 0) {
+    showQuestionsScreen(pfResult.questions);
   } else {
-    // Truly no questions — go straight to full analysis
     await runFullAnalysis([]);
   }
 }
@@ -655,34 +780,43 @@ document.getElementById('btnGenerateCV').addEventListener('click', (e) => {
 });
 
 // Questions screen
-// ── Live score computation from textarea answers ────────────────────────────
+// ── Score tracking: state.questionScores[idx] = 0..100 ──────────────────────
 let _scoreDebounceTimer = null;
 
-function _localScore(text) {
-  if (!text || text.trim().length < 4) return 0;
+function _analyzeAnswer(text) {
+  if (!text || text.trim().length < 3) return 0;
   const t = text.trim().toLowerCase();
-  if (/אין לי|no experience|don't have|לא מכיר|לא יודע|never|never used/.test(t)) return 8;
-  let s = Math.min(68, Math.round((t.length / 150) * 58) + 10);
-  if (/שנ(תיים|ה|ות|י)|years|year/.test(t)) s = Math.min(88, s + 14);
-  if (/ניסיון|experience|worked|עבדתי|פרויקט|project|built|developed|managed/.test(t)) s = Math.min(88, s + 10);
-  if (/מומחה|expert|advanced|proficient|lead|מוביל|architect/.test(t)) s = Math.min(96, s + 14);
-  return Math.max(5, s);
+  if (/^כן,?\s*יש לי ניסיון/.test(t)) return 100;
+  if (/^מכיר(\.?)$|^תיאורטי|^מכיר את התחום ברמה תיאורטית/.test(t)) return 40;
+  if (/^אין לי ניסיון בתחום זה/.test(t)) return 0;
+  if (/אין לי|no experience|don't have|לא מכיר|לא יודע|never used|אף פעם|לא עבדתי/.test(t)) return 5;
+  if (/תיאורטי|theoretical|familiar with|מכיר.*קצת|heard of|שמעתי|קראתי|no hands.on/.test(t)
+      && !/(עבדתי|built|developed|worked|שנה|years)/.test(t)) return 35;
+  let s = 15 + Math.min(20, Math.floor(t.length / 9));
+  if (/(עבדתי|worked|developed|built|managed|led|הובלתי|פיתחתי)/.test(t)) s += 20;
+  if (/(שנה|שנתיים|שנים|year|years)/.test(t)) s += 15;
+  if (/(פרויקט|project|production|פרודקשן|live|deployed)/.test(t)) s += 15;
+  if (/(מומחה|expert|advanced|senior|מוביל|lead|architect)/.test(t)) s += 15;
+  if (/(ניסיון|experience|extensive|רב|בכיר)/.test(t)) s += 10;
+  if (/(מאוד|very|highly|deeply|extensively)/.test(t)) s += 8;
+  if (/(קצת|little|basic|בסיסי|beginner|מתחיל)/.test(t)) s -= 15;
+  if (/(לא הרבה|not much|limited|מוגבל)/.test(t)) s -= 10;
+  return Math.max(0, Math.min(100, Math.round(s)));
 }
 
 function _updateQuestionsScore() {
   const base = state.baseScore || 0;
+  if (!state.questionScores) state.questionScores = {};
   let bonus = 0;
   (state.questions || []).forEach((q, idx) => {
-    const ta = document.getElementById(`qs_ta_${q.id || idx}`);
-    if (!ta) return;
-    bonus += (_localScore(ta.value) / 100) * (q.weight || 0);
+    const pct = state.questionScores[idx] ?? 0;
+    bonus += (pct / 100) * (q.weight || 0);
   });
   const score = Math.min(100, Math.round(base + bonus));
   const fill = document.getElementById('qsScoreFill');
   const val  = document.getElementById('qsScoreValue');
   if (fill) fill.style.width = `${score}%`;
   if (val)  val.textContent  = `${score}%`;
-  // Relay to FAB in the background page via background.js
   chrome.runtime.sendMessage({ action: 'updateFabScore', score });
 }
 
@@ -701,7 +835,9 @@ function showQuestionsScreen(questions, savedAnswers) {
   `;
   container.appendChild(scoreBar);
 
-  // ── Question cards with open text fields ──────────────────────────────────
+  // ── Question cards: skill label + question + glossary + why + 3 buttons + textarea ──
+  if (!state.questionScores) state.questionScores = {};
+
   questions.forEach((q, idx) => {
     const taId = `qs_ta_${q.id || idx}`;
     const card = document.createElement('div');
@@ -710,18 +846,50 @@ function showQuestionsScreen(questions, savedAnswers) {
       <div class="question-skill">${q.skill}</div>
       <div class="question-text">${q.question}</div>
       ${q.heExplanation ? `<div class="question-he-exp">💡 ${q.heExplanation}</div>` : ''}
+      ${q.why ? `<div class="question-why">🎯 ${q.why}</div>` : ''}
+      <div class="quick-answers">
+        <button class="qa-btn qa-yes" data-val="100" data-idx="${idx}">✅ כן, יש לי ניסיון</button>
+        <button class="qa-btn qa-partial" data-val="40" data-idx="${idx}">📚 תיאורטי בלבד</button>
+        <button class="qa-btn qa-no" data-val="0" data-idx="${idx}">❌ בכלל לא</button>
+      </div>
       <textarea class="q-textarea" id="${taId}"
-        placeholder="תאר את הניסיון שלך... (לדוגמה: עבדתי 2 שנים עם Python כולל pandas ו-scikit-learn)"
-        rows="3" data-idx="${idx}" data-weight="${q.weight || 0}"></textarea>
+        placeholder="פרט בקצרה (אופציונלי)..." rows="2"
+        data-idx="${idx}" data-weight="${q.weight || 0}"></textarea>
     `;
     container.appendChild(card);
   });
 
-  // Textarea input → debounced local score → update score bar + FAB
+  // Button clicks → set score + highlight + optional textarea fill
+  container.querySelectorAll('.qa-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.idx);
+      const val = parseInt(btn.dataset.val);
+      state.questionScores[idx] = val;
+      // Highlight selected button; clear siblings
+      const row = btn.closest('.quick-answers');
+      row.querySelectorAll('.qa-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      // Pre-fill textarea with template if empty
+      const ta = document.getElementById(`qs_ta_${questions[idx]?.id || idx}`);
+      if (ta && !ta.value.trim()) {
+        ta.value = val === 100 ? 'כן, יש לי ניסיון בתחום זה.' : val === 40 ? 'מכיר את התחום ברמה תיאורטית.' : 'אין לי ניסיון בתחום זה.';
+      }
+      _updateQuestionsScore();
+    });
+  });
+
+  // Textarea free-text → debounced analysis → update score
   container.querySelectorAll('.q-textarea').forEach(ta => {
     ta.addEventListener('input', () => {
       clearTimeout(_scoreDebounceTimer);
-      _scoreDebounceTimer = setTimeout(_updateQuestionsScore, 600);
+      _scoreDebounceTimer = setTimeout(() => {
+        const idx = parseInt(ta.dataset.idx);
+        state.questionScores[idx] = _analyzeAnswer(ta.value);
+        // Deselect buttons since user typed freely
+        const card = ta.closest('.question-card');
+        card?.querySelectorAll('.qa-btn').forEach(b => b.classList.remove('selected'));
+        _updateQuestionsScore();
+      }, 600);
     });
   });
 
@@ -732,6 +900,7 @@ function showQuestionsScreen(questions, savedAnswers) {
       if (!q || !a.answer || a.answer === 'לא ענה') return;
       const ta = document.getElementById(`qs_ta_${q.id || idx}`);
       if (ta) ta.value = a.answer;
+      state.questionScores[idx] = a.sliderValue ?? _analyzeAnswer(a.answer);
     });
     _updateQuestionsScore();
   }
@@ -768,6 +937,55 @@ function showQuestionsScreen(questions, savedAnswers) {
     });
   });
 
+  // ── Model selector ────────────────────────────────────────────────────────
+  const modelRow = document.createElement('div');
+  modelRow.className = 'model-selector-row';
+  modelRow.innerHTML = `
+    <div class="settings-label" style="margin:14px 0 7px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">🤖 מודל ניתוח</div>
+    <div class="cv-opts-row">
+      <button class="cv-opt-btn ${cvOptions.model !== 'fable' ? 'active' : ''}" data-model="sonnet">
+        ⚡ Sonnet <span class="model-quota-badge" id="sonnetQuota"></span>
+      </button>
+      <button class="cv-opt-btn ${cvOptions.model === 'fable' ? 'active' : ''}" data-model="fable" id="fableBtn">
+        🔥 Fable <span class="model-quota-badge" id="fableQuota"></span>
+      </button>
+    </div>
+    <div class="model-hint" id="modelHint"></div>
+  `;
+  outOpts.appendChild(modelRow);
+  _updateQuotaDisplay(); // populate quota badges
+  modelRow.querySelectorAll('[data-model]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      cvOptions.model = btn.dataset.model;
+      modelRow.querySelectorAll('[data-model]').forEach(b => b.classList.toggle('active', b === btn));
+      const hint = document.getElementById('modelHint');
+      if (hint) hint.textContent = cvOptions.model === 'fable'
+        ? '🔥 Fable — ניתוח קיצוני למשרות החשובות ביותר (מכסה מוגבלת)'
+        : '⚡ Sonnet — מדויק ומהיר בזכות Prompt Caching';
+    });
+  });
+
+  // ── Tracking opt ─────────────────────────────────────────────────────────
+  chrome.storage.local.get(['enableTracking'], (s) => {
+    cvOptions.tracking = s.enableTracking !== false;
+    const trackRow = document.createElement('div');
+    trackRow.className = 'tracking-opt-row';
+    trackRow.innerHTML = `
+      <label class="tracking-opt-label">
+        <input type="checkbox" id="cbTracking" ${cvOptions.tracking ? 'checked' : ''}>
+        <span>הפעל מעקב קישורים חכם</span>
+      </label>
+      <span class="info-icon" tabindex="0"
+        title="מאפשר לדעת מתי מגייסים פתחו את הקישורים שלך (GitHub/LinkedIn). ⚠️ קישורי מעקב עלולים לגרום להודעת אזהרה ב-Word המקומי — פתיחה מהדפדפן/מייל תעבוד חלק.">ⓘ</span>
+    `;
+    outOpts.appendChild(trackRow);
+    document.getElementById('cbTracking').addEventListener('change', (e) => {
+      cvOptions.tracking = e.target.checked;
+      chrome.storage.local.set({ enableTracking: cvOptions.tracking });
+    });
+  });
+
   showScreen('questions');
 }
 
@@ -775,7 +993,7 @@ function collectAnswers() {
   return (state.questions || []).map((q, idx) => {
     const ta     = document.getElementById(`qs_ta_${q.id || idx}`);
     const answer = ta ? ta.value.trim() : '';
-    const scorePct = _localScore(answer);
+    const scorePct = state.questionScores?.[idx] ?? _analyzeAnswer(answer);
     return { skill: q.skill, answer: answer || 'לא ענה', sliderValue: scorePct, weight: q.weight || 0 };
   });
 }
@@ -785,26 +1003,158 @@ document.getElementById('btnContinueToCV').addEventListener('click', async () =>
   state.answers = answers;
   await saveJobState({ answers });
 
-  // Compute slider-based final score
+  // ── Quota check ────────────────────────────────────────────────────────
+  const model = cvOptions.model || 'sonnet';
+  const { allowed, used, limit } = await _checkQuota(model);
+  if (!allowed) {
+    const modelName = model === 'fable' ? 'Fable' : 'Sonnet';
+    showMainError(`הגעת למכסה החודשית של ${modelName} (${used}/${limit}). המכסה מתחדשת ב-1 לחודש הבא.`);
+    showScreen('main');
+    return;
+  }
+  await _incrementUsage(model);
+
+  // Compute weighted score from question answers
   if (state.baseScore) {
     const bonus = answers.reduce((s, a) => s + ((a.sliderValue || 0) / 100) * (a.weight || 0), 0);
     const finalScore = Math.min(100, Math.round(state.baseScore + bonus));
     if (state.analysis) state.analysis.score = finalScore;
   }
 
-  if (state.analysis) {
-    // ── Fast path: we have preflight analysis — show result instantly ─────
-    showScreen('main');
-    showMainResult(state.analysis, true /* typewriter */);
+  // Start CV generation in background (parallel with streaming analysis)
+  state.cvGenPromise = _startCvGenBackground(answers, cvOptions.language, cvOptions.format);
 
-    // Fire CV generation in the background (parallel)
-    state.cvGenPromise = _startCvGenBackground(answers, cvOptions.language, cvOptions.format);
-    _armCvButton(cvOptions.language);
-  } else {
-    // ── Fallback: no preflight data — full analysis first, then CV options ─
-    runFullAnalysis(answers);
-  }
+  await runStreamingAnalysis(answers);
 });
+
+async function runStreamingAnalysis(answers) {
+  // ── Quota check (120 analyses/month for free tier) ───────────────────────
+  const { allowed: streamAllowed, used: streamUsed, limit: streamLimit } = await _checkQuota(cvOptions.model || 'sonnet');
+  if (!streamAllowed) {
+    const modelName = (cvOptions.model || 'sonnet') === 'fable' ? 'Fable' : 'Sonnet';
+    showMainError(`הגעת למכסת הניתוחים החודשית (${streamUsed}/${streamLimit} ${modelName}). המכסה מתחדשת ב-1 לחודש.`);
+    return;
+  }
+
+  showScreen('main');
+  const mainContent = document.getElementById('mainContent');
+  mainContent.innerHTML = `
+    <div class="stream-wrap">
+      <div class="stream-header">
+        <span class="stream-icon">🔍</span>
+        <span class="stream-title">ניתוח התאמה מלא</span>
+        <span class="stream-score" id="streamScore">${state.analysis?.score ?? '—'}%</span>
+      </div>
+      <div class="stream-questions" id="streamQuestions"></div>
+      <div class="stream-body" id="streamBody" dir="auto"></div>
+      <div class="stream-footer" id="streamFooter" style="display:none">
+        <button class="btn-primary" id="btnGoToCV">הבא — קורות חיים מותאמים ›</button>
+      </div>
+    </div>`;
+  document.getElementById('mainLoading').style.display = 'none';
+  document.getElementById('mainError').style.display = 'none';
+
+  const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'userConstraints']);
+  const licenseKey = stored.licenseKey || state.licenseKey || '';
+  const BACKEND = 'https://job-match-ai.onrender.com';
+
+  const streamQuestions = document.getElementById('streamQuestions');
+  const streamBody = document.getElementById('streamBody');
+  let accText = '';
+  let streamOk = false;
+  let phase = 'questions'; // 'questions' → 'analysis'
+
+  function _appendQuestion(q) {
+    const pill = document.createElement('div');
+    pill.className = 'stream-q-pill stream-q-in';
+    pill.innerHTML = `
+      <span class="stream-q-skill">${q.skill || ''}</span>
+      <span class="stream-q-text">${q.question || ''}</span>
+      ${q.explanation ? `<span class="stream-q-exp">${q.explanation}</span>` : ''}`;
+    streamQuestions.appendChild(pill);
+    streamQuestions.scrollTop = streamQuestions.scrollHeight;
+  }
+
+  try {
+    const resp = await fetch(`${BACKEND}/api/analyze-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
+      body: JSON.stringify({
+        cvText: stored.cvText || state.cvText || '',
+        jobText: state.jobText || '',
+        answers: answers,
+        userConstraints: stored.userConstraints || state.userConstraints || '',
+        model: cvOptions.model || 'sonnet',
+      }),
+    });
+
+    if (!resp.ok) {
+      if (resp.status === 422) {
+        let detail = 'Analysis body too long';
+        try { const j = await resp.json(); detail = j.detail || detail; } catch {}
+        if (detail.includes('too long')) {
+          showMainError('טקסט המשרה ארוך מדי לניתוח. אנא קצר את תיאור המשרה ונסה שנית.');
+          return;
+        }
+      }
+      throw new Error(`HTTP ${resp.status}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (raw === '[DONE]') { streamOk = true; break; }
+        try {
+          const chunk = JSON.parse(raw);
+          if (chunk.error) {
+            showMainError(chunk.error);
+            return;
+          }
+          if (chunk.question && phase === 'questions') {
+            _appendQuestion(chunk.question);
+          } else if (chunk.phase === 'analysis') {
+            phase = 'analysis';
+            if (streamQuestions.children.length > 0) {
+              streamQuestions.style.borderBottom = '1px solid var(--border)';
+              streamQuestions.style.marginBottom = '12px';
+              streamQuestions.style.paddingBottom = '12px';
+            }
+          } else if (chunk.text && phase === 'analysis') {
+            accText += chunk.text;
+            streamBody.textContent = accText;
+            streamBody.scrollTop = streamBody.scrollHeight;
+          }
+        } catch {}
+      }
+      if (streamOk) break;
+    }
+  } catch (err) {
+    console.error('[JMA:stream] error', err);
+    if (state.analysis?.summary) {
+      streamBody.textContent = state.analysis.summary;
+      streamOk = true;
+    } else {
+      streamBody.innerHTML = `<span style="color:#ef4444">שגיאה בניתוח. נסה שוב.</span>`;
+    }
+  }
+
+  // Show "Next" button — CV gen runs in parallel so it may already be ready
+  document.getElementById('streamFooter').style.display = '';
+  document.getElementById('btnGoToCV').addEventListener('click', async () => {
+    _armCvButton(cvOptions.language);
+    showScreen('main');
+  });
+}
 
 document.getElementById('btnSkipQuestions').addEventListener('click', () => {
   runFullAnalysis([]);
@@ -824,6 +1174,10 @@ function _startCvGenBackground(answers, language, format) {
       cvUrls: state.cvHyperlinkUrls || [],
       userConstraints: state.userConstraints || '',
       generateCoverLetter: false,
+      enableTracking: cvOptions.tracking !== false,
+      jobTitle: _bestJobTitle(),
+      company: _bestCompany(),
+      model: cvOptions.model || 'sonnet',
     }, resolve);
   });
 }
@@ -850,16 +1204,17 @@ function _armCvButton(language) {
     await saveJobState({ generatedCV: state.generatedCV, cvLanguage: language, coverLetterText: state.coverLetterText });
 
     // Save to tracker
+    const jt = _bestJobTitle();
     const record = {
       id: Date.now().toString(),
       date: new Date().toISOString(),
-      jobTitle: state.analysis?.jobTitle || 'לא זוהה',
-      company: state.analysis?.company || '',
+      jobTitle: jt,
+      company: _bestCompany(),
       platform: state.jobPlatform,
       url: state.jobUrl,
       score: state.analysis?.score || 0,
       cvGenerated: true,
-      cvFilename: `CV_${(state.analysis?.jobTitle || 'job').replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`,
+      cvFilename: `CV_${jt.replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`,
       status: 'טרם טופל',
       appId: resp.appId || null,
     };
@@ -959,6 +1314,9 @@ async function startCVGeneration(answers, language, format, coverLetter) {
     cvUrls: state.cvHyperlinkUrls || [],
     userConstraints: state.userConstraints || '',
     generateCoverLetter: !!coverLetter,
+    enableTracking: cvOptions.tracking !== false,
+    jobTitle: _bestJobTitle(),
+    company: _bestCompany(),
   });
 
   clearInterval(_progressInterval);
@@ -978,16 +1336,17 @@ async function startCVGeneration(answers, language, format, coverLetter) {
   await new Promise(r => setTimeout(r, 400));
 
   // Save to tracker
+  const jt2 = _bestJobTitle();
   const record = {
     id: Date.now().toString(),
     date: new Date().toISOString(),
-    jobTitle: state.analysis?.jobTitle || 'לא זוהה',
-    company: state.analysis?.company || '',
+    jobTitle: jt2,
+    company: _bestCompany(),
     platform: state.jobPlatform,
     url: state.jobUrl,
     score: state.analysis?.score || 0,
     cvGenerated: true,
-    cvFilename: `CV_${(state.analysis?.jobTitle || 'job').replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`,
+    cvFilename: `CV_${jt2.replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`,
     status: 'טרם טופל',
     appId: response.appId || null,
   };
@@ -1198,7 +1557,7 @@ document.getElementById('btnDownloadPdf').addEventListener('click', () => {
 
 document.getElementById('btnDownloadDocx').addEventListener('click', async () => {
   const isRtl = state.cvIsRtl;
-  const jobTitle = (state.analysis?.jobTitle || 'CV').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').trim();
+  const jobTitle = _bestJobTitle().replace(/[^a-zA-Z0-9\sא-ת]/g, '').replace(/\s+/g, '_').trim() || 'CV';
   // Extract candidate name from CV text for filename
   const stored = await chrome.storage.local.get(['cvName']);
   const cvName = (stored.cvName || '').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').trim();
@@ -1363,33 +1722,59 @@ async function showTrackerScreen() {
     } catch { /* ignore — show dash if backend unreachable */ }
   }
 
+  // Find the job with the globally newest recruiter click (for row highlight)
+  let newestClickTs = 0;
+  let newestClickJobId = null;
+  for (const j of jobs) {
+    if (!j.appId) continue;
+    const clicks = clicksMap[j.appId] || [];
+    if (clicks.length === 0) continue;
+    const latest = clicks.reduce((a, b) => (a.ts > b.ts ? a : b));
+    const ts = new Date(latest.ts).getTime();
+    if (ts > newestClickTs) { newestClickTs = ts; newestClickJobId = j.id; }
+  }
+
   const rows = jobs.map(j => {
     const score = j.score || 0;
     const scoreClass = score >= 75 ? 'score-green' : score >= 55 ? 'score-yellow' : score >= 35 ? 'score-orange' : 'score-red';
     const date = new Date(j.date).toLocaleDateString('he-IL');
     const status = j.status || 'טרם טופל';
+    const isNewest = j.id === newestClickJobId;
 
-    // Link-click cell
-    let linkCell = '<span class="no-data">-</span>';
+    // Link-click cells: which target | click count | last opened
+    let linkTargetCell  = '<span class="no-data">-</span>';
+    let clickCountCell  = '<span class="no-data">-</span>';
+    let lastOpenedCell  = '<span class="no-data">-</span>';
     if (j.appId) {
       const clicks = clicksMap[j.appId] || [];
       if (clicks.length > 0) {
         const targets = [...new Set(clicks.map(c => c.target))];
         const label = targets.map(t => t === 'github' ? 'GitHub' : t === 'linkedin' ? 'LinkedIn' : 'Portfolio').join(', ');
-        linkCell = `<span title="${label}" style="color:#16a34a;font-weight:600;cursor:default">✅ ${label}</span>`;
+        linkTargetCell = `<span style="color:#16a34a;font-weight:600">✅ ${label}</span>`;
+        clickCountCell = `<span style="font-weight:700;color:var(--accent)">${clicks.length}</span>`;
+        const latest = clicks.reduce((a, b) => (a.ts > b.ts ? a : b));
+        const ld = new Date(latest.ts);
+        const timeStr = ld.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+        if (isNewest) {
+          lastOpenedCell = `<span class="tracker-latest-blink" style="font-size:11px;font-weight:700">${ld.toLocaleDateString('he-IL')} ${timeStr} 🔥</span>`;
+        } else {
+          lastOpenedCell = `<span style="font-size:11px;color:var(--text-secondary)">${ld.toLocaleDateString('he-IL')}<br><span style="color:var(--text-muted)">${timeStr}</span></span>`;
+        }
       } else {
-        linkCell = `<span title="הלינקים בקוח לא נפתחו עדיין" style="color:#9ca3af;cursor:default">⏳</span>`;
+        linkTargetCell = `<span style="color:#9ca3af">⏳ ממתין</span>`;
       }
     }
 
-    return `<tr>
+    return `<tr${isNewest ? ' class="tracker-row-hot"' : ''}>
       <td>${date}</td>
       <td style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.jobTitle || '-'}</td>
       <td style="max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.company || '-'}</td>
       <td><span class="platform-tag">${j.platform || '-'}</span></td>
       <td class="score-cell ${scoreClass}">${score}%</td>
       <td>${j.cvGenerated ? '✅' : '❌'}</td>
-      <td>${linkCell}</td>
+      <td>${linkTargetCell}</td>
+      <td style="text-align:center">${clickCountCell}</td>
+      <td>${lastOpenedCell}</td>
       <td>
         <select class="status-select" data-id="${j.id}">
           <option ${status === 'טרם טופל' ? 'selected' : ''}>טרם טופל</option>
@@ -1416,7 +1801,9 @@ async function showTrackerScreen() {
             <th>פלטפורמה</th>
             <th>ציון</th>
             <th>CV</th>
-            <th>לינקים</th>
+            <th>לינק נפתח</th>
+            <th>לחיצות</th>
+            <th>פתיחה אחרונה</th>
             <th>סטטוס</th>
             <th></th>
           </tr>
@@ -1446,7 +1833,7 @@ async function showTrackerScreen() {
   // Export
   document.getElementById('btnExportExcel').addEventListener('click', async () => {
     const allJobs = await getAllJobs();
-    exportToExcel(allJobs);
+    exportToExcel(allJobs, clicksMap);
   });
 }
 
@@ -1486,10 +1873,12 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
 
   state.licenseKey = key;
   _applyUpgradeUrl(res.result);
+  const isPrem = !!(res.result && res.result.isPremium);
   await chrome.storage.local.set({
     licenseKey: key,
     licenseValid: true,
-    isPremium: !!(res.result && res.result.isPremium),
+    isPremium: isPrem,
+    jma_is_premium: isPrem,
   });
   okEl.textContent = '✅ רישיון אומת בהצלחה! כעת הגדר את קורות החיים שלך ⬇️';
   okEl.style.display = 'block';

@@ -17,7 +17,7 @@
     }
   },
   "web_accessible_resources": [{
-    "resources": ["popup.html", "popup.js", "tracker.js", "docx-builder.js", "icons/*"],
+    "resources": ["popup.html", "popup.js", "tracker.js", "docx-builder.js", "matcher.js", "icons/*"],
     "matches": ["https://*/*", "http://*/*"]
   }],
   "background": { "service_worker": "background.js" },
@@ -28,7 +28,7 @@
   },
   "content_scripts": [{
     "matches": ["https://*/*", "http://*/*"],
-    "js": ["content.js"],
+    "js": ["matcher.js", "content.js"],
     "run_at": "document_idle",
     "all_frames": false
   }]

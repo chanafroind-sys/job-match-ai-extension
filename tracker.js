@@ -28,19 +28,35 @@ async function deleteJob(id) {
   await chrome.storage.local.set({ [TRACKER_KEY]: filtered });
 }
 
-function exportToExcel(jobs) {
+function exportToExcel(jobs, clicksMap = {}) {
   const BOM = '﻿';
-  const headers = ['תאריך', 'תפקיד', 'חברה', 'פלטפורמה', 'ציון התאמה', 'קורות חיים הוכנו', 'סטטוס', 'קישור למשרה'];
-  const rows = jobs.map(j => [
-    new Date(j.date).toLocaleDateString('he-IL'),
-    j.jobTitle || '',
-    j.company || '',
-    j.platform || '',
-    (j.score || 0) + '%',
-    j.cvGenerated ? 'כן' : 'לא',
-    j.status || 'טרם טופל',
-    j.url || ''
-  ]);
+  const headers = ['תאריך', 'תפקיד', 'חברה', 'פלטפורמה', 'ציון התאמה', 'קורות חיים הוכנו', 'לינק נפתח', 'מספר לחיצות', 'זמן פתיחה אחרון', 'סטטוס', 'קישור למשרה'];
+  const rows = jobs.map(j => {
+    const clicks = (j.appId && clicksMap[j.appId]) || [];
+    let linkOpened = 'לא';
+    let clickCount = '';
+    let lastOpened = '';
+    if (clicks.length > 0) {
+      const targets = [...new Set(clicks.map(c => c.target))];
+      linkOpened = targets.map(t => t === 'github' ? 'GitHub' : t === 'linkedin' ? 'LinkedIn' : 'Portfolio').join(', ');
+      clickCount = String(clicks.length);
+      const latest = clicks.reduce((a, b) => (a.ts > b.ts ? a : b));
+      lastOpened = new Date(latest.ts).toLocaleString('he-IL');
+    }
+    return [
+      new Date(j.date).toLocaleDateString('he-IL'),
+      j.jobTitle || '',
+      j.company || '',
+      j.platform || '',
+      (j.score || 0) + '%',
+      j.cvGenerated ? 'כן' : 'לא',
+      linkOpened,
+      clickCount,
+      lastOpened,
+      j.status || 'טרם טופל',
+      j.url || '',
+    ];
+  });
   const csv = BOM + [headers, ...rows]
     .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
     .join('\n');
