@@ -100,6 +100,36 @@
     'analytical', 'problem solver', 'fast learner', 'proactive', 'detail-oriented',
   ];
 
+  // ── HEBREW-AWARE TEXT MATCHING ────────────────────────────────────────────
+
+  // Hebrew prepositions/conjunctions attach directly to the following word.
+  // Searching for "פייתון" misses "בפייתון" (in Python) or "ופייתון" (and Python).
+  // This helper checks the bare tag AND the most common single-letter prefix forms.
+  const _HE_PREFIXES = ['ב', 'כ', 'ל', 'מ', 'ו', 'ה', 'ש'];
+
+  function _includesHebrew(textLower, tag) {
+    const tl = tag.toLowerCase();
+    if (textLower.includes(tl)) return true;
+    // Only add prefix variants for Hebrew-script tags
+    if (/[֐-׿]/.test(tag)) {
+      for (const p of _HE_PREFIXES) {
+        if (textLower.includes(p + tl)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Returns true if techName OR any of its search_tags appear in jobTextLower.
+  function _techMentionedInJob(jobTextLower, techName, searchTags) {
+    if (_includesHebrew(jobTextLower, techName)) return true;
+    if (Array.isArray(searchTags)) {
+      for (const tag of searchTags) {
+        if (_includesHebrew(jobTextLower, tag)) return true;
+      }
+    }
+    return false;
+  }
+
   // ── JOB PARSER ────────────────────────────────────────────────────────────
 
   // Heuristically split job text into required vs. advantage sections.
@@ -128,11 +158,14 @@
   }
 
   // Extract (tech, reqYears) pairs from a text segment.
-  function _extractRequirements(text) {
+  // profile is optional — when provided, also scans via each tech's search_tags so
+  // Hebrew job descriptions that use "פייתון" are matched to the profile's "Python" entry.
+  function _extractRequirements(text, profile) {
     const lo = text.toLowerCase();
     const reqs = [];
     const seen = new Set();
 
+    // ── Pass 1: TECH_DOMAIN keyword scan (English / hardcoded) ──────────────
     const techKeys = Object.keys(TECH_DOMAIN).sort((a, b) => b.length - a.length);
     for (const tech of techKeys) {
       const escaped = tech.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
@@ -141,12 +174,41 @@
       if (seen.has(tech)) continue;
       seen.add(tech);
 
-      // Look for year mentions near the tech mention
       const idx = lo.search(re);
-      const window = lo.slice(Math.max(0, idx - 180), idx + 180);
-      const yearMatch = window.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?|שנ)/i);
+      const win = lo.slice(Math.max(0, idx - 180), idx + 180);
+      const yearMatch = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?|שנ)/i);
       reqs.push({ tech, reqYears: yearMatch ? parseFloat(yearMatch[1]) : null, domain: TECH_DOMAIN[tech] });
     }
+
+    // ── Pass 2: profile search_tags scan (Hebrew + synonyms) ────────────────
+    // For each tech in the user's profile, check if its name or any search_tag
+    // appears in the job text (including Hebrew prefix variants). This catches
+    // Hebrew job descriptions that TECH_DOMAIN would miss entirely.
+    if (profile) {
+      for (const [domain, techs] of Object.entries(profile.experience || {})) {
+        for (const [techName, entry] of Object.entries(techs || {})) {
+          const key = techName.toLowerCase();
+          if (seen.has(key)) continue; // already found by Pass 1
+
+          const tags = Array.isArray(entry.search_tags) ? entry.search_tags : [];
+          if (!_techMentionedInJob(lo, techName, tags)) continue;
+
+          seen.add(key);
+          // Try to find a year requirement near any matched tag
+          let reqYears = null;
+          const allTerms = [techName, ...tags];
+          for (const term of allTerms) {
+            const idx = lo.indexOf(term.toLowerCase());
+            if (idx === -1) continue;
+            const win = lo.slice(Math.max(0, idx - 180), idx + 180);
+            const ym = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?|שנ)/i);
+            if (ym) { reqYears = parseFloat(ym[1]); break; }
+          }
+          reqs.push({ tech: techName, reqYears, domain });
+        }
+      }
+    }
+
     return reqs;
   }
 
@@ -224,8 +286,8 @@
 
     const { requiredText, advantageText } = _parseJobSections(jobText);
 
-    const reqTechs  = _extractRequirements(requiredText);
-    const advTechs  = _extractRequirements(advantageText);
+    const reqTechs  = _extractRequirements(requiredText,  userProfile);
+    const advTechs  = _extractRequirements(advantageText, userProfile);
     const jobTotalYears = _extractTotalYears(jobText);
     const jobRoles  = _extractRoleDomains(jobText);
 
@@ -329,12 +391,27 @@
     // ── Tools ──────────────────────────────────────────────────────────
     const tools   = userProfile.tools_and_methods || {};
     const jobLoTe = jobText.toLowerCase();
+
+    // _toolFound: handles both old schema (bool) and new schema ({found, search_tags})
+    function _toolFound(entry) {
+      if (!entry) return false;
+      if (entry === true) return true;                     // legacy bool
+      if (typeof entry === 'object') {
+        if (entry.found === true) return true;
+        // Also accept if any search_tag appears in the job text
+        if (Array.isArray(entry.search_tags)) {
+          return entry.search_tags.some(tag => _includesHebrew(jobLoTe, tag));
+        }
+      }
+      return false;
+    }
+
     for (const kw of TOOL_KW) {
-      const jobHas = jobLoTe.includes(kw.replace('/', '/').toLowerCase());
-      if (!jobHas) continue;
+      if (!_includesHebrew(jobLoTe, kw)) continue;
       const w = CFG.PTS_TOOL;
       total += w;
-      if (tools[kw] === true || tools[kw.replace('/', '')] === true) {
+      const entry = tools[kw] ?? tools[kw.replace('/', '')] ?? tools[kw.replace('ci/cd', 'cicd')];
+      if (_toolFound(entry)) {
         earned += w;
         matchBullets.push(`✅ ${kw}`);
       }

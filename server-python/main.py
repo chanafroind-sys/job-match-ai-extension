@@ -1137,12 +1137,15 @@ microservices, rest, graphql, tdd, and any others found.
 SEARCH TAGS RULES (apply to every tech/tool entry):
 For each extracted skill, technology, framework, or qualification populate `search_tags` \
 with synonyms, aliases, and equivalents for raw text pattern-matching. \
-LIMIT: maximum 5 tags per entry — choose only the most useful ones. Include the best from:
+LIMIT: maximum 6 tags per entry — choose only the most useful ones. Include the best from:
 a. Industry-standard English synonyms and acronyms \
    (e.g. "PostgreSQL" → ["SQL", "Postgres", "DB", "RDBMS"]).
-b. The single most common Hebrew translation or transliteration used in the Israeli \
-   job market \
-   (e.g. "Python" → ["פייתון"]; "Machine Learning" → ["למידת מכונה"]).
+b. The most common Hebrew transliteration/translation used in Israeli job postings. \
+   CRITICAL: also include the most frequent prefix-attached forms because Hebrew prepends \
+   prepositions directly to words — add at least one prefixed variant for each Hebrew tag \
+   (e.g. "Python" → ["פייתון", "בפייתון"]; \
+    "Machine Learning" → ["למידת מכונה", "בלמידת מכונה"]; \
+    "Database" → ["בסיסי נתונים", "דאטהבייס"]).
 c. One related higher-level domain if highly relevant \
    (e.g. "React" → ["Frontend"]).
 All Hebrew characters must be output as valid, clean UTF-8 strings inside the JSON \
