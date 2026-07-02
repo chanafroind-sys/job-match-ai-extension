@@ -631,7 +631,29 @@
     margin-top: 3px; line-height: 1.4; direction: rtl;
   }
 
-  /* ── Per-question textarea ────────────────────────────────────────────────── */
+  /* ── Streaming questions loader + card animation ────────────────────────── */
+  .qs-stream-loader {
+    text-align: center; color: var(--text-muted); font-size: 13px;
+    padding: 20px 0; animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+
+  /* Cards fade in as they arrive; .qs-streaming = still receiving tokens */
+  .question-card {
+    opacity: 0; transform: translateY(6px);
+    animation: qs-slide-in .22s ease forwards;
+  }
+  @keyframes qs-slide-in { to { opacity:1; transform:translateY(0); } }
+
+  /* Blinking cursor on the question text while streaming */
+  .question-card.qs-streaming .question-text::after {
+    content: '|'; display: inline-block;
+    animation: blink .7s step-end infinite;
+    color: var(--accent); margin-inline-start: 2px;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  /* Per-question textarea ────────────────────────────────────────────────── */
   .q-textarea {
     width: 100%; background: var(--bg-main); border: 1.5px solid var(--border);
     border-radius: 8px; color: var(--text-primary);

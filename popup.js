@@ -731,20 +731,10 @@ async function startFlow() {
     return;
   }
 
-  // ── 5. Fallback: run inline preflight (FAB was never clicked or timed out) ─
-  const pfMsg = { action: 'analyzeJob', licenseKey: state.licenseKey, cvText: state.cvText, jobText: state.jobText, preflight: true, answers: [] };
-  let pfResp = await chrome.runtime.sendMessage(pfMsg);
-  if (pfResp?.error) pfResp = await chrome.runtime.sendMessage(pfMsg); // one retry on cold start
-
-  const pfResult = pfResp?.result || {};
-  if (pfResult.base_score != null) {
-    _loadPreflightCache({ ...pfResult, ts: Date.now() });
-  }
-  if ((pfResult.questions || []).length > 0) {
-    showQuestionsScreen(pfResult.questions);
-  } else {
-    await runFullAnalysis([]);
-  }
+  // ── 5. Fallback: stream questions live (FAB was never clicked or timed out) ──
+  // We skip the batch preflight and stream Pass1+Pass2 together so questions
+  // appear word-by-word and the user can start typing before streaming finishes.
+  await streamQuestionsIntoScreen();
 }
 
 async function runFullAnalysis(answers) {
@@ -987,6 +977,275 @@ function showQuestionsScreen(questions, savedAnswers) {
   });
 
   showScreen('questions');
+}
+
+// ── Shared: append language/format/model/tracking options to questions screen ─
+function _appendQuestionsOptions(container) {
+  const autoLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
+  cvOptions.language = autoLang;
+  cvOptions.format   = 'docx';
+
+  const outOpts = document.createElement('div');
+  outOpts.className = 'output-options';
+  outOpts.innerHTML = `
+    <div class="settings-label" style="margin:14px 0 7px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">📄 פורמט פלט</div>
+    <div class="cv-opts-row">
+      <button class="cv-opt-btn ${autoLang === 'english' ? 'active' : ''}" data-lang="english">🇺🇸 English</button>
+      <button class="cv-opt-btn ${autoLang === 'hebrew'  ? 'active' : ''}" data-lang="hebrew">🇮🇱 עברית</button>
+    </div>
+    <div class="cv-opts-row" style="margin-top:8px">
+      <button class="cv-opt-btn active" data-fmt="docx">📄 Word (.docx)</button>
+      <button class="cv-opt-btn" data-fmt="pdf">🖨️ PDF</button>
+    </div>
+  `;
+  container.appendChild(outOpts);
+
+  outOpts.querySelectorAll('[data-lang]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cvOptions.language = btn.dataset.lang;
+      outOpts.querySelectorAll('[data-lang]').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+  outOpts.querySelectorAll('[data-fmt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cvOptions.format = btn.dataset.fmt;
+      outOpts.querySelectorAll('[data-fmt]').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+
+  const modelRow = document.createElement('div');
+  modelRow.className = 'model-selector-row';
+  modelRow.innerHTML = `
+    <div class="settings-label" style="margin:14px 0 7px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">🤖 מודל ניתוח</div>
+    <div class="cv-opts-row">
+      <button class="cv-opt-btn ${cvOptions.model !== 'fable' ? 'active' : ''}" data-model="sonnet">
+        ⚡ Sonnet <span class="model-quota-badge" id="sonnetQuota"></span>
+      </button>
+      <button class="cv-opt-btn ${cvOptions.model === 'fable' ? 'active' : ''}" data-model="fable">
+        🔥 Fable <span class="model-quota-badge" id="fableQuota"></span>
+      </button>
+    </div>
+    <div class="model-hint" id="modelHint"></div>
+  `;
+  outOpts.appendChild(modelRow);
+  _updateQuotaDisplay();
+  modelRow.querySelectorAll('[data-model]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      cvOptions.model = btn.dataset.model;
+      modelRow.querySelectorAll('[data-model]').forEach(b => b.classList.toggle('active', b === btn));
+      const hint = document.getElementById('modelHint');
+      if (hint) hint.textContent = cvOptions.model === 'fable'
+        ? '🔥 Fable — ניתוח קיצוני למשרות החשובות ביותר (מכסה מוגבלת)'
+        : '⚡ Sonnet — מדויק ומהיר בזכות Prompt Caching';
+    });
+  });
+
+  chrome.storage.local.get(['enableTracking'], (s) => {
+    cvOptions.tracking = s.enableTracking !== false;
+    const trackRow = document.createElement('div');
+    trackRow.className = 'tracking-opt-row';
+    trackRow.innerHTML = `
+      <label class="tracking-opt-label">
+        <input type="checkbox" id="cbTracking" ${cvOptions.tracking ? 'checked' : ''}>
+        <span>הפעל מעקב קישורים חכם</span>
+      </label>
+      <span class="info-icon" tabindex="0"
+        title="מאפשר לדעת מתי מגייסים פתחו את הקישורים שלך. ⚠️ קישורי מעקב עלולים לגרום להודעת אזהרה ב-Word המקומי.">ⓘ</span>
+    `;
+    outOpts.appendChild(trackRow);
+    document.getElementById('cbTracking')?.addEventListener('change', (e) => {
+      cvOptions.tracking = e.target.checked;
+      chrome.storage.local.set({ enableTracking: cvOptions.tracking });
+    });
+  });
+}
+
+// ── Live streaming questions screen ──────────────────────────────────────────
+// Called when no FAB cache is available. Calls /api/stream-questions which runs
+// Pass 1 (score) then streams questions token-by-token. The textarea for each
+// question is inserted the moment q_open arrives — before the sentence ends —
+// so the user can start typing while remaining questions are still streaming.
+async function streamQuestionsIntoScreen() {
+  const BACKEND = 'https://job-match-ai-extension.onrender.com';
+  state.questions      = [];
+  state.questionScores = {};
+
+  // ── Build skeleton UI ─────────────────────────────────────────────────────
+  showScreen('questions');
+  const container = document.getElementById('questionsContainer');
+  container.innerHTML = '';
+
+  const scoreBar = document.createElement('div');
+  scoreBar.className = 'questions-score-bar';
+  scoreBar.innerHTML = `
+    <span class="qs-score-label">ציון נוכחי</span>
+    <div class="qs-score-track"><div class="qs-score-fill" id="qsScoreFill" style="width:0%"></div></div>
+    <span class="qs-score-value" id="qsScoreValue">…</span>`;
+  container.appendChild(scoreBar);
+
+  const qArea = document.createElement('div');
+  qArea.id = 'qsStreamArea';
+  container.appendChild(qArea);
+
+  const loader = document.createElement('div');
+  loader.id = 'qsLoader';
+  loader.className = 'qs-stream-loader';
+  loader.textContent = 'מנתח פערים…';
+  qArea.appendChild(loader);
+
+  // ── SSE fetch ─────────────────────────────────────────────────────────────
+  const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
+  const licenseKey = stored.licenseKey || state.licenseKey || '';
+
+  // Per-question card registry: id → {card, textEl, idx}
+  const _cards = {};
+
+  function _wireCard(card, idx) {
+    card.querySelectorAll('.qa-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = parseInt(btn.dataset.idx);
+        state.questionScores[i] = parseInt(btn.dataset.val);
+        btn.closest('.quick-answers').querySelectorAll('.qa-btn')
+          .forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        const ta = document.getElementById(`qs_ta_${state.questions[i]?.id ?? i}`);
+        if (ta && !ta.value.trim()) {
+          ta.value = btn.dataset.val === '100' ? 'כן, יש לי ניסיון בתחום זה.'
+                   : btn.dataset.val === '40'  ? 'מכיר את התחום ברמה תיאורטית.'
+                   : 'אין לי ניסיון בתחום זה.';
+        }
+        _updateQuestionsScore();
+      });
+    });
+    const ta = card.querySelector('.q-textarea');
+    ta?.addEventListener('input', () => {
+      clearTimeout(_scoreDebounceTimer);
+      _scoreDebounceTimer = setTimeout(() => {
+        const i = parseInt(ta.dataset.idx);
+        state.questionScores[i] = _analyzeAnswer(ta.value);
+        ta.closest('.question-card')?.querySelectorAll('.qa-btn')
+          .forEach(b => b.classList.remove('selected'));
+        _updateQuestionsScore();
+      }, 600);
+    });
+  }
+
+  try {
+    const resp = await fetch(`${BACKEND}/api/stream-questions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
+      body: JSON.stringify({
+        cvText:   stored.cvText || state.cvText || '',
+        jobText:  state.jobText || '',
+        model:    cvOptions.model || 'sonnet',
+      }),
+    });
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (raw === '[DONE]') break;
+        let chunk;
+        try { chunk = JSON.parse(raw); } catch { continue; }
+
+        if (chunk.error) {
+          showMainError(chunk.error);
+          return;
+        }
+
+        // ── {meta} — Pass 1 result ───────────────────────────────────────
+        if (chunk.meta) {
+          const m = chunk.meta;
+          if (m.base_score != null) {
+            _loadPreflightCache({ ...m, ts: Date.now(), questions: [] });
+            const fill = document.getElementById('qsScoreFill');
+            const val  = document.getElementById('qsScoreValue');
+            if (fill) fill.style.width = `${state.baseScore}%`;
+            if (val)  val.textContent  = `${state.baseScore}%`;
+          }
+          document.getElementById('qsLoader')?.remove();
+        }
+
+        // ── {q_open} — new question starts ──────────────────────────────
+        else if (chunk.q_open) {
+          const meta = chunk.q_open;
+          const idx  = state.questions.length;
+          state.questions.push({ id: meta.id, skill: meta.skill, weight: meta.weight || 0, question: '' });
+
+          const taId = `qs_ta_${meta.id ?? idx}`;
+          const card = document.createElement('div');
+          card.className = 'question-card qs-streaming';
+          card.innerHTML = `
+            <div class="question-skill">${meta.skill || ''}</div>
+            <div class="question-text" id="qtext_${meta.id}"></div>
+            <div class="quick-answers">
+              <button class="qa-btn qa-yes"     data-val="100" data-idx="${idx}">✅ כן, יש לי ניסיון</button>
+              <button class="qa-btn qa-partial" data-val="40"  data-idx="${idx}">📚 תיאורטי בלבד</button>
+              <button class="qa-btn qa-no"      data-val="0"   data-idx="${idx}">❌ בכלל לא</button>
+            </div>
+            <textarea class="q-textarea" id="${taId}"
+              placeholder="פרט בקצרה (אופציונלי)…" rows="2"
+              data-idx="${idx}" data-weight="${meta.weight || 0}" dir="auto"></textarea>`;
+          qArea.appendChild(card);
+          _wireCard(card, idx);
+          _cards[meta.id] = { card, idx };
+          qArea.scrollTop = qArea.scrollHeight;
+        }
+
+        // ── {q_token} — append text to current question ──────────────────
+        else if (chunk.q_token) {
+          const { id, text } = chunk.q_token;
+          const el = document.getElementById(`qtext_${id}`);
+          if (el) { el.textContent += text; qArea.scrollTop = qArea.scrollHeight; }
+          const q = state.questions.find(q => q.id === id);
+          if (q) q.question += text;
+        }
+
+        // ── {q_close} — explanation received, card complete ──────────────
+        else if (chunk.q_close) {
+          const { id, explanation } = chunk.q_close;
+          const info = _cards[id];
+          if (info && explanation) {
+            const exp = document.createElement('div');
+            exp.className = 'question-he-exp';
+            exp.textContent = `💡 ${explanation}`;
+            const qa = info.card.querySelector('.quick-answers');
+            info.card.insertBefore(exp, qa);
+            const q = state.questions.find(q => q.id === id);
+            if (q) q.explanation = explanation;
+          }
+          _cards[id]?.card.classList.remove('qs-streaming');
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[JMA:stream-q]', err);
+    document.getElementById('qsLoader')?.remove();
+    if (!state.questions.length) {
+      // Hard fallback: show error + skip-to-analysis button
+      const errEl = document.createElement('div');
+      errEl.style.cssText = 'color:#ef4444;padding:16px;text-align:center;';
+      errEl.textContent = 'שגיאה בטעינת שאלות. ניתן לדלג ישירות לניתוח.';
+      qArea.appendChild(errEl);
+    }
+  }
+
+  // ── Footer: output options + continue button ──────────────────────────────
+  _appendQuestionsOptions(container);
 }
 
 function collectAnswers() {
