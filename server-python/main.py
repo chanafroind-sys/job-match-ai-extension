@@ -1150,7 +1150,7 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
 
     prompt = EXTRACT_PROFILE_PROMPT.replace("{cv_text}", body.cvText[:6000])
     try:
-        raw = await call_claude(prompt, max_tokens=1400)
+        raw = await call_claude(prompt, max_tokens=4000)
         profile = parse_json_response(raw)
         if not isinstance(profile, dict) or "experience" not in profile:
             raise ValueError("Invalid profile shape")
