@@ -1136,9 +1136,11 @@ async function streamQuestionsIntoScreen() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
       body: JSON.stringify({
-        cvText:   stored.cvText || state.cvText || '',
-        jobText:  state.jobText || '',
-        model:    cvOptions.model || 'sonnet',
+        cvText:    stored.cvText || state.cvText || '',
+        jobText:   state.jobText || '',
+        model:     cvOptions.model || 'sonnet',
+        baseScore: state.baseScore || -1,
+        gapPct:    state.gapPct    || -1,
       }),
     });
 
@@ -2253,6 +2255,19 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    // FAB click → auto-stream: skip all state restoration, go straight to questions
+    const autoStreamData = await chrome.storage.local.get(['jma_auto_stream', 'jma_job_text', 'licenseKey', 'cvText', 'jma_local_score']);
+    if (autoStreamData.jma_auto_stream) {
+      await chrome.storage.local.remove(['jma_auto_stream']);
+      const stored2 = await chrome.storage.local.get(['licenseKey', 'cvText', 'jma_local_score']);
+      state.licenseKey = stored2.licenseKey || '';
+      state.cvText     = stored2.cvText     || '';
+      state.baseScore  = stored2.jma_local_score || 0;
+      state.jobText    = autoStreamData.jma_job_text || '';
+      await streamQuestionsIntoScreen();
+      return;
+    }
 
     // LinkedIn SPA: if user navigated to a new job since the last analysis,
     // skip state restoration and go straight to the ready screen

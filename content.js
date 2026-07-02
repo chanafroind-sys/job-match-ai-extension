@@ -121,7 +121,7 @@
         inner.innerHTML = `
           <span class="jma-fab-score-num" style="color:${color}">${req.score}</span>
           <span class="jma-fab-score-pct">%</span>
-          <span class="jma-fab-score-lbl" style="font-size:7px;opacity:.7">⏳ מעמיק...</span>`;
+          <span class="jma-fab-score-lbl">▶ ניתוח מעמיק</span>`;
       }
       if (req.bullets && req.bullets.length > 0) _showFabReasons(req.bullets);
     }
@@ -335,7 +335,7 @@
           inner2.innerHTML = `
             <span class="jma-fab-score-num" style="color:${color}">${score}</span>
             <span class="jma-fab-score-pct">%</span>
-            <span class="jma-fab-score-lbl">התאמה</span>`;
+            <span class="jma-fab-score-lbl">▶ ניתוח מעמיק</span>`;
         }
         // Persist local score so popup can read it as initial baseScore
         chrome.storage.local.set({ jma_local_score: score, jma_local_bullets: bullets });
@@ -351,14 +351,9 @@
         _fabStartProgress();
         chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
       } else if (_fabState === 'quick_ready') {
-        // ── Stage B: panel opens → trigger deep AI analysis in background ──
-        _fabState = 'loading';
-        // Keep score visible, update subtext to indicate Stage 2 in progress
-        const inner = document.getElementById('jma-fab-inner');
-        const lbl = inner?.querySelector('.jma-fab-score-lbl');
-        if (lbl) lbl.textContent = '⏳ מעמיק...';
-        chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
-        _togglePanel();
+        // ── Stage B: open popup → auto-start streaming questions immediately ──
+        chrome.storage.local.set({ jma_auto_stream: true, jma_job_text: jobText });
+        chrome.action.openPopup();
       } else {
         // 'loading' or 'ready' → just toggle panel visibility
         _togglePanel();

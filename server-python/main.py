@@ -1244,6 +1244,8 @@ class StreamQuestionsRequest(BaseModel):
     cvText:     str = ""
     jobText:    str = ""
     model:      str = "sonnet"
+    baseScore:  int = -1
+    gapPct:     int = -1
 
 
 STREAM_ANALYSIS_PROMPT = """\
@@ -1311,6 +1313,7 @@ Line 2 (question   — stream freely):  <full Hebrew question text, one line>
 Line 3 (close):                        [EXPL]<Hebrew explanation, max 15 words>[/EXPL]
 
 Rules:
+• Your FIRST token must be `[` — no preamble, no thinking text, no introduction.
 • Emit gap #1 the instant you find it — do NOT read the whole job first.
 • weights must sum to exactly {gap_pct}. Skill names in English; all text in Hebrew.
 • Do NOT add any other lines, commentary, or JSON wrappers.
@@ -1431,40 +1434,47 @@ async def stream_questions_endpoint(
     resolved_model = _resolve_model(body.model)
 
     async def generate():
-        # ── Pass 1: base score + analysis (non-streaming, fast) ──────────────
+        # ── Pass 1: base score (skip if client already has a local score) ─────
         base_score = 50
         gap_pct    = 20
         meta_out   = {}
-        try:
-            raw1, stop1 = await call_claude_cached(
-                system_blocks=sys_blocks,
-                user_content=BASE_ANALYSIS_USER.format(
-                    scoring_rules=_SCORING_RULES,
-                    job_text=job_text,
-                ),
-                max_tokens=1800,
-                model=resolved_model,
-            )
-            if stop1 != "max_tokens":
-                a = parse_json_response(raw1)
-                base_score = max(0, min(100, int(a.get("base_score", 50))))
-                gap_pct    = max(0, min(40,  int(a.get("gap_pct",    20))))
-                reasoning  = a.get("scoring_reasoning", "")
-                if reasoning:
-                    print(f"[JMA:stream_q] scoring_reasoning:\n{reasoning}")
-                meta_out = {
-                    "base_score":  base_score,
-                    "gap_pct":     gap_pct,
-                    "jobTitle":    a.get("jobTitle",    ""),
-                    "company":     a.get("company",     ""),
-                    "jobLanguage": a.get("jobLanguage", "english"),
-                    "summary":     a.get("summary",     ""),
-                    "strengths":   a.get("strengths",   []),
-                    "hard_gaps":   a.get("hard_gaps",   []),
-                }
-                print(f"[JMA:stream_q] pass1 base={base_score} gap={gap_pct}")
-        except Exception as e:
-            print(f"[JMA:stream_q] pass1 error: {e}")
+        if body.baseScore >= 0:
+            # Client provided local matcher score — skip AI Pass 1 entirely
+            base_score = max(0, min(100, body.baseScore))
+            gap_pct    = max(0, min(40,  body.gapPct if body.gapPct >= 0 else 20))
+            meta_out   = {"base_score": base_score, "gap_pct": gap_pct}
+            print(f"[JMA:stream_q] pass1 skipped (client score={base_score} gap={gap_pct})")
+        else:
+            try:
+                raw1, stop1 = await call_claude_cached(
+                    system_blocks=sys_blocks,
+                    user_content=BASE_ANALYSIS_USER.format(
+                        scoring_rules=_SCORING_RULES,
+                        job_text=job_text,
+                    ),
+                    max_tokens=1800,
+                    model=resolved_model,
+                )
+                if stop1 != "max_tokens":
+                    a = parse_json_response(raw1)
+                    base_score = max(0, min(100, int(a.get("base_score", 50))))
+                    gap_pct    = max(0, min(40,  int(a.get("gap_pct",    20))))
+                    reasoning  = a.get("scoring_reasoning", "")
+                    if reasoning:
+                        print(f"[JMA:stream_q] scoring_reasoning:\n{reasoning}")
+                    meta_out = {
+                        "base_score":  base_score,
+                        "gap_pct":     gap_pct,
+                        "jobTitle":    a.get("jobTitle",    ""),
+                        "company":     a.get("company",     ""),
+                        "jobLanguage": a.get("jobLanguage", "english"),
+                        "summary":     a.get("summary",     ""),
+                        "strengths":   a.get("strengths",   []),
+                        "hard_gaps":   a.get("hard_gaps",   []),
+                    }
+                    print(f"[JMA:stream_q] pass1 base={base_score} gap={gap_pct}")
+            except Exception as e:
+                print(f"[JMA:stream_q] pass1 error: {e}")
 
         yield f"data: {json.dumps({'meta': meta_out})}\n\n"
 
