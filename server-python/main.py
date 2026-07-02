@@ -1086,36 +1086,39 @@ async def health():
 
 
 # ── CV Profile Extraction ─────────────────────────────────────────────────────
+# Architecture: static system prompt is cached (cache_control: ephemeral) so the
+# ~1 200-token instruction block is billed only on the first call per cache window.
+# The dynamic CV text travels in the user message, which is never cached.
 
-EXTRACT_PROFILE_PROMPT = """\
-You are an expert tech-recruiter talent analyst. Analyse the CV text below and extract a \
-structured JSON profile. Follow every instruction exactly.
+EXTRACT_PROFILE_SYSTEM = """\
+You are an expert tech-recruiter talent analyst. Extract a structured JSON profile \
+from the candidate CV the user will provide. Follow every instruction exactly.
 
 OUTPUT: Return ONLY valid JSON — no markdown, no explanation, no extra keys.
 
 JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
-{{
-  "industry_summary": {{
+{
+  "industry_summary": {
     "total_years_industry": <float>,
-    "domain_years": {{
+    "domain_years": {
       "<domain>": <float>
       // only domains actually found: backend, frontend, fullstack, mobile, devops_cloud,
       // ai_ml_llm, data_bi, cyber, qa, embedded, other
-    }}
-  }},
+    }
+  },
   "traits": [<string>],
-  "experience": {{
-    "backend":      {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
-    "frontend":     {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
-    "ai_ml_llm":    {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
-    "data_bi":      {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
-    "devops_cloud": {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
-    "mobile":       {{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }},
-    "other_domains":{{ "<tech>": {{"industry_years": <float>, "personal_years": <float>}} }}
-  }},
-  "tools_and_methods": {{ "<tool>": <bool> }},
-  "languages": {{ "<lang>": "<level>" }}
-}}
+  "experience": {
+    "backend":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+    "frontend":     { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+    "ai_ml_llm":    { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+    "data_bi":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+    "devops_cloud": { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+    "mobile":       { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+    "other_domains":{ "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} }
+  },
+  "tools_and_methods": { "<tool>": {"found": <bool>, "search_tags": [<string>]} },
+  "languages": { "<lang>": "<level>" }
+}
 
 CRITICAL RULES:
 1. SEPARATION: `industry_years` = verified paid employment only. \
@@ -1129,10 +1132,22 @@ techs in that domain, capped at total career years.
 5. FULLSTACK INFERENCE: If the person has ≥1 year backend AND ≥1 year frontend \
 (industry), add "fullstack" to domain_years with min(backend_years, frontend_years).
 6. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
-microservices, rest, graphql, tdd, and any others found. Value = true if found.
+microservices, rest, graphql, tdd, and any others found.
 
-=== CV TEXT ===
-{cv_text}"""
+SEARCH TAGS RULES (apply to every tech/tool entry):
+For each extracted skill, technology, framework, or qualification populate `search_tags` \
+with a comprehensive array of synonyms, aliases, and equivalents used for raw text \
+pattern-matching. Include ALL of the following that apply:
+a. Industry-standard English synonyms and acronyms \
+   (e.g. "PostgreSQL" → ["SQL", "Postgres", "Database", "DB", "RDBMS"]).
+b. Common Hebrew translations, transliterations, and tech terms used in the Israeli \
+   job market \
+   (e.g. "Database" → ["בסיסי נתונים", "דאטה בייס"]; "Python" → ["פייתון"]; \
+    "Machine Learning" → ["למידת מכונה", "ML"]).
+c. Related higher-level or foundational technical domains where appropriate \
+   (e.g. "React" → ["Frontend", "UI", "JavaScript", "SPA"]).
+All Hebrew characters must be output as valid, clean UTF-8 strings inside the JSON \
+(do NOT escape them as \\uXXXX sequences)."""
 
 
 class ExtractProfileRequest(BaseModel):
@@ -1151,13 +1166,31 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
     if not body.cvText or len(body.cvText.strip()) < 50:
         raise HTTPException(status_code=422, detail="CV text too short")
 
-    prompt = EXTRACT_PROFILE_PROMPT.replace("{cv_text}", body.cvText[:6000])
+    system_blocks = [
+        {
+            "type": "text",
+            "text": EXTRACT_PROFILE_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    user_content = f"=== CANDIDATE CV ===\n{body.cvText[:6000]}\n=== END CV ==="
+
     try:
-        raw = await call_claude(prompt, max_tokens=4000)
+        raw, stop = await call_claude_cached(
+            system_blocks=system_blocks,
+            user_content=user_content,
+            max_tokens=4096,
+            model="claude-haiku-4-5-20251001",
+        )
+        if stop == "max_tokens":
+            print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
         profile = parse_json_response(raw)
         if not isinstance(profile, dict) or "experience" not in profile:
             raise ValueError("Invalid profile shape")
-        return {"profile": profile}
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"profile": profile}, media_type="application/json; charset=utf-8")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[JMA:extract_profile] {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail="Profile extraction failed")
