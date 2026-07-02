@@ -608,8 +608,11 @@ BASE_ANALYSIS_USER = """Analyse the fit between the candidate CV (in your system
 Additionally compute:
   gap_pct = integer 0-40 — how many score points COULD be gained if the candidate could fully clarify all uncertain/missing areas through follow-up questions. 0 means the CV is fully self-explanatory; 35 means strong potential to improve with answers.
 
+MANDATORY: Before setting base_score you MUST complete the scoring_reasoning field with explicit step-by-step arithmetic covering ALL four sections below. Do NOT skip or summarise — write the actual numbers.
+
 Return ONLY valid JSON — no markdown:
 {{
+  "scoring_reasoning": "<REQUIRED — explicit maths in English covering all four steps:\n1. TOTAL YEARS CHECK: job requires X total yrs, candidate has Y → shortfall Z → penalty = Z/X×30 = P pts\n2. CORE TECH YEAR CHECK: for each tech with an explicit years requirement, write 'TechName: required Xyr, candidate has Yyr → shortfall Z → penalty P pts'\n3. MISSING CRITICAL TECHS: list every CRITICAL technology/tool not found anywhere in the CV and its individual deduction (−15 to −25). Write 'none' only if literally nothing is missing.\n4. FINAL ARITHMETIC: start=100, list every deduction with its label, sum them, clamp to [0,100] → base_score=N>",
   "base_score": <integer 0-100>,
   "gap_pct": <integer 0-40>,
   "jobTitle": "<job title>",
@@ -1430,7 +1433,7 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
                     scoring_rules=_SCORING_RULES,
                     job_text=job_text,
                 ),
-                max_tokens=1200,
+                max_tokens=1800,
                 model=resolved_model,
             )
             if stop1 == "max_tokens":
@@ -1438,7 +1441,10 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
             analysis = parse_json_response(raw1)
             base_score: int = max(0, min(100, int(analysis.get("base_score", 50))))
             gap_pct:    int = max(0, min(40,  int(analysis.get("gap_pct",    20))))
+            reasoning   = analysis.get("scoring_reasoning", "")
             print(f"[JMA:preflight] pass1 base={base_score} gap={gap_pct} model={resolved_model}")
+            if reasoning:
+                print(f"[JMA:scoring_reasoning]\n{reasoning}")
         except HTTPException:
             raise
         except Exception as e:
