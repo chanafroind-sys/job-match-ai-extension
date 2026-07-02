@@ -1136,16 +1136,15 @@ microservices, rest, graphql, tdd, and any others found.
 
 SEARCH TAGS RULES (apply to every tech/tool entry):
 For each extracted skill, technology, framework, or qualification populate `search_tags` \
-with a comprehensive array of synonyms, aliases, and equivalents used for raw text \
-pattern-matching. Include ALL of the following that apply:
+with synonyms, aliases, and equivalents for raw text pattern-matching. \
+LIMIT: maximum 5 tags per entry — choose only the most useful ones. Include the best from:
 a. Industry-standard English synonyms and acronyms \
-   (e.g. "PostgreSQL" → ["SQL", "Postgres", "Database", "DB", "RDBMS"]).
-b. Common Hebrew translations, transliterations, and tech terms used in the Israeli \
+   (e.g. "PostgreSQL" → ["SQL", "Postgres", "DB", "RDBMS"]).
+b. The single most common Hebrew translation or transliteration used in the Israeli \
    job market \
-   (e.g. "Database" → ["בסיסי נתונים", "דאטה בייס"]; "Python" → ["פייתון"]; \
-    "Machine Learning" → ["למידת מכונה", "ML"]).
-c. Related higher-level or foundational technical domains where appropriate \
-   (e.g. "React" → ["Frontend", "UI", "JavaScript", "SPA"]).
+   (e.g. "Python" → ["פייתון"]; "Machine Learning" → ["למידת מכונה"]).
+c. One related higher-level domain if highly relevant \
+   (e.g. "React" → ["Frontend"]).
 All Hebrew characters must be output as valid, clean UTF-8 strings inside the JSON \
 (do NOT escape them as \\uXXXX sequences)."""
 
@@ -1179,7 +1178,7 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
         raw, stop = await call_claude_cached(
             system_blocks=system_blocks,
             user_content=user_content,
-            max_tokens=4096,
+            max_tokens=8192,
             model="claude-haiku-4-5-20251001",
         )
         if stop == "max_tokens":
