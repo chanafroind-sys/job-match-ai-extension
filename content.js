@@ -257,11 +257,16 @@
     };
   }
 
-  function _prefKey(url) {
+  function _urlHash(url) {
     let h = 0;
     for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
-    return `jma_pf_${Math.abs(h).toString(36)}`;
+    return Math.abs(h).toString(36);
   }
+  function _prefKey(url)         { return `jma_pf_${_urlHash(url)}`; }
+  function _autoStreamKey(url)   { return `jma_auto_stream_${_urlHash(url)}`; }
+  function _jobTextKey(url)      { return `jma_job_text_${_urlHash(url)}`; }
+  function _localScoreKey(url)   { return `jma_local_score_${_urlHash(url)}`; }
+  function _localBulletsKey(url) { return `jma_local_bullets_${_urlHash(url)}`; }
 
   // FAB state: 'idle' | 'loading' | 'ready'
   let _fabState = 'idle';
@@ -338,34 +343,25 @@
             <span class="jma-fab-score-lbl">▶ ניתוח מעמיק</span>`;
         }
         // Persist local score so popup can read it as initial baseScore
-        chrome.storage.local.set({ jma_local_score: score, jma_local_bullets: bullets });
+        chrome.storage.local.set({
+          [_localScoreKey(location.href)]:   score,
+          [_localBulletsKey(location.href)]: bullets,
+        });
         // Show reason pills briefly (staggered fade-in)
         if (bullets.length > 0) setTimeout(() => _showFabReasons(bullets), 600);
       });
     }
 
     wrap.addEventListener('click', () => {
-      if (_fabState === 'idle') {
-        // No CV or matcher unavailable — fall back to animated progress + Stage 2
-        // _fabState = 'loading';
-        // _fabStartProgress();
-        // chrome.runtime.sendMessage({ action: 'startJobPreflight', jobText, url: location.href });
-      } else if (_fabState === 'quick_ready') {
-        // ── Stage B: open popup → auto-start streaming questions immediately ──
-        // chrome.storage.local.set({ jma_auto_stream: true, jma_job_text: jobText });
-        // chrome.action.openPopup();
-        const currentJobText = extractJobText(); 
-    
-    // שמירה בסטורג' (שעכשיו מוגן ומנותב אוטומטית לפי URL בזכות הדריסה שלנו)
-    chrome.storage.local.set({ 
-        jma_auto_stream: true, 
-        jma_job_text: currentJobText 
-    });
-    
-    // הפעלה של הפאנל הפנימי במקום ה-openPopup החסום!
-    _togglePanel();
+      if (_fabState === 'quick_ready') {
+        // Open popup → auto-start streaming questions immediately
+        chrome.storage.local.set({
+          [_autoStreamKey(location.href)]: true,
+          [_jobTextKey(location.href)]:    extractJobText(),
+        });
+        _togglePanel();
       } else {
-        // 'loading' or 'ready' → just toggle panel visibility
+        // 'idle', 'loading', or 'ready' → just toggle panel
         _togglePanel();
       }
     });

@@ -146,11 +146,22 @@ function _bestCompany() {
 }
 
 // ── Per-URL job state persistence ────────────────────────────────────────────
-function jobStateKey(url) {
+// Shared URL hash — same algorithm used in content.js and background.js
+function _urlHash(url) {
   let h = 0;
   for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
-  return `jma_job_${Math.abs(h).toString(36)}`;
+  return Math.abs(h).toString(36);
 }
+
+// Per-URL storage key builders
+function jobStateKey(url)      { return `jma_job_${_urlHash(url)}`; }
+function _prefKey(url)         { return `jma_pf_${_urlHash(url)}`; }
+function _autoStreamKey(url)   { return `jma_auto_stream_${_urlHash(url)}`; }
+function _jobTextKey(url)      { return `jma_job_text_${_urlHash(url)}`; }
+function _localScoreKey(url)   { return `jma_local_score_${_urlHash(url)}`; }
+function _localBulletsKey(url) { return `jma_local_bullets_${_urlHash(url)}`; }
+function _navKey(url)          { return `jma_nav_${_urlHash(url)}`; }
+
 async function saveJobState(updates) {
   if (!state.jobUrl) return;
   const key = jobStateKey(state.jobUrl);
@@ -163,12 +174,6 @@ async function loadJobState(url) {
   const d = (await chrome.storage.local.get([key]))[key];
   if (!d || (Date.now() - d.ts) > 4 * 60 * 60 * 1000) return null;
   return d;
-}
-
-function _prefKey(url) {
-  let h = 0;
-  for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
-  return `jma_pf_${Math.abs(h).toString(36)}`;
 }
 
 // Typewriter effect — fills el.textContent character by character
@@ -745,8 +750,8 @@ async function startFlow() {
   state.jobUrl      = tabResult.url || '';
   state.jobTitle    = _cleanPageTitle(tabResult.h1Title || tabResult.ogTitle || tabResult.title || '');
   // Seed baseScore from local matcher (fixes arbitrary 65% default from AI fallback)
-  const localStored = await chrome.storage.local.get(['jma_local_score', 'jma_is_premium']);
-  if (localStored.jma_local_score) state.baseScore = localStored.jma_local_score;
+  const localStored = await chrome.storage.local.get([_localScoreKey(state.jobUrl), 'jma_is_premium']);
+  if (localStored[_localScoreKey(state.jobUrl)]) state.baseScore = localStored[_localScoreKey(state.jobUrl)];
   // Save premium flag to cvOptions for model selector rendering
   cvOptions._isPremium = !!localStored.jma_is_premium;
   await saveJobState({ jobText: state.jobText, jobLanguage: state.jobLanguage, jobPlatform: state.jobPlatform });
@@ -2317,25 +2322,28 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     // FAB click → auto-stream: skip all state restoration, go straight to questions
-    const autoStreamData = await chrome.storage.local.get(['jma_auto_stream', 'jma_job_text', 'licenseKey', 'cvText', 'jma_local_score']);
-    if (autoStreamData.jma_auto_stream) {
-      await chrome.storage.local.remove(['jma_auto_stream']);
-      const stored2 = await chrome.storage.local.get(['licenseKey', 'cvText', 'jma_local_score']);
-      state.licenseKey = stored2.licenseKey || '';
-      state.cvText     = stored2.cvText     || '';
-      state.baseScore  = stored2.jma_local_score || 0;
-      state.jobText    = autoStreamData.jma_job_text || '';
+    const tabUrl = tab?.url || '';
+    const asKey  = _autoStreamKey(tabUrl);
+    const jtKey  = _jobTextKey(tabUrl);
+    const lsKey  = _localScoreKey(tabUrl);
+    const autoStreamData = await chrome.storage.local.get([asKey, jtKey, 'licenseKey', 'cvText', lsKey]);
+    if (autoStreamData[asKey]) {
+      await chrome.storage.local.remove([asKey]);
+      state.licenseKey = autoStreamData.licenseKey || '';
+      state.cvText     = autoStreamData.cvText     || '';
+      state.baseScore  = autoStreamData[lsKey]     || 0;
+      state.jobText    = autoStreamData[jtKey]     || '';
       await streamQuestionsIntoScreen();
       return;
     }
 
     // LinkedIn SPA: if user navigated to a new job since the last analysis,
     // skip state restoration and go straight to the ready screen
-    if (tab?.id) {
-      const navKey = `jma_nav_${tab.id}`;
-      const navCheck = await chrome.storage.local.get([navKey]);
-      if (navCheck[navKey]) {
-        await chrome.storage.local.remove([navKey]);
+    if (tabUrl) {
+      const nKey    = _navKey(tabUrl);
+      const navCheck = await chrome.storage.local.get([nKey]);
+      if (navCheck[nKey]) {
+        await chrome.storage.local.remove([nKey]);
         await showReadyScreen();
         return;
       }

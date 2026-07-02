@@ -188,11 +188,13 @@ async function backendPost(endpoint, body, licenseKey, opts = {}) {
   }, opts.maxAttempts || 6, opts.delayMs || 12000);
 }
 
-function _prefKey(url) {
+function _urlHash(url) {
   let h = 0;
   for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
-  return `jma_pf_${Math.abs(h).toString(36)}`;
+  return Math.abs(h).toString(36);
 }
+function _prefKey(url) { return `jma_pf_${_urlHash(url)}`; }
+function _navKey(url)  { return `jma_nav_${_urlHash(url)}`; }
 
 // Extension icon click → toggle injected sidebar panel
 chrome.action.onClicked.addListener(async (tab) => {
@@ -220,7 +222,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     const prev = _linkedinTabUrls[tabId];
     _linkedinTabUrls[tabId] = url;
     if (prev && prev !== url) {
-      chrome.storage.local.set({ [`jma_nav_${tabId}`]: Date.now() }).catch(() => {});
+      chrome.storage.local.set({ [_navKey(url)]: Date.now() }).catch(() => {});
     }
   });
 }
