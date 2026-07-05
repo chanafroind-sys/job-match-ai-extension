@@ -900,87 +900,6 @@ function showQuestionsScreen(questions, savedAnswers) {
     _updateQuestionsScore();
   }
 
-  // ── Inline output options (language + format) ────────────────────────────
-  const autoLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
-  cvOptions.language = autoLang;
-  cvOptions.format = 'docx';
-  const outOpts = document.createElement('div');
-  outOpts.className = 'output-opts-inline';
-  outOpts.innerHTML = `
-    <div class="settings-label" style="margin:18px 0 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">📁 הגדרות הקובץ הסופי</div>
-    <div class="cv-opts-row" id="_qsLangRow">
-      <button class="cv-opt-btn ${autoLang === 'english' ? 'active' : ''}" data-lang="english">🇺🇸 English</button>
-      <button class="cv-opt-btn ${autoLang === 'hebrew' ? 'active' : ''}" data-lang="hebrew">🇮🇱 עברית</button>
-    </div>
-    <div class="cv-opts-row" style="margin-top:8px" id="_qsFmtRow">
-      <button class="cv-opt-btn active" data-fmt="docx">📄 Word (.docx)</button>
-      <button class="cv-opt-btn" data-fmt="pdf">🖨️ PDF</button>
-    </div>
-  `;
-  container.appendChild(outOpts);
-
-  outOpts.querySelectorAll('[data-lang]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      cvOptions.language = btn.dataset.lang;
-      outOpts.querySelectorAll('[data-lang]').forEach(b => b.classList.toggle('active', b === btn));
-    });
-  });
-  outOpts.querySelectorAll('[data-fmt]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      cvOptions.format = btn.dataset.fmt;
-      outOpts.querySelectorAll('[data-fmt]').forEach(b => b.classList.toggle('active', b === btn));
-    });
-  });
-
-  // ── Model selector ────────────────────────────────────────────────────────
-  const modelRow = document.createElement('div');
-  modelRow.className = 'model-selector-row';
-  modelRow.innerHTML = `
-    <div class="settings-label" style="margin:14px 0 7px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">🤖 מודל ניתוח</div>
-    <div class="cv-opts-row">
-      <button class="cv-opt-btn ${cvOptions.model !== 'fable' ? 'active' : ''}" data-model="sonnet">
-        ⚡ Sonnet <span class="model-quota-badge" id="sonnetQuota"></span>
-      </button>
-      <button class="cv-opt-btn ${cvOptions.model === 'fable' ? 'active' : ''}" data-model="fable" id="fableBtn">
-        🔥 Fable <span class="model-quota-badge" id="fableQuota"></span>
-      </button>
-    </div>
-    <div class="model-hint" id="modelHint"></div>
-  `;
-  outOpts.appendChild(modelRow);
-  _updateQuotaDisplay(); // populate quota badges
-  modelRow.querySelectorAll('[data-model]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (btn.disabled) return;
-      cvOptions.model = btn.dataset.model;
-      modelRow.querySelectorAll('[data-model]').forEach(b => b.classList.toggle('active', b === btn));
-      const hint = document.getElementById('modelHint');
-      if (hint) hint.textContent = cvOptions.model === 'fable'
-        ? '🔥 Fable — ניתוח קיצוני למשרות החשובות ביותר (מכסה מוגבלת)'
-        : '⚡ Sonnet — מדויק ומהיר בזכות Prompt Caching';
-    });
-  });
-
-  // ── Tracking opt ─────────────────────────────────────────────────────────
-  chrome.storage.local.get(['enableTracking'], (s) => {
-    cvOptions.tracking = s.enableTracking !== false;
-    const trackRow = document.createElement('div');
-    trackRow.className = 'tracking-opt-row';
-    trackRow.innerHTML = `
-      <label class="tracking-opt-label">
-        <input type="checkbox" id="cbTracking" ${cvOptions.tracking ? 'checked' : ''}>
-        <span>הפעל מעקב קישורים חכם</span>
-      </label>
-      <span class="info-icon" tabindex="0"
-        title="מאפשר לדעת מתי מגייסים פתחו את הקישורים שלך (GitHub/LinkedIn). ⚠️ קישורי מעקב עלולים לגרום להודעת אזהרה ב-Word המקומי — פתיחה מהדפדפן/מייל תעבוד חלק.">ⓘ</span>
-    `;
-    outOpts.appendChild(trackRow);
-    document.getElementById('cbTracking').addEventListener('change', (e) => {
-      cvOptions.tracking = e.target.checked;
-      chrome.storage.local.set({ enableTracking: cvOptions.tracking });
-    });
-  });
-
   showScreen('questions');
 }
 
@@ -1251,8 +1170,7 @@ async function streamQuestionsIntoScreen() {
     }
   }
 
-  // ── Footer: output options + continue button ──────────────────────────────
-  _appendQuestionsOptions(container);
+  // ── Footer: no inline options — user continues to cv-options screen ──────
 }
 
 function collectAnswers() {
@@ -1264,33 +1182,129 @@ function collectAnswers() {
   });
 }
 
+// ── Deep analysis overlay — streams in parallel while user interacts with settings ──
+async function startDeepAnalysisOverlay(answers) {
+  const BACKEND = 'https://job-match-ai-extension.onrender.com';
+
+  // Inject one-time CSS
+  if (!document.getElementById('jma-dao-style')) {
+    const s = document.createElement('style');
+    s.id = 'jma-dao-style';
+    s.textContent = `
+      #jma-dao { position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.52);
+        backdrop-filter:blur(3px);display:flex;align-items:flex-end }
+      #jma-dao-panel { width:100%;max-height:72vh;background:var(--bg-secondary,#1e2030);
+        border-radius:16px 16px 0 0;display:flex;flex-direction:column;
+        box-shadow:0 -6px 32px rgba(0,0,0,.5);
+        animation:dao-up .26s cubic-bezier(.22,1,.36,1) }
+      @keyframes dao-up { from{transform:translateY(100%)} to{transform:none} }
+      #jma-dao-head { display:flex;align-items:center;justify-content:space-between;
+        padding:12px 16px;border-bottom:1px solid var(--border,#2d3250) }
+      #jma-dao-title { font-weight:700;font-size:13px }
+      #jma-dao-score { font-size:13px;font-weight:700;color:var(--accent,#6366f1) }
+      #jma-dao-close { background:none;border:none;cursor:pointer;color:var(--text-muted,#8892b0);
+        font-size:20px;line-height:1;padding:0 4px }
+      #jma-dao-body { padding:14px 16px;overflow-y:auto;flex:1;font-size:13px;line-height:1.75;
+        white-space:pre-wrap;direction:rtl;text-align:right;color:var(--text-primary,#e2e8f0) }
+      .jma-dao-cur { animation:dao-blink .7s step-end infinite }
+      @keyframes dao-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    `;
+    document.head.appendChild(s);
+  }
+
+  // Remove any stale overlay
+  document.getElementById('jma-dao')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'jma-dao';
+  overlay.innerHTML = `
+    <div id="jma-dao-panel">
+      <div id="jma-dao-head">
+        <span id="jma-dao-title">🔍 ניתוח מעמיק</span>
+        <span id="jma-dao-score">מחשב ציון…</span>
+        <button id="jma-dao-close">✕</button>
+      </div>
+      <div id="jma-dao-body"><span class="jma-dao-cur">|</span></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const bodyEl  = document.getElementById('jma-dao-body');
+  const scoreEl = document.getElementById('jma-dao-score');
+  const cursor  = bodyEl.querySelector('.jma-dao-cur');
+
+  document.getElementById('jma-dao-close').onclick = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+  try {
+    const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
+    const resp = await fetch(`${BACKEND}/api/stream-deep-analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-License-Key': stored.licenseKey || state.licenseKey || '' },
+      body: JSON.stringify({
+        cvText:  stored.cvText || state.cvText || '',
+        jobText: state.jobText || '',
+        answers,
+      }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf      = '';
+    const textNode = document.createTextNode('');
+    bodyEl.insertBefore(textNode, cursor);
+
+    outer: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (raw === '[DONE]') { break outer; }
+        try {
+          const evt = JSON.parse(raw);
+          if (evt.score !== undefined) {
+            const c = evt.score >= 75 ? '#3fb950' : evt.score >= 55 ? '#d29922' : evt.score >= 35 ? '#e3812b' : '#f85149';
+            scoreEl.style.color = c;
+            scoreEl.textContent = `ציון AI: ${evt.score}%`;
+            // Update FAB on the current tab
+            chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+              if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'updateFabScore', score: evt.score }).catch(() => {});
+            });
+          }
+          if (evt.token) {
+            textNode.textContent += evt.token;
+            bodyEl.scrollTop = bodyEl.scrollHeight;
+          }
+        } catch { /* skip malformed */ }
+      }
+    }
+  } catch (err) {
+    console.error('[JMA:deep-analysis]', err);
+    if (bodyEl) bodyEl.textContent = 'שגיאה בטעינת הניתוח.';
+  } finally {
+    cursor?.remove();
+  }
+}
+
 document.getElementById('btnContinueToCV').addEventListener('click', async () => {
   const answers = collectAnswers();
   state.answers = answers;
   await saveJobState({ answers });
 
-  // ── Quota check ────────────────────────────────────────────────────────
-  const model = cvOptions.model || 'sonnet';
-  const { allowed, used, limit } = await _checkQuota(model);
-  if (!allowed) {
-    const modelName = model === 'fable' ? 'Fable' : 'Sonnet';
-    showMainError(`הגעת למכסה החודשית של ${modelName} (${used}/${limit}). המכסה מתחדשת ב-1 לחודש הבא.`);
-    showScreen('main');
-    return;
-  }
-  await _incrementUsage(model);
-
-  // Compute weighted score from question answers
+  // Update local score estimate from weighted answers
   if (state.baseScore) {
     const bonus = answers.reduce((s, a) => s + ((a.sliderValue || 0) / 100) * (a.weight || 0), 0);
     const finalScore = Math.min(100, Math.round(state.baseScore + bonus));
+    state.baseScore = finalScore;
     if (state.analysis) state.analysis.score = finalScore;
   }
 
-  // Start CV generation in background (parallel with streaming analysis)
-  state.cvGenPromise = _startCvGenBackground(answers, cvOptions.language, cvOptions.format);
-
-  await runStreamingAnalysis(answers);
+  showCVOptionsScreen();             // show settings (language / format / cover letter)
+  startDeepAnalysisOverlay(answers); // stream analysis in floating overlay — fire-and-forget
 });
 
 async function runStreamingAnalysis(answers) {
@@ -1542,7 +1556,9 @@ document.getElementById('btnStartCvGen').addEventListener('click', () => {
 });
 
 document.getElementById('btnCvOptsBack').addEventListener('click', () => {
-  showScreen('main');
+  // If we came from the questions screen (questions exist), go back there; otherwise main
+  if (state.questions && state.questions.length > 0) showScreen('questions');
+  else showScreen('main');
 });
 
 

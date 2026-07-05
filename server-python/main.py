@@ -872,9 +872,11 @@ Rules:
 
 
 def _resolve_model(model_alias: str) -> str:
-    """Map user-facing alias ('sonnet', 'fable') to actual Anthropic model ID."""
+    """Map user-facing alias to actual Anthropic model ID."""
     if model_alias == "fable":
         return "claude-fable-5"
+    if model_alias == "haiku":
+        return "claude-haiku-4-5-20251001"
     return "claude-sonnet-4-6"  # default
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -1498,6 +1500,84 @@ async def stream_questions_endpoint(
                         yield sse_chunk
             except Exception as e:
                 print(f"[JMA:stream_q] pass2 error: {e}")
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+DEEP_ANALYSIS_PROMPT = """\
+You are a senior career consultant. The candidate CV is in your system prompt.
+
+Based on the CV, job description, and the candidate's answers to gap questions below,
+produce a concise updated assessment.
+
+STRICT OUTPUT FORMAT — no preamble, no thinking:
+Line 1: [SCORE]<integer 0-100>[/SCORE]
+Then immediately write a flowing Hebrew analysis (~150 words):
+• 2-3 חוזקות מרכזיות מהמועמד ביחס למשרה
+• פערים ואיך תשובות המועמד השפיעו על הציון
+• המלצה סופית — האם כדאי להגיש מועמדות
+
+All text in Hebrew. No markdown. No JSON.
+
+=== JOB DESCRIPTION ===
+{job_text}
+
+=== CANDIDATE ANSWERS TO GAP QUESTIONS ===
+{answers_text}"""
+
+
+class DeepAnalysisRequest(BaseModel):
+    cvText:   str  = ""
+    jobText:  str  = ""
+    answers:  list = []
+
+
+@app.post("/api/stream-deep-analysis")
+async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optional[str] = Header(None)):
+    cv_text  = (body.cvText  or "")[:6000]
+    job_text = (body.jobText or "")[:3000]
+
+    answers_text = "\n".join(
+        f"שאלה {i+1} ({a.get('skill','?')}, משקל {a.get('weight',0)}%): "
+        f'תשובה: "{a.get("answer","לא ענה")}" '
+        f'(ציון עצמי: {a.get("sliderValue",0)}%)'
+        for i, a in enumerate(body.answers or [])
+    ) or "לא נענו שאלות"
+
+    sys_blocks = _cv_system_blocks(cv_text)
+    prompt     = DEEP_ANALYSIS_PROMPT.format(job_text=job_text, answers_text=answers_text)
+
+    async def generate():
+        import re
+        buf        = ""
+        score_sent = False
+
+        async with anthropic_client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            system=sys_blocks,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            async for token in stream.text_stream:
+                if not score_sent:
+                    buf += token
+                    if "[/SCORE]" in buf:
+                        m = re.search(r'\[SCORE\](\d+)\[/SCORE\]', buf)
+                        score = max(0, min(100, int(m.group(1)))) if m else 50
+                        yield f"data: {json.dumps({'score': score})}\n\n"
+                        rest = buf.split("[/SCORE]", 1)[1]
+                        if rest.strip():
+                            yield f"data: {json.dumps({'token': rest})}\n\n"
+                        score_sent = True
+                        buf = ""
+                else:
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+
+        if not score_sent:
+            yield f"data: {json.dumps({'score': 50})}\n\n"
 
         yield "data: [DONE]\n\n"
 
