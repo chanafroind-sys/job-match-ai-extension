@@ -1457,10 +1457,9 @@ function _armCvButton(language) {
 
 // CV Options screen
 function showCVOptionsScreen() {
-  // Auto-detect language from job language; default to english
   const autoLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
   cvOptions.language = autoLang;
-  cvOptions.format = 'docx';
+  cvOptions.format   = 'docx';
   cvOptions.coverLetter = false;
   document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => {
     b.classList.toggle('active', b.dataset.lang === autoLang);
@@ -1469,6 +1468,67 @@ function showCVOptionsScreen() {
     b.classList.toggle('active', b.dataset.fmt === 'docx');
   });
   document.getElementById('chkCoverLetter').checked = false;
+
+  // ── Model selector + tracking opt (injected dynamically) ─────────────────
+  const screen = document.getElementById('screen-cv-options');
+
+  // Remove previous injected extras so they don't duplicate on re-open
+  screen.querySelectorAll('.cv-extra-opts').forEach(el => el.remove());
+
+  const extras = document.createElement('div');
+  extras.className = 'cv-extra-opts';
+  extras.innerHTML = `
+    <div class="cv-opts-section">
+      <div class="settings-label">🤖 מודל ניתוח</div>
+      <div class="cv-opts-row" id="cvoModelRow">
+        <button class="cv-opt-btn ${cvOptions.model !== 'fable' ? 'active' : ''}" data-cvo-model="sonnet">
+          ⚡ Sonnet <span class="model-quota-badge" id="sonnetQuota"></span>
+        </button>
+        <button class="cv-opt-btn ${cvOptions.model === 'fable' ? 'active' : ''}" data-cvo-model="fable">
+          🔥 Fable <span class="model-quota-badge" id="fableQuota"></span>
+        </button>
+      </div>
+      <div class="model-hint" id="modelHint" style="margin-top:4px;font-size:11px;color:var(--text-muted)"></div>
+    </div>
+    <div class="cv-opts-section" id="cvoTrackingSection"></div>
+  `;
+  // Insert before the action buttons (btnStartCvGen)
+  const btn = screen.querySelector('#btnStartCvGen');
+  screen.insertBefore(extras, btn);
+
+  // Wire model buttons
+  extras.querySelectorAll('[data-cvo-model]').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.disabled) return;
+      cvOptions.model = b.dataset.cvoModel;
+      extras.querySelectorAll('[data-cvo-model]').forEach(x => x.classList.toggle('active', x === b));
+      const hint = document.getElementById('modelHint');
+      if (hint) hint.textContent = cvOptions.model === 'fable'
+        ? '🔥 Fable — ניתוח קיצוני למשרות החשובות ביותר (מכסה מוגבלת)'
+        : '⚡ Sonnet — מדויק ומהיר בזכות Prompt Caching';
+    });
+  });
+  _updateQuotaDisplay();
+
+  // Wire tracking checkbox
+  chrome.storage.local.get(['enableTracking'], (s) => {
+    cvOptions.tracking = s.enableTracking !== false;
+    const trackSection = document.getElementById('cvoTrackingSection');
+    if (!trackSection) return;
+    trackSection.innerHTML = `
+      <label class="tracking-opt-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="cbTracking" ${cvOptions.tracking ? 'checked' : ''}>
+        <span>הפעל מעקב קישורים חכם</span>
+      </label>
+      <span class="info-icon" tabindex="0"
+        title="מאפשר לדעת מתי מגייסים פתחו את הקישורים שלך (GitHub/LinkedIn). ⚠️ קישורי מעקב עלולים לגרום להודעת אזהרה ב-Word המקומי.">ⓘ</span>
+    `;
+    document.getElementById('cbTracking')?.addEventListener('change', e => {
+      cvOptions.tracking = e.target.checked;
+      chrome.storage.local.set({ enableTracking: cvOptions.tracking });
+    });
+  });
+
   showScreen('cv-options');
 }
 
