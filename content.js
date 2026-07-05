@@ -153,6 +153,14 @@
       }
     }
 
+    if (req.action === 'openAnalysisPanel') {
+      _openAnalysisPanel();
+    }
+
+    if (req.action === 'analysisEvent') {
+      _handleAnalysisEvent(req.evt);
+    }
+
     if (req.action === 'showClickToast') {
       _showToast(req.jobTitle, req.company, req.target);
     }
@@ -1060,3 +1068,113 @@
     }
   }, 1200);
 })();
+
+// ── Deep-analysis floating panel (left side of page, separate from popup) ──────
+let _apTextNode = null;
+let _apFull     = '';
+
+function _openAnalysisPanel() {
+  document.getElementById('jma-ap')?.remove();
+  _apTextNode = null;
+  _apFull     = '';
+
+  if (!document.getElementById('jma-ap-style')) {
+    const st = document.createElement('style');
+    st.id = 'jma-ap-style';
+    st.textContent = `
+      #jma-ap {
+        position:fixed; left:20px; top:50%; transform:translateY(-50%);
+        width:300px; max-height:420px;
+        background:#12152a; border-radius:14px;
+        box-shadow:0 8px 40px rgba(0,0,0,.65);
+        z-index:2147483640; display:flex; flex-direction:column;
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+        animation:jma-ap-in .3s cubic-bezier(.22,1,.36,1);
+      }
+      @keyframes jma-ap-in { from{opacity:0;transform:translateY(-50%) translateX(-18px)} to{opacity:1;transform:translateY(-50%) translateX(0)} }
+      #jma-ap-head {
+        display:flex; align-items:center; justify-content:space-between;
+        padding:10px 13px; border-bottom:1px solid #242740; flex-shrink:0;
+      }
+      #jma-ap-title  { font-weight:700; font-size:13px; color:#e2e8f0; }
+      #jma-ap-score  { font-size:12px; font-weight:700; color:#6366f1; }
+      #jma-ap-close  { background:none; border:none; cursor:pointer; color:#8892b0; font-size:17px; line-height:1; padding:0 2px; }
+      #jma-ap-body   {
+        padding:12px 13px; overflow-y:auto; flex:1;
+        font-size:12.5px; line-height:1.72; direction:rtl; text-align:right;
+        color:#e2e8f0; white-space:pre-wrap;
+      }
+      .jma-ap-cur    { animation:jma-ap-blink .7s step-end infinite; color:#6366f1; }
+      @keyframes jma-ap-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+      .jma-ap-strength { color:#3fb950; }
+      .jma-ap-gap      { color:#f85149; }
+      .jma-ap-neutral  { color:#e2e8f0; }
+    `;
+    document.head.appendChild(st);
+  }
+
+  const panel = document.createElement('div');
+  panel.id = 'jma-ap';
+  panel.innerHTML = `
+    <div id="jma-ap-head">
+      <span id="jma-ap-title">🔍 ניתוח מעמיק</span>
+      <span id="jma-ap-score">מחשב ציון…</span>
+      <button id="jma-ap-close">✕</button>
+    </div>
+    <div id="jma-ap-body"><span class="jma-ap-cur">|</span></div>`;
+  document.body.appendChild(panel);
+
+  document.getElementById('jma-ap-close').onclick = () => panel.remove();
+
+  _apTextNode = document.createTextNode('');
+  const body   = document.getElementById('jma-ap-body');
+  const cursor = body.querySelector('.jma-ap-cur');
+  body.insertBefore(_apTextNode, cursor);
+}
+
+function _handleAnalysisEvent(evt) {
+  if (!evt) return;
+  const body    = document.getElementById('jma-ap-body');
+  const scoreEl = document.getElementById('jma-ap-score');
+  if (!body) return;
+
+  if (evt.score !== undefined) {
+    const c = evt.score >= 75 ? '#3fb950' : evt.score >= 55 ? '#d29922' : evt.score >= 35 ? '#e3812b' : '#f85149';
+    if (scoreEl) { scoreEl.style.color = c; scoreEl.textContent = `ציון AI: ${evt.score}%`; }
+    // Update FAB
+    _updateFabArc(evt.score, true);
+    const inner  = document.getElementById('jma-fab-inner');
+    const numEl  = inner?.querySelector('.jma-fab-score-num');
+    if (numEl) { numEl.style.color = c; numEl.textContent = evt.score; }
+  }
+
+  if (evt.token && _apTextNode) {
+    _apFull += evt.token;
+    _apTextNode.textContent = _apFull;
+    body.scrollTop = body.scrollHeight;
+  }
+
+  if (evt.done) {
+    // Remove cursor and apply color coding
+    body.querySelector('.jma-ap-cur')?.remove();
+    if (_apTextNode) {
+      const colored = _apColorize(_apFull);
+      _apTextNode.remove();
+      _apTextNode = null;
+      body.innerHTML = colored;
+    }
+  }
+}
+
+function _apColorize(text) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let mode = 'neutral';
+  return text.split('\n').map(line => {
+    const t = line.trim();
+    if (/חוזק|strength|יתרון|חיובי/i.test(t))            mode = 'strength';
+    else if (/פער|חסר|gap|weakness|לשפר|missing|בעי/i.test(t)) mode = 'gap';
+    else if (/המלצ|לסיכום|conclusion|summary/i.test(t))    mode = 'neutral';
+    const cls = mode === 'strength' ? 'jma-ap-strength' : mode === 'gap' ? 'jma-ap-gap' : 'jma-ap-neutral';
+    return `<span class="${cls}">${esc(line)}</span>`;
+  }).join('\n');
+}

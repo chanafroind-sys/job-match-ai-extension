@@ -1182,68 +1182,18 @@ function collectAnswers() {
   });
 }
 
-// ── Deep analysis overlay — streams in parallel while user interacts with settings ──
+// ── Deep analysis panel — rendered in the PAGE (left side) via content script ──
+// popup.js fetches the SSE stream and relays events to content.js via messaging.
 async function startDeepAnalysisOverlay(answers) {
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
 
-  // Inject one-time CSS
-  if (!document.getElementById('jma-dao-style')) {
-    const s = document.createElement('style');
-    s.id = 'jma-dao-style';
-    s.textContent = `
-      #jma-dao {
-        position:fixed; top:0; left:0; right:0; z-index:9999;
-        max-height:46vh; background:#12152a;
-        border-radius:0 0 14px 14px;
-        box-shadow:0 6px 28px rgba(0,0,0,.7);
-        display:flex; flex-direction:column;
-        animation:dao-down .26s cubic-bezier(.22,1,.36,1);
-      }
-      @keyframes dao-down { from{transform:translateY(-100%)} to{transform:none} }
-      #jma-dao-head {
-        display:flex; align-items:center; justify-content:space-between;
-        padding:10px 14px; border-bottom:1px solid #2a2f4a; flex-shrink:0;
-      }
-      #jma-dao-title { font-weight:700; font-size:13px; color:#e2e8f0; }
-      #jma-dao-score { font-size:13px; font-weight:700; color:#6366f1; }
-      #jma-dao-close {
-        background:none; border:none; cursor:pointer; color:#8892b0;
-        font-size:18px; line-height:1; padding:0 2px;
-      }
-      #jma-dao-body {
-        padding:12px 14px; overflow-y:auto; flex:1;
-        font-size:12.5px; line-height:1.7;
-        white-space:pre-wrap; direction:rtl; text-align:right;
-        color:#e2e8f0;
-      }
-      .jma-dao-cur { animation:dao-blink .7s step-end infinite; color:#6366f1; }
-      @keyframes dao-blink { 0%,100%{opacity:1} 50%{opacity:0} }
-      .dao-strength { color:#3fb950; }
-      .dao-gap      { color:#f85149; }
-      .dao-neutral  { color:#e2e8f0; }
-    `;
-    document.head.appendChild(s);
-  }
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
 
-  // Remove any stale overlay
-  document.getElementById('jma-dao')?.remove();
+  const send = evt => chrome.tabs.sendMessage(tab.id, { action: 'analysisEvent', evt }).catch(() => {});
 
-  const overlay = document.createElement('div');
-  overlay.id = 'jma-dao';
-  overlay.innerHTML = `
-    <div id="jma-dao-head">
-      <span id="jma-dao-title">🔍 ניתוח מעמיק</span>
-      <span id="jma-dao-score">מחשב ציון…</span>
-      <button id="jma-dao-close">✕</button>
-    </div>
-    <div id="jma-dao-body"><span class="jma-dao-cur">|</span></div>`;
-  document.body.appendChild(overlay);
-
-  const bodyEl  = document.getElementById('jma-dao-body');
-  const scoreEl = document.getElementById('jma-dao-score');
-  const cursor  = bodyEl.querySelector('.jma-dao-cur');
-
-  document.getElementById('jma-dao-close').onclick = () => overlay.remove();
+  // Tell content script to create the panel on the left side of the page
+  chrome.tabs.sendMessage(tab.id, { action: 'openAnalysisPanel' }).catch(() => {});
 
   try {
     const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
@@ -1260,9 +1210,7 @@ async function startDeepAnalysisOverlay(answers) {
 
     const reader  = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buf      = '';
-    const textNode = document.createTextNode('');
-    bodyEl.insertBefore(textNode, cursor);
+    let buf = '';
 
     outer: while (true) {
       const { done, value } = await reader.read();
@@ -1273,49 +1221,14 @@ async function startDeepAnalysisOverlay(answers) {
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
         const raw = line.slice(5).trim();
-        if (raw === '[DONE]') { break outer; }
-        try {
-          const evt = JSON.parse(raw);
-          if (evt.score !== undefined) {
-            const c = evt.score >= 75 ? '#3fb950' : evt.score >= 55 ? '#d29922' : evt.score >= 35 ? '#e3812b' : '#f85149';
-            scoreEl.style.color = c;
-            scoreEl.textContent = `ציון AI: ${evt.score}%`;
-            chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-              if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'updateFabScore', score: evt.score }).catch(() => {});
-            });
-          }
-          if (evt.token) {
-            textNode.textContent += evt.token;
-            bodyEl.scrollTop = bodyEl.scrollHeight;
-          }
-        } catch { /* skip malformed */ }
+        if (raw === '[DONE]') { send({ done: true }); break outer; }
+        try { send(JSON.parse(raw)); } catch { /* skip malformed */ }
       }
     }
-
-    // Post-stream: replace plain text with green/red colored lines
-    const fullText = textNode.textContent;
-    textNode.remove();
-    bodyEl.innerHTML = _colorizeAnalysis(fullText);
-
   } catch (err) {
     console.error('[JMA:deep-analysis]', err);
-    if (bodyEl) bodyEl.textContent = 'שגיאה בטעינת הניתוח.';
-  } finally {
-    cursor?.remove();
+    send({ error: true });
   }
-}
-
-function _colorizeAnalysis(text) {
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  let mode = 'neutral';
-  return text.split('\n').map(line => {
-    const t = line.trim();
-    if (/חוזק|strength|יתרון|חיובי/i.test(t)) mode = 'strength';
-    else if (/פער|חסר|gap|weakness|לשפר|missing|בעי/i.test(t)) mode = 'gap';
-    else if (/המלצ|לסיכום|conclusion|summary/i.test(t))        mode = 'neutral';
-    const cls = mode === 'strength' ? 'dao-strength' : mode === 'gap' ? 'dao-gap' : 'dao-neutral';
-    return `<span class="${cls}">${esc(line)}</span>`;
-  }).join('\n');
 }
 
 document.getElementById('btnContinueToCV').addEventListener('click', async () => {
