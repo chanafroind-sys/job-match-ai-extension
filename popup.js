@@ -1191,23 +1191,36 @@ async function startDeepAnalysisOverlay(answers) {
     const s = document.createElement('style');
     s.id = 'jma-dao-style';
     s.textContent = `
-      #jma-dao { position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.52);
-        backdrop-filter:blur(3px);display:flex;align-items:flex-end }
-      #jma-dao-panel { width:100%;max-height:72vh;background:var(--bg-secondary,#1e2030);
-        border-radius:16px 16px 0 0;display:flex;flex-direction:column;
-        box-shadow:0 -6px 32px rgba(0,0,0,.5);
-        animation:dao-up .26s cubic-bezier(.22,1,.36,1) }
-      @keyframes dao-up { from{transform:translateY(100%)} to{transform:none} }
-      #jma-dao-head { display:flex;align-items:center;justify-content:space-between;
-        padding:12px 16px;border-bottom:1px solid var(--border,#2d3250) }
-      #jma-dao-title { font-weight:700;font-size:13px }
-      #jma-dao-score { font-size:13px;font-weight:700;color:var(--accent,#6366f1) }
-      #jma-dao-close { background:none;border:none;cursor:pointer;color:var(--text-muted,#8892b0);
-        font-size:20px;line-height:1;padding:0 4px }
-      #jma-dao-body { padding:14px 16px;overflow-y:auto;flex:1;font-size:13px;line-height:1.75;
-        white-space:pre-wrap;direction:rtl;text-align:right;color:var(--text-primary,#e2e8f0) }
-      .jma-dao-cur { animation:dao-blink .7s step-end infinite }
+      #jma-dao {
+        position:fixed; top:0; left:0; right:0; z-index:9999;
+        max-height:46vh; background:#12152a;
+        border-radius:0 0 14px 14px;
+        box-shadow:0 6px 28px rgba(0,0,0,.7);
+        display:flex; flex-direction:column;
+        animation:dao-down .26s cubic-bezier(.22,1,.36,1);
+      }
+      @keyframes dao-down { from{transform:translateY(-100%)} to{transform:none} }
+      #jma-dao-head {
+        display:flex; align-items:center; justify-content:space-between;
+        padding:10px 14px; border-bottom:1px solid #2a2f4a; flex-shrink:0;
+      }
+      #jma-dao-title { font-weight:700; font-size:13px; color:#e2e8f0; }
+      #jma-dao-score { font-size:13px; font-weight:700; color:#6366f1; }
+      #jma-dao-close {
+        background:none; border:none; cursor:pointer; color:#8892b0;
+        font-size:18px; line-height:1; padding:0 2px;
+      }
+      #jma-dao-body {
+        padding:12px 14px; overflow-y:auto; flex:1;
+        font-size:12.5px; line-height:1.7;
+        white-space:pre-wrap; direction:rtl; text-align:right;
+        color:#e2e8f0;
+      }
+      .jma-dao-cur { animation:dao-blink .7s step-end infinite; color:#6366f1; }
       @keyframes dao-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+      .dao-strength { color:#3fb950; }
+      .dao-gap      { color:#f85149; }
+      .dao-neutral  { color:#e2e8f0; }
     `;
     document.head.appendChild(s);
   }
@@ -1218,14 +1231,12 @@ async function startDeepAnalysisOverlay(answers) {
   const overlay = document.createElement('div');
   overlay.id = 'jma-dao';
   overlay.innerHTML = `
-    <div id="jma-dao-panel">
-      <div id="jma-dao-head">
-        <span id="jma-dao-title">🔍 ניתוח מעמיק</span>
-        <span id="jma-dao-score">מחשב ציון…</span>
-        <button id="jma-dao-close">✕</button>
-      </div>
-      <div id="jma-dao-body"><span class="jma-dao-cur">|</span></div>
-    </div>`;
+    <div id="jma-dao-head">
+      <span id="jma-dao-title">🔍 ניתוח מעמיק</span>
+      <span id="jma-dao-score">מחשב ציון…</span>
+      <button id="jma-dao-close">✕</button>
+    </div>
+    <div id="jma-dao-body"><span class="jma-dao-cur">|</span></div>`;
   document.body.appendChild(overlay);
 
   const bodyEl  = document.getElementById('jma-dao-body');
@@ -1233,7 +1244,6 @@ async function startDeepAnalysisOverlay(answers) {
   const cursor  = bodyEl.querySelector('.jma-dao-cur');
 
   document.getElementById('jma-dao-close').onclick = () => overlay.remove();
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
   try {
     const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
@@ -1270,7 +1280,6 @@ async function startDeepAnalysisOverlay(answers) {
             const c = evt.score >= 75 ? '#3fb950' : evt.score >= 55 ? '#d29922' : evt.score >= 35 ? '#e3812b' : '#f85149';
             scoreEl.style.color = c;
             scoreEl.textContent = `ציון AI: ${evt.score}%`;
-            // Update FAB on the current tab
             chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
               if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'updateFabScore', score: evt.score }).catch(() => {});
             });
@@ -1282,12 +1291,31 @@ async function startDeepAnalysisOverlay(answers) {
         } catch { /* skip malformed */ }
       }
     }
+
+    // Post-stream: replace plain text with green/red colored lines
+    const fullText = textNode.textContent;
+    textNode.remove();
+    bodyEl.innerHTML = _colorizeAnalysis(fullText);
+
   } catch (err) {
     console.error('[JMA:deep-analysis]', err);
     if (bodyEl) bodyEl.textContent = 'שגיאה בטעינת הניתוח.';
   } finally {
     cursor?.remove();
   }
+}
+
+function _colorizeAnalysis(text) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let mode = 'neutral';
+  return text.split('\n').map(line => {
+    const t = line.trim();
+    if (/חוזק|strength|יתרון|חיובי/i.test(t)) mode = 'strength';
+    else if (/פער|חסר|gap|weakness|לשפר|missing|בעי/i.test(t)) mode = 'gap';
+    else if (/המלצ|לסיכום|conclusion|summary/i.test(t))        mode = 'neutral';
+    const cls = mode === 'strength' ? 'dao-strength' : mode === 'gap' ? 'dao-gap' : 'dao-neutral';
+    return `<span class="${cls}">${esc(line)}</span>`;
+  }).join('\n');
 }
 
 document.getElementById('btnContinueToCV').addEventListener('click', async () => {
