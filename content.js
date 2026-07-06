@@ -299,81 +299,245 @@
       });
     });
   }
-
-  function _createFabGauge(jobText, cached) {
-    injectStyles();
-    const wrap = document.createElement('div');
-    wrap.id = 'jma-fab-wrap';
-    wrap.innerHTML = `
-      <svg viewBox="0 0 84 84" width="84" height="84">
-        <defs>
-          <radialGradient id="jma-grad" cx="40%" cy="35%" r="65%">
-            <stop offset="0%" stop-color="#A78BFA"/>
-            <stop offset="100%" stop-color="#5B21B6"/>
-          </radialGradient>
-        </defs>
-        <circle class="jma-fab-bg" cx="42" cy="42" r="41"/>
-        <circle class="jma-fab-track" cx="42" cy="42" r="33"/>
-        <circle class="jma-fab-arc" id="jma-fab-arc" cx="42" cy="42" r="33"/>
-      </svg>
-      <div class="jma-fab-inner" id="jma-fab-inner">
-        <span class="jma-fab-icon">⚡</span>
-        <span class="jma-fab-text">בדיקה<br>מהירה</span>
-      </div>`;
-    document.body.appendChild(wrap);
-
-    if (cached && cached.base_score != null) {
-      // Preflight cache already has a full AI score — use it directly
-      _fabSetScore(cached.base_score);
-    } else {
-      // ── Stage A: run local matcher immediately, zero network cost ───────
-      // Uses the AI-extracted profile (jma_user_profile) when available.
-      // Falls back to a stub profile built from raw cvText for users who haven't re-saved yet.
-      chrome.storage.local.get(['jma_user_profile', 'cvText'], (s) => {
-        if (!window.JMA_Matcher) return;
-        let profile = s.jma_user_profile || null;
-        if (!profile && s.cvText) {
-          // Minimal stub so the matcher has something to work with
-          profile = _profileFromCvText(s.cvText);
-        }
-        if (!profile) return;
-        const { score, bullets } = window.JMA_Matcher.computeScore(profile, jobText);
-        _fabState = 'quick_ready';
-        _updateFabArc(score, true);
-        wrap.classList.remove('jma-fab-loading');
-        wrap.classList.add('jma-fab-ready');
-        const inner2 = document.getElementById('jma-fab-inner');
-        if (inner2) {
-          const color = score >= 75 ? '#3fb950' : score >= 55 ? '#d29922' : score >= 35 ? '#e3812b' : '#f85149';
-          inner2.innerHTML = `
-            <span class="jma-fab-score-num" style="color:${color}">${score}</span>
-            <span class="jma-fab-score-pct">%</span>
-            <span class="jma-fab-score-lbl">▶ ניתוח מעמיק</span>`;
-        }
-        // Persist local score so popup can read it as initial baseScore
-        chrome.storage.local.set({
-          [_localScoreKey(location.href)]:   score,
-          [_localBulletsKey(location.href)]: bullets,
-        });
-        // Show reason pills briefly (staggered fade-in)
-        if (bullets.length > 0) setTimeout(() => _showFabReasons(bullets), 600);
-      });
+function _createFabGauge(jobText, cached) {
+  // 1. הזרקת ה-CSS - שימי לב שהאפקטים של הכפתור (Hover ו-Active) יפעלו רק כשיש את הקלאס .jma-fab-clickable
+  const fabStyle = document.createElement('style');
+  fabStyle.innerHTML = `
+    /* המצב ההתחלתי: עיגול תצוגה רגיל, לא מגיב לעכבר כפתור */
+    #jma-fab-wrap {
+      background: radial-gradient(circle at 40% 35%, #A78BFA 0%, #5B21B6 100%) !important;
+      border-radius: 50% !important;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15) !important;
+      transition: all 0.3s ease-in-out !important;
+      cursor: default !important; /* לא מראה סימן של יד לחיצה בהתחלה */
     }
 
-    wrap.addEventListener('click', () => {
-      if (_fabState === 'quick_ready') {
-        // Open popup → auto-start streaming questions immediately
-        chrome.storage.local.set({
-          [_autoStreamKey(location.href)]: true,
-          [_jobTextKey(location.href)]:    extractJobText(),
-        });
-        _togglePanel();
-      } else {
-        // 'idle', 'loading', or 'ready' → just toggle panel
-        _togglePanel();
+    /* 🔥 מצב כפתור אקטיבי: מופעל רק אחרי שהניתוח עלה והאחוזים מוכנים! */
+    #jma-fab-wrap.jma-fab-clickable {
+      cursor: pointer !important; /* הופך ליד לחיצה */
+      box-shadow: 0 5px 16px rgba(91, 33, 182, 0.45), inset 0 2px 4px rgba(255, 255, 255, 0.3) !important;
+    }
+
+    /* אפקט ריחוף - יעבוד רק כשהכפתור במצב לחיץ */
+    #jma-fab-wrap.jma-fab-clickable:hover {
+      transform: scale(1.08) translateY(-3px) !important;
+      box-shadow: 0 8px 24px rgba(91, 33, 182, 0.65), inset 0 2px 4px rgba(255, 255, 255, 0.4) !important;
+      filter: brightness(1.1);
+    }
+
+    /* אפקט לחיצה פיזי - יעבוד רק כשהכפתור במצב לחיץ */
+    #jma-fab-wrap.jma-fab-clickable:active {
+      transform: scale(0.95) translateY(-1px) !important;
+      box-shadow: 0 3px 8px rgba(91, 33, 182, 0.4) !important;
+    }
+
+    /* סידור אלמנטים פנימיים */
+    .jma-fab-score-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #ffffff;
+      font-family: system-ui, sans-serif;
+      line-height: 1.15;
+    }
+
+    .jma-fab-score-num {
+      font-size: 22px !important;
+      font-weight: 800 !important;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+
+    .jma-fab-score-lbl {
+      font-size: 9px !important;
+      font-weight: bold !important;
+      white-space: nowrap;
+      opacity: 0.95;
+      margin-top: 2px;
+      background: rgba(255, 255, 255, 0.2);
+      padding: 1px 5px;
+      border-radius: 10px;
+    }
+  `;
+  document.head.appendChild(fabStyle);
+
+  if (typeof injectStyles === 'function') injectStyles();
+
+  const wrap = document.createElement('div');
+  wrap.id = 'jma-fab-wrap';
+  wrap.innerHTML = `
+    <svg viewBox="0 0 84 84" width="84" height="84">
+      <defs>
+        <radialGradient id="jma-grad" cx="40%" cy="35%" r="65%">
+          <stop offset="0%" stop-color="#A78BFA"/>
+          <stop offset="100%" stop-color="#5B21B6"/>
+        </radialGradient>
+      </defs>
+      <circle class="jma-fab-bg" cx="42" cy="42" r="41"/>
+      <circle class="jma-fab-track" cx="42" cy="42" r="33"/>
+      <circle class="jma-fab-arc" id="jma-fab-arc" cx="42" cy="42" r="33"/>
+    </svg>
+    <div class="jma-fab-inner" id="jma-fab-inner">
+      <span class="jma-fab-icon">⚡</span>
+      <span class="jma-fab-text">בדיקה<br>מהירה</span>
+    </div>`;
+  document.body.appendChild(wrap);
+
+  // פונקציה שהופכת את העיגול לכפתור לחיץ משתנה רק בסיום הניתוח
+  function _activateFabButton(score) {
+    _fabState = 'quick_ready';
+    wrap.classList.remove('jma-fab-loading');
+    wrap.classList.add('jma-fab-ready');
+    
+    // 🔥 הוספת הקלאס שמפעיל את ה-Hover, ה-Active ומשנה את ה-cursor ללחיץ
+    wrap.classList.add('jma-fab-clickable'); 
+    
+    const inner2 = document.getElementById('jma-fab-inner');
+    if (inner2) {
+      inner2.innerHTML = `
+        <div class="jma-fab-score-container">
+          <span class="jma-fab-score-num">${score}%</span>
+          <span class="jma-fab-score-lbl">התאמה מעמיקה ➔</span>
+        </div>`;
+    }
+  }
+
+  if (cached && cached.base_score != null) {
+    _fabSetScore(cached.base_score);
+    _activateFabButton(cached.base_score);
+  } else {
+    chrome.storage.local.get(['jma_user_profile', 'cvText'], (s) => {
+      if (!window.JMA_Matcher) return;
+      let profile = s.jma_user_profile || null;
+      if (!profile && s.cvText) {
+        profile = _profileFromCvText(s.cvText);
       }
+      if (!profile) return;
+      
+      const { score, bullets } = window.JMA_Matcher.computeScore(profile, jobText);
+      _updateFabArc(score, true);
+
+      // שמירת הנתונים בזיכרון המקומי
+      chrome.storage.local.set({
+        [_localScoreKey(location.href)]:   score,
+        [_localBulletsKey(location.href)]: bullets,
+      });
+      
+      // 1. קודם כל מקפיצים את הנתונים/הבלטים (הסיבות למה האחוז ככה)
+      if (bullets.length > 0) {
+        setTimeout(() => _showFabReasons(bullets), 600);
+      }
+
+      // 2. ורק עכשיו, כשהנתונים עלו, הופכים את העיגול לכפתור לחיץ ומשנים את המראה והטקסט!
+      setTimeout(() => {
+        _activateFabButton(score);
+      }, 700); 
     });
   }
+
+  // לוגיקת הלחיצה - תעבוד רק אם הכפתור כבר סומן כבלחיץ ( clickable )
+  wrap.addEventListener('click', () => {
+    if (!wrap.classList.contains('jma-fab-clickable')) {
+      return; // אם החישוב לא הסתיים, לחיצה לא תעשה כלום
+    }
+
+    const currentUrl = location.href;
+    chrome.storage.local.get([
+      `wizard_step_${currentUrl}`, 
+      `questions_analyzed_${currentUrl}`
+    ], (res) => {
+      const currentStep = res[`wizard_step_${currentUrl}`];
+      const questionsAnalyzed = res[`questions_analyzed_${currentUrl}`];
+
+      if (currentStep === 'analysis' || currentStep === 'settings' || questionsAnalyzed) {
+        _togglePanel(); 
+      } else {
+        chrome.storage.local.set({
+          [_autoStreamKey(currentUrl)]: true,
+          [_jobTextKey(currentUrl)]: extractJobText(),
+          [`wizard_step_${currentUrl}`]: 'questions'
+        }, () => {
+          _togglePanel();
+        });
+      }
+    });
+  });
+}
+  // function _createFabGauge(jobText, cached) {
+  //   injectStyles();
+  //   const wrap = document.createElement('div');
+  //   wrap.id = 'jma-fab-wrap';
+  //   wrap.innerHTML = `
+  //     <svg viewBox="0 0 84 84" width="84" height="84">
+  //       <defs>
+  //         <radialGradient id="jma-grad" cx="40%" cy="35%" r="65%">
+  //           <stop offset="0%" stop-color="#A78BFA"/>
+  //           <stop offset="100%" stop-color="#5B21B6"/>
+  //         </radialGradient>
+  //       </defs>
+  //       <circle class="jma-fab-bg" cx="42" cy="42" r="41"/>
+  //       <circle class="jma-fab-track" cx="42" cy="42" r="33"/>
+  //       <circle class="jma-fab-arc" id="jma-fab-arc" cx="42" cy="42" r="33"/>
+  //     </svg>
+  //     <div class="jma-fab-inner" id="jma-fab-inner">
+  //       <span class="jma-fab-icon">⚡</span>
+  //       <span class="jma-fab-text">בדיקה<br>מהירה</span>
+  //     </div>`;
+  //   document.body.appendChild(wrap);
+
+  //   if (cached && cached.base_score != null) {
+  //     // Preflight cache already has a full AI score — use it directly
+  //     _fabSetScore(cached.base_score);
+  //   } else {
+  //     // ── Stage A: run local matcher immediately, zero network cost ───────
+  //     // Uses the AI-extracted profile (jma_user_profile) when available.
+  //     // Falls back to a stub profile built from raw cvText for users who haven't re-saved yet.
+  //     chrome.storage.local.get(['jma_user_profile', 'cvText'], (s) => {
+  //       if (!window.JMA_Matcher) return;
+  //       let profile = s.jma_user_profile || null;
+  //       if (!profile && s.cvText) {
+  //         // Minimal stub so the matcher has something to work with
+  //         profile = _profileFromCvText(s.cvText);
+  //       }
+  //       if (!profile) return;
+  //       const { score, bullets } = window.JMA_Matcher.computeScore(profile, jobText);
+  //       _fabState = 'quick_ready';
+  //       _updateFabArc(score, true);
+  //       wrap.classList.remove('jma-fab-loading');
+  //       wrap.classList.add('jma-fab-ready');
+  //       const inner2 = document.getElementById('jma-fab-inner');
+  //       if (inner2) {
+  //         const color = score >= 75 ? '#3fb950' : score >= 55 ? '#d29922' : score >= 35 ? '#e3812b' : '#f85149';
+  //         inner2.innerHTML = `
+  //           <span class="jma-fab-score-num" style="color:${color}">${score}</span>
+  //           <span class="jma-fab-score-pct">%</span>
+  //           <span class="jma-fab-score-lbl">▶ ניתוח מעמיק</span>`;
+  //       }
+  //       // Persist local score so popup can read it as initial baseScore
+  //       chrome.storage.local.set({
+  //         [_localScoreKey(location.href)]:   score,
+  //         [_localBulletsKey(location.href)]: bullets,
+  //       });
+  //       // Show reason pills briefly (staggered fade-in)
+  //       if (bullets.length > 0) setTimeout(() => _showFabReasons(bullets), 600);
+  //     });
+  //   }
+
+  //   wrap.addEventListener('click', () => {
+  //     if (_fabState === 'quick_ready') {
+  //       // Open popup → auto-start streaming questions immediately
+  //       chrome.storage.local.set({
+  //         [_autoStreamKey(location.href)]: true,
+  //         [_jobTextKey(location.href)]:    extractJobText(),
+  //       });
+  //       _togglePanel();
+  //     } else {
+  //       // 'idle', 'loading', or 'ready' → just toggle panel
+  //       _togglePanel();
+  //     }
+  //   });
+  // }
 
   function _fabStartProgress() {
     _fabProgress = 5;
