@@ -1157,7 +1157,6 @@ All Hebrew characters must be output as valid, clean UTF-8 strings inside the JS
 class ExtractProfileRequest(BaseModel):
     cvText: str
 
-
 @app.post("/api/extract-profile")
 async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[str] = Header(None)):
     """Extract a structured skills/experience profile from raw CV text using Claude."""
@@ -1173,65 +1172,119 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
     system_blocks = [
         {
             "type": "text",
-            "text": EXTRACT_PROFILE_SYSTEM,
+            "text": EXTRACT_PROFILE_SYSTEM + "\n\nIMPORTANT: Return ONLY raw JSON. No conversational text, no markdown wrappers like ```json.",
             "cache_control": {"type": "ephemeral"},
         }
     ]
     user_content = f"=== CANDIDATE CV ===\n{body.cvText[:6000]}\n=== END CV ==="
 
     try:
+        # שימוש במזהה הרשמי המדויק מתוך טבלת הדוקומנטציה שלך (image_c410de.png)
         raw, stop = await call_claude_cached(
             system_blocks=system_blocks,
             user_content=user_content,
             max_tokens=8192,
-            model="claude-sonnet-5",
+            model="claude-sonnet-5",  # מבוסס על ה-Claude API ID מהטבלה שלך
         )
         if stop == "max_tokens":
             print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
-        profile = parse_json_response(raw)
+            
+        # רשת ביטחון: אם המודל החדש החזיר טיפוס מורכב (Union) ולא מחרוזת נקייה, נחלץ את הטקסט בבטחה
+        if hasattr(raw, "text"):
+            raw_text = raw.text
+        elif isinstance(raw, list) and len(raw) > 0 and hasattr(raw[0], "text"):
+            raw_text = raw[0].text
+        else:
+            raw_text = str(raw)
+
+        profile = parse_json_response(raw_text)
+        
         if not isinstance(profile, dict) or "experience" not in profile:
             raise ValueError("Invalid profile shape")
+            
         from fastapi.responses import JSONResponse
         return JSONResponse(content={"profile": profile}, media_type="application/json; charset=utf-8")
+        
     except HTTPException:
         raise
     except Exception as e:
         print(f"[JMA:extract_profile] {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail="Profile extraction failed")
 
+# @app.post("/api/extract-profile")
+# async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[str] = Header(None)):
+#     """Extract a structured skills/experience profile from raw CV text using Claude."""
+#     license_key = x_license_key or ""
+#     try:
+#         await verify_gumroad_license(license_key)
+#     except Exception:
+#         raise HTTPException(status_code=403, detail="Invalid license")
 
-class QuickScoreRequest(BaseModel):
-    cvText: str = ""
-    jobText: str = ""
+#     if not body.cvText or len(body.cvText.strip()) < 50:
+#         raise HTTPException(status_code=422, detail="CV text too short")
+
+#     system_blocks = [
+#         {
+#             "type": "text",
+#             "text": EXTRACT_PROFILE_SYSTEM,
+#             "cache_control": {"type": "ephemeral"},
+#         }
+#     ]
+#     user_content = f"=== CANDIDATE CV ===\n{body.cvText[:6000]}\n=== END CV ==="
+
+#     try:
+#         raw, stop = await call_claude_cached(
+#             system_blocks=system_blocks,
+#             user_content=user_content,
+#             max_tokens=8192,
+#             model="claude-sonnet-5",
+#         )
+#         if stop == "max_tokens":
+#             print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
+#         profile = parse_json_response(raw)
+#         if not isinstance(profile, dict) or "experience" not in profile:
+#             raise ValueError("Invalid profile shape")
+#         from fastapi.responses import JSONResponse
+#         return JSONResponse(content={"profile": profile}, media_type="application/json; charset=utf-8")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"[JMA:extract_profile] {type(e).__name__}: {e}")
+#         raise HTTPException(status_code=500, detail="Profile extraction failed")
 
 
-@app.post("/api/quick-score")
-async def quick_score(body: QuickScoreRequest):
-    """Ultra-fast match percentage + short reason bullets. Uses cheapest model, no auth."""
-    if not body.cvText or not body.jobText:
-        return {"score": 0, "bullets": []}
-    he_chars = sum(1 for c in body.jobText[:300] if "א" <= c <= "ת")
-    lang = "Hebrew" if he_chars > 20 else "English"
-    prompt = (
-        f"Score how well this CV matches this job (0–100). Reply JSON only.\n\n"
-        f"CV:\n{body.cvText[:900]}\n\nJob:\n{body.jobText[:900]}\n\n"
-        f'Reply: {{"score": <0-100>, "bullets": ["✅ short reason", "❌ short reason", "✅ short reason"]}}\n'
-        f"3–4 bullets, each under 35 chars, in {lang}. No extra text."
-    )
-    try:
-        resp = await anthropic_client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=110,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        data = _safe_json_loads(resp.content[0].text.strip())
-        return {
-            "score": max(0, min(100, int(data.get("score", 0)))),
-            "bullets": (data.get("bullets") or [])[:4],
-        }
-    except Exception as e:
-        print(f"[JMA:quick_score] {e}")
-        return {"score": 0, "bullets": []}
+# class QuickScoreRequest(BaseModel):
+#     cvText: str = ""
+#     jobText: str = ""
+
+
+# @app.post("/api/quick-score")
+# async def quick_score(body: QuickScoreRequest):
+#     """Ultra-fast match percentage + short reason bullets. Uses cheapest model, no auth."""
+#     if not body.cvText or not body.jobText:
+#         return {"score": 0, "bullets": []}
+#     he_chars = sum(1 for c in body.jobText[:300] if "א" <= c <= "ת")
+#     lang = "Hebrew" if he_chars > 20 else "English"
+#     prompt = (
+#         f"Score how well this CV matches this job (0–100). Reply JSON only.\n\n"
+#         f"CV:\n{body.cvText[:900]}\n\nJob:\n{body.jobText[:900]}\n\n"
+#         f'Reply: {{"score": <0-100>, "bullets": ["✅ short reason", "❌ short reason", "✅ short reason"]}}\n'
+#         f"3–4 bullets, each under 35 chars, in {lang}. No extra text."
+#     )
+#     try:
+#         resp = await anthropic_client.messages.create(
+#             model="claude-haiku-4-5-20251001",
+#             max_tokens=110,
+#             messages=[{"role": "user", "content": prompt}],
+#         )
+#         data = _safe_json_loads(resp.content[0].text.strip())
+#         return {
+#             "score": max(0, min(100, int(data.get("score", 0)))),
+#             "bullets": (data.get("bullets") or [])[:4],
+#         }
+#     except Exception as e:
+#         print(f"[JMA:quick_score] {e}")
+#         return {"score": 0, "bullets": []}
 
 
 class AnalyzeStreamRequest(BaseModel):
