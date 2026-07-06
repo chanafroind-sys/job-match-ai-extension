@@ -453,7 +453,7 @@ async def call_claude_cached(
     system_blocks: list,
     user_content: str,
     max_tokens: int = 1200,
-    model: str = "claude-sonnet-5",
+    model: str = "claude-sonnet-4-6",
 ) -> tuple[str, str]:
     """Call Claude with a cached system prompt. Returns (text, stop_reason)."""
     total_sys = sum(len(b.get("text", "")) for b in system_blocks)
@@ -877,7 +877,7 @@ def _resolve_model(model_alias: str) -> str:
         return "claude-fable-5"
     if model_alias == "haiku":
         return "claude-haiku-4-5-20251001"
-    return "claude-sonnet-5"  # default
+    return "claude-sonnet-4-6"  # default
 
 # ── Request / Response models ─────────────────────────────────────────────────
 
@@ -890,7 +890,7 @@ class AnalyzeRequest(BaseModel):
     jobText: str
     answers: list = []
     preflight: bool = False
-    model: str = "claude-sonnet-5"
+    model: str = "claude-sonnet-4-6"
 
 class GenerateCVRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -1184,7 +1184,7 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
             system_blocks=system_blocks,
             user_content=user_content,
             max_tokens=8192,
-            model="claude-sonnet-5",  # מבוסס על ה-Claude API ID מהטבלה שלך
+            model="claude-sonnet-4-6",  # מבוסס על ה-Claude API ID מהטבלה שלך
         )
         if stop == "max_tokens":
             print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
@@ -1237,7 +1237,7 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
 #             system_blocks=system_blocks,
 #             user_content=user_content,
 #             max_tokens=8192,
-#             model="claude-sonnet-5",
+#             model="claude-sonnet-4-6",
 #         )
 #         if stop == "max_tokens":
 #             print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
@@ -1292,13 +1292,13 @@ class AnalyzeStreamRequest(BaseModel):
     jobText: str = ""
     answers: list[dict] = []
     userConstraints: str = ""
-    model: str = "claude-sonnet-5"
+    model: str = "claude-sonnet-4-6"
 
 
 class StreamQuestionsRequest(BaseModel):
     cvText:     str = ""
     jobText:    str = ""
-    model:      str = "claude-sonnet-5"
+    model:      str = "claude-sonnet-4-6"
     baseScore:  int = -1
     gapPct:     int = -1
 
@@ -1544,7 +1544,7 @@ async def stream_questions_endpoint(
             )
             try:
                 async with anthropic_client.messages.stream(
-                    model="claude-sonnet-5",
+                    model="claude-sonnet-4-6",
                     max_tokens=700,
                     system=sys_blocks,
                     messages=[{"role": "user", "content": prompt}],
