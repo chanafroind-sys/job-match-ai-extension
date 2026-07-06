@@ -453,7 +453,7 @@ async def call_claude_cached(
     system_blocks: list,
     user_content: str,
     max_tokens: int = 1200,
-    model: str = "claude-3-5-sonnet",
+    model: str = "sonnet",
 ) -> tuple[str, str]:
     """Call Claude with a cached system prompt. Returns (text, stop_reason)."""
     total_sys = sum(len(b.get("text", "")) for b in system_blocks)
@@ -877,7 +877,7 @@ def _resolve_model(model_alias: str) -> str:
         return "claude-fable-5"
     if model_alias == "haiku":
         return "claude-haiku-4-5-20251001"
-    return "claude-3-5-sonnet"  # default
+    return "sonnet"  # default
 
 # ── Request / Response models ─────────────────────────────────────────────────
 
@@ -1184,7 +1184,7 @@ async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[s
             system_blocks=system_blocks,
             user_content=user_content,
             max_tokens=8192,
-            model="claude-3-5-sonnet",
+            model="sonnet",
         )
         if stop == "max_tokens":
             print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
@@ -1491,7 +1491,7 @@ async def stream_questions_endpoint(
             )
             try:
                 async with anthropic_client.messages.stream(
-                    model="claude-3-5-sonnet",
+                    model="sonnet",
                     max_tokens=700,
                     system=sys_blocks,
                     messages=[{"role": "user", "content": prompt}],
