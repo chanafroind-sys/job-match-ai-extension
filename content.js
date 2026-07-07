@@ -4,52 +4,66 @@ async function getRecentJobsArray() {
   return res.jma_recent_jobs || [];
 }
 
-// הפונקציה נשארת עם פרמטר אחד בלבד (updates) כמו בקוד המקורי שלך!
+// 🛡️ רשימה לבנה - חייבת להיות זהה לזו שב-popup.js!
+const JOB_FIELDS = [
+  'url', 'jobUrl', 'jobText', 'jobTitle', 'jobPlatform', 'jobLanguage',
+  'wizard_step', 'baseScore', 'bullets', 'ts', 'activelyOpened',
+  'analysis', 'questions', 'answers', 'generatedCV', 'coverLetterText',
+  'cvLanguage', 'gapPct'
+];
+
+function _pickJobFields(obj) {
+  const out = {};
+  if (!obj) return out;
+  for (const k of JOB_FIELDS) {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
+}
+
 async function saveJobState(updates) {
-  // חילוץ אוטומטי של ה-URL בהתאם לסביבה שבה הקוד רץ
-  const url = (typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null);
-  
+  // ב-content script רץ בתוך עמוד המשרה - location.href הוא ה-URL הנכון
+  const url = (typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl
+            : (typeof location !== 'undefined' ? location.href : null);
+
   if (!url) return;
-  
+
   let jobs = await getRecentJobsArray();
   const existingIndex = jobs.findIndex(j => j.url === url);
-  
-  // מיזוג נתונים קודמים בתוך מערך ה-5
+
   let jobData = existingIndex !== -1 ? jobs[existingIndex] : { url, ts: Date.now() };
-  jobData = { ...jobData, ...updates, ts: Date.now() };
+  jobData = { ...jobData, ..._pickJobFields(updates), url, ts: Date.now() };
 
   if (existingIndex !== -1) {
-    jobs.splice(existingIndex, 1); // הקפצה לראש הרשימה
+    jobs.splice(existingIndex, 1);
   }
-  
+
   jobs.unshift(jobData);
-  
-  // חוק 5 המשרות - מונע סלט ועומס בסטורג'
+
   if (jobs.length > 5) {
     jobs = jobs.slice(0, 5);
   }
-  
+
   await chrome.storage.local.set({ 'jma_recent_jobs': jobs });
 }
 
-// גם כאן, אם לא נשלח URL, נחלץ אותו אוטומטית
 async function loadJobState(url) {
-  const targetUrl = url || ((typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null));
-  
+  const targetUrl = url || ((typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl
+                 : (typeof location !== 'undefined' ? location.href : null));
+
   if (!targetUrl) return null;
-  
+
   const jobs = await getRecentJobsArray();
   const job = jobs.find(j => j.url === targetUrl);
-  
+
   if (!job) return null;
-  
-  // בדיקת תוקף של 4 שעות (כמו הלוגיקה המקורית שלך ב-image_d1cb20.png)
+
   if ((Date.now() - job.ts) > 4 * 60 * 60 * 1000) {
     const filteredJobs = jobs.filter(j => j.url !== targetUrl);
     await chrome.storage.local.set({ 'jma_recent_jobs': filteredJobs });
     return null;
   }
-  
+
   return job;
 }
 (() => {
@@ -477,9 +491,9 @@ function _createFabGauge(jobText, cached) {
     }
   }
 
-  if (cached && cached.base_score != null) {
-    _fabSetScore(cached.base_score);
-    _activateFabButton(cached.base_score);
+  if (cached && cached.baseScore != null && cached.baseScore > 0) {
+    _fabSetScore(cached.baseScore);
+    _activateFabButton(cached.baseScore);
 } else {
     chrome.storage.local.get(['jma_user_profile', 'cvText'], async (s) => {
       if (!window.JMA_Matcher) return;

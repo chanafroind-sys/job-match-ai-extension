@@ -21,6 +21,10 @@ let stateQ = {
   gapPct: 0,      // max points available from answering questions
 };
 
+// alias תאימות - כל הקוד הקיים משתמש ב-state וזה אותו אובייקט כמו stateQ,
+// וההפרדה האמיתית נאכפת ברמת ה-Storage ע"י whitelist ב-saveJobState.
+const state = stateQ;
+
 let cvOptions = { language: 'english', format: 'docx', coverLetter: false, tracking: true, model: 'sonnet' };
 
 // ── Monthly quota constants ────────────────────────────────────────────────────
@@ -35,52 +39,65 @@ async function getRecentJobsArray() {
   return res.jma_recent_jobs || [];
 }
 
-// הפונקציה נשארת עם פרמטר אחד בלבד (updates) כמו בקוד המקורי שלך!
+// 🛡️ רשימה לבנה: רק השדות האלה מותרים להיכנס לרשומת משרה בסטורג'.
+const JOB_FIELDS = [
+  'url', 'jobUrl', 'jobText', 'jobTitle', 'jobPlatform', 'jobLanguage',
+  'wizard_step', 'baseScore', 'bullets', 'ts', 'activelyOpened',
+  'analysis', 'questions', 'answers', 'generatedCV', 'coverLetterText',
+  'cvLanguage', 'gapPct'
+];
+
+function _pickJobFields(obj) {
+  const out = {};
+  if (!obj) return out;
+  for (const k of JOB_FIELDS) {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
+}
+
 async function saveJobState(updates) {
-  const url = (typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null);
-  if (!url) return;
-  
+  // 🔥 בפופ-אפ אסור location.href (יהיה chrome-extension://). URL רק מהסטייט.
+  const url = stateQ.jobUrl;
+  if (!url || url.startsWith('chrome-extension://')) {
+    console.warn('[JMA] saveJobState skipped - no valid job URL in stateQ');
+    return;
+  }
+
   let jobs = await getRecentJobsArray();
   const existingIndex = jobs.findIndex(j => j.url === url);
-  
-  // 🔹 תיקון: אם המשרה חדשה במערך, ניקח את כל ה-state הנוכחי כבסיס (אם הוא קיים)
-  const fallbackBase = (typeof state !== 'undefined') ? state : { url };
-  let jobData = existingIndex !== -1 ? jobs[existingIndex] : fallbackBase;
-  
-  // מיזוג מוגן - שומר על הקיים ומעדכן רק את השינויים החדשים
-  jobData = { ...jobData, ...updates, url, ts: Date.now() };
+
+  let jobData = existingIndex !== -1 ? jobs[existingIndex] : { url, ts: Date.now() };
+  jobData = { ...jobData, ..._pickJobFields(updates), url, ts: Date.now() };
 
   if (existingIndex !== -1) {
-    jobs.splice(existingIndex, 1); // הקפצה לראש הרשימה
+    jobs.splice(existingIndex, 1);
   }
-  
+
   jobs.unshift(jobData);
-  
+
   if (jobs.length > 5) {
     jobs = jobs.slice(0, 5);
   }
-  
+
   await chrome.storage.local.set({ 'jma_recent_jobs': jobs });
 }
 
-// גם כאן, אם לא נשלח URL, נחלץ אותו אוטומטית
 async function loadJobState(url) {
-  const targetUrl = url || ((typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null));
-  
-  if (!targetUrl) return null;
-  
+  const targetUrl = url || stateQ.jobUrl || null;
+  if (!targetUrl || targetUrl.startsWith('chrome-extension://')) return null;
+
   const jobs = await getRecentJobsArray();
   const job = jobs.find(j => j.url === targetUrl);
-  
+
   if (!job) return null;
-  
-  // בדיקת תוקף של 4 שעות (כמו הלוגיקה המקורית שלך ב-image_d1cb20.png)
+
   if ((Date.now() - job.ts) > 4 * 60 * 60 * 1000) {
     const filteredJobs = jobs.filter(j => j.url !== targetUrl);
     await chrome.storage.local.set({ 'jma_recent_jobs': filteredJobs });
     return null;
   }
-  
+
   return job;
 }
 async function updateJobData(newDataObj) {
@@ -2340,17 +2357,14 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
   document.body.removeChild(a);
 });
 (async () => {
-  // 1. בדיקת רישיון
   const licensed = await checkLicense();
   if (!licensed) { showScreen('license'); return; }
 
   try {
-    // 2. הבאת הטאב וה-URL הנוכחי
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const tabUrl = tab?.url || '';
     if (!tabUrl) { await showReadyScreen(); return; }
 
-    // 3. בדיקה אם המשתמש עבר לינק - איפוס זיכרון מקומי בשינוי כתובת
     if (state.jobUrl && state.jobUrl !== tabUrl) {
       console.log('[JMA:init] Detected URL change. Resetting current job memory state.');
       state.questions = [];
@@ -2359,41 +2373,23 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
       state.generatedCV = null;
     }
 
-    // 4. שמירה ועדכון הנתונים הבסיסיים של המשרה הנוכחית ב-state המקומי
+    // ⚠️ קריטי: URL ב-state לפני כל קריאה ל-saveJobState!
     state.jobUrl = tabUrl;
 
-    // 5. שליפת נתוני משתמש גלובליים
     const storageData = await chrome.storage.local.get(['licenseKey', 'cvText']);
     state.licenseKey = storageData.licenseKey || '';
     state.cvText = storageData.cvText || '';
 
-    // 6. טעינת מצב המשרה מתוך מערך 5 המשרות המאוחד בסטורג'
     const saved = await loadJobState(tabUrl);
-
     console.log('[JMA:init] Raw data loaded from storage for this URL:', saved);
 
     if (saved && saved.wizard_step) {
-      
-      // ─── תרחיש א': משרה מוכרת בתוך ה-5 ───
       console.log(`[JMA:init] Found existing job state with step: ${saved.wizard_step}. Restoring...`);
-      
-      // 🔥 תיקון: העתקה בטוחה ומלאה של כל השדות לתוך ה-state הגלובלי עוד לפני הבדיקות
-      Object.assign(state, saved); 
-      
-      // if (typeof restoreSavedState === 'function') {
-      //   restoreSavedState(saved);
-      // }
+      Object.assign(state, saved);
 
-      // בדיקה: אם השלב הוא שאלות, אבל אין שאלות שמורות במערך - נפעיל את ההזרמה
       if (state.wizard_step === 'questions' && (!state.questions || state.questions.length === 0)) {
-        console.log('[JMA:init] Step is questions but no questions found in storage. Starting stream...');
-        
-        // 🔥 תיקון: שומרים את הסטייט המלא הקיים, לא דורסים ולא מחסירים שדות!
-        await saveJobState({
-          ...state,
-          wizard_step: 'questions'
-        });
-
+        console.log('[JMA:init] Step is questions but no questions found. Starting stream...');
+        await saveJobState({ ...state, wizard_step: 'questions' });
         await streamQuestionsIntoScreen();
       } else {
         routeToCorrectScreen(state);
@@ -2401,32 +2397,15 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
       return;
 
     } else {
-      // ─── תרחיש ב': משרה חדשה באשף (נלחצה הרגע ב-FAB) ───
-      console.log('[JMA:init] New job detected in wizard. Initializing and streaming questions...');
-      
-      if (saved) {
-        // 🔥 תיקון: שופכים את כל הנתונים העשירים שה-FAB אסף (כותרת, פלטפורמה, שפה) ישירות לסטייט
-        Object.assign(state, saved);
-      } else {
-        state.jobText = '';
-        state.baseScore = 0;
-      }
-      
-      state.wizard_step = 'questions';
-
-      // 🔥 תיקון: שומרים את האובייקט המלא (כולל הכותרת והפלטפורמה), לא רק 3 שדות!
-      await saveJobState({
-        ...state,
-        wizard_step: 'questions'
-      });
-
-      // מפעילים מיד את הזרמת השאלות למסך כשהסטייט מלא לגמרי
-      await streamQuestionsIntoScreen();
+      // פתיחה ידנית על עמוד לא מוכר = מסך Ready.
+      // הזרמת שאלות אוטומטית קורית רק דרך ה-FAB (שנתפס בתרחיש למעלה).
+      console.log('[JMA:init] No saved job for this URL. Showing ready screen.');
+      await showReadyScreen();
       return;
     }
 
-  } catch (e) { 
-    console.error('[JMA:init] Error during initialization:', e); 
+  } catch (e) {
+    console.error('[JMA:init] Error during initialization:', e);
     await showReadyScreen();
   }
 })();
