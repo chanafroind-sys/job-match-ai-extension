@@ -1,8 +1,12 @@
+
 // State
-let state = {
+let stateG = {
   licenseKey: '',
   cvText: '',
   cvName: '',
+};
+// State
+let stateQ = {
   jobText: '',
   jobLanguage: 'english',
   jobPlatform: '',
@@ -25,7 +29,67 @@ const QUOTA_LIMITS = {
   standard: { sonnet: 30, fable: 5  },
   premium:  { sonnet: Infinity, fable: 20 },
 };
+// פונקציית עזר פנימית לשליפת המערך המלא של 5 המשרות מהסטורג'
+async function getRecentJobsArray() {
+  const res = await chrome.storage.local.get(['jma_recent_jobs']);
+  return res.jma_recent_jobs || [];
+}
 
+// הפונקציה נשארת עם פרמטר אחד בלבד (updates) כמו בקוד המקורי שלך!
+async function saveJobState(updates) {
+  const url = (typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null);
+  if (!url) return;
+  
+  let jobs = await getRecentJobsArray();
+  const existingIndex = jobs.findIndex(j => j.url === url);
+  
+  // 🔹 תיקון: אם המשרה חדשה במערך, ניקח את כל ה-state הנוכחי כבסיס (אם הוא קיים)
+  const fallbackBase = (typeof state !== 'undefined') ? state : { url };
+  let jobData = existingIndex !== -1 ? jobs[existingIndex] : fallbackBase;
+  
+  // מיזוג מוגן - שומר על הקיים ומעדכן רק את השינויים החדשים
+  jobData = { ...jobData, ...updates, url, ts: Date.now() };
+
+  if (existingIndex !== -1) {
+    jobs.splice(existingIndex, 1); // הקפצה לראש הרשימה
+  }
+  
+  jobs.unshift(jobData);
+  
+  if (jobs.length > 5) {
+    jobs = jobs.slice(0, 5);
+  }
+  
+  await chrome.storage.local.set({ 'jma_recent_jobs': jobs });
+}
+
+// גם כאן, אם לא נשלח URL, נחלץ אותו אוטומטית
+async function loadJobState(url) {
+  const targetUrl = url || ((typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null));
+  
+  if (!targetUrl) return null;
+  
+  const jobs = await getRecentJobsArray();
+  const job = jobs.find(j => j.url === targetUrl);
+  
+  if (!job) return null;
+  
+  // בדיקת תוקף של 4 שעות (כמו הלוגיקה המקורית שלך ב-image_d1cb20.png)
+  if ((Date.now() - job.ts) > 4 * 60 * 60 * 1000) {
+    const filteredJobs = jobs.filter(j => j.url !== targetUrl);
+    await chrome.storage.local.set({ 'jma_recent_jobs': filteredJobs });
+    return null;
+  }
+  
+  return job;
+}
+async function updateJobData(newDataObj) {
+  // 1. מעדכנים מיד את הסטייט המקומי בזיכרון (RAM)
+  Object.assign(state, newDataObj);
+
+  // 2. מעדכנים במקביל את ה-Storage המאוחד (דיסק)
+  await saveJobState(newDataObj); 
+}
 async function _getUsage() {
   const s = await chrome.storage.local.get([QUOTA_STORAGE_KEY, 'jma_is_premium']);
   const now = new Date();
@@ -102,19 +166,19 @@ function _localScoreKey(url)   { return `jma_local_score_${_urlHash(url)}`; }
 function _localBulletsKey(url) { return `jma_local_bullets_${_urlHash(url)}`; }
 function _navKey(url)          { return `jma_nav_${_urlHash(url)}`; }
 
-async function saveJobState(updates) {
-  if (!state.jobUrl) return;
-  const key = jobStateKey(state.jobUrl);
-  const prev = (await chrome.storage.local.get([key]))[key] || {};
-  await chrome.storage.local.set({ [key]: { ...prev, ...updates, url: state.jobUrl, ts: Date.now() } });
-}
-async function loadJobState(url) {
-  if (!url) return null;
-  const key = jobStateKey(url);
-  const d = (await chrome.storage.local.get([key]))[key];
-  if (!d || (Date.now() - d.ts) > 4 * 60 * 60 * 1000) return null;
-  return d;
-}
+// async function saveJobState(updates) {
+//   if (!state.jobUrl) return;
+//   const key = jobStateKey(state.jobUrl);
+//   const prev = (await chrome.storage.local.get([key]))[key] || {};
+//   await chrome.storage.local.set({ [key]: { ...prev, ...updates, url: state.jobUrl, ts: Date.now() } });
+// }
+// async function loadJobState(url) {
+//   if (!url) return null;
+//   const key = jobStateKey(url);
+//   const d = (await chrome.storage.local.get([key]))[key];
+//   if (!d || (Date.now() - d.ts) > 4 * 60 * 60 * 1000) return null;
+//   return d;
+// }
 
 // Typewriter effect — fills el.textContent character by character
 function _typewriter(el, text, speed = 16) {
@@ -991,6 +1055,8 @@ function _appendQuestionsOptions(container) {
 // question is inserted the moment q_open arrives — before the sentence ends —
 // so the user can start typing while remaining questions are still streaming.
 async function streamQuestionsIntoScreen() {
+  console.log('[JMA:stream] streaming questions into screen...');
+  console.log(state);
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
   state.questions      = [];
   state.questionScores = {};
@@ -1039,6 +1105,9 @@ async function streamQuestionsIntoScreen() {
                    : btn.dataset.val === '40'  ? 'מכיר את התחום ברמה תיאורטית.'
                    : 'אין לי ניסיון בתחום זה.';
         }
+        if (state.questions[i]) {
+          state.answers[i] = ta ? ta.value : btn.textContent;
+        }
         _updateQuestionsScore();
       });
     });
@@ -1048,6 +1117,7 @@ async function streamQuestionsIntoScreen() {
       _scoreDebounceTimer = setTimeout(() => {
         const i = parseInt(ta.dataset.idx);
         state.questionScores[i] = _analyzeAnswer(ta.value);
+        state.answers[i] = ta.value;
         ta.closest('.question-card')?.querySelectorAll('.qa-btn')
           .forEach(b => b.classList.remove('selected'));
         _updateQuestionsScore();
@@ -2269,10 +2339,8 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
   a.click();
   document.body.removeChild(a);
 });
-
-// ── Init ───────────────────────────────────────────────────────────────────────
 (async () => {
-  // 1. בדיקת רישיון קודם כל
+  // 1. בדיקת רישיון
   const licensed = await checkLicense();
   if (!licensed) { showScreen('license'); return; }
 
@@ -2282,74 +2350,79 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
     const tabUrl = tab?.url || '';
     if (!tabUrl) { await showReadyScreen(); return; }
 
-    // 3. בדיקה אם המשתמש עבר לינק (שינוי משרה בלינקדאין)
-    // אם ה-URL הנוכחי שונה ממה שהיה שמור בתוך ה-state הגלובלי, מאתחלים את ה-state
+    // 3. בדיקה אם המשתמש עבר לינק - איפוס זיכרון מקומי בשינוי כתובת
     if (state.jobUrl && state.jobUrl !== tabUrl) {
-      console.log('[JMA:init] Detected URL change. Resetting current job state.');
-      // מנקים רק נתונים ספציפיים למשרה הקודמת כדי לא לערבב
+      console.log('[JMA:init] Detected URL change. Resetting current job memory state.');
       state.questions = [];
       state.answers = [];
       state.analysis = null;
       state.generatedCV = null;
     }
 
-    // 4. שמירה ועדכון הנתונים הבסיסיים של המשרה הנוכחית בכל מקרה
+    // 4. שמירה ועדכון הנתונים הבסיסיים של המשרה הנוכחית ב-state המקומי
     state.jobUrl = tabUrl;
-    state.jobPlatform = tabUrl.includes('linkedin.com') ? 'linkedin' : 'other';
-    // כאן אפשר להוסיף חילוץ של כותרת המשרה או אלמנטים נוספים במידת הצורך
 
-    // 5. שליפת המפתחות של ה-FAB וה-Storage
-    const asKey = _autoStreamKey(tabUrl);
-    const jtKey = _jobTextKey(tabUrl);
-    const lsKey = _localScoreKey(tabUrl);
-    
-    const storageData = await chrome.storage.local.get([asKey, jtKey, 'licenseKey', 'cvText', lsKey]);
-    const cameFromFAB = !!storageData[asKey]; // דגל: האם הגענו בלחיצה על ה-FAB
-
-    // טעינת רישיון וקורות חיים בסיסיים
+    // 5. שליפת נתוני משתמש גלובליים
+    const storageData = await chrome.storage.local.get(['licenseKey', 'cvText']);
     state.licenseKey = storageData.licenseKey || '';
     state.cvText = storageData.cvText || '';
 
-    // 6. טעינת מצב המשרה מתוך ה-Storage (בודק אם קיימת ומה הסטטוס שלה)
+    // 6. טעינת מצב המשרה מתוך מערך 5 המשרות המאוחד בסטורג'
     const saved = await loadJobState(tabUrl);
 
-    // הגדרת תנאי: האם למשרה הזו יש כבר סטטוס/מצב מתקדם כלשהו?
-    const hasAdvancedStatus = saved && (
-      (saved.questions && saved.questions.length > 0) || 
-      saved.analysis || 
-      saved.generatedCV
-    );
+    console.log('[JMA:init] Raw data loaded from storage for this URL:', saved);
 
-    if (cameFromFAB) {
-      // ─── תרחיש א': לחיצה על ה-FAB ───
-      await chrome.storage.local.remove([asKey]); // מנקים את הדגל
+    if (saved && saved.wizard_step) {
+      
+      // ─── תרחיש א': משרה מוכרת בתוך ה-5 ───
+      console.log(`[JMA:init] Found existing job state with step: ${saved.wizard_step}. Restoring...`);
+      
+      // 🔥 תיקון: העתקה בטוחה ומלאה של כל השדות לתוך ה-state הגלובלי עוד לפני הבדיקות
+      Object.assign(state, saved); 
+      
+      // if (typeof restoreSavedState === 'function') {
+      //   restoreSavedState(saved);
+      // }
 
-      if (hasAdvancedStatus) {
-        // משרה קיימת עם התקדמות -> משחזרים ומציגים
-        restoreSavedState(saved);
-        routeToCorrectScreen(saved);
-        return;
-      } else {
-        // משרה חדשה לחלוטין או קיימת ללא סטטוס (רק נשמרה) -> ישר לשאלות!
-        state.jobText = storageData[jtKey] || (saved ? saved.jobText : '');
-        state.baseScore = storageData[lsKey] || (saved ? saved.baseScore : 0);
+      // בדיקה: אם השלב הוא שאלות, אבל אין שאלות שמורות במערך - נפעיל את ההזרמה
+      if (state.wizard_step === 'questions' && (!state.questions || state.questions.length === 0)) {
+        console.log('[JMA:init] Step is questions but no questions found in storage. Starting stream...');
+        
+        // 🔥 תיקון: שומרים את הסטייט המלא הקיים, לא דורסים ולא מחסירים שדות!
+        await saveJobState({
+          ...state,
+          wizard_step: 'questions'
+        });
+
         await streamQuestionsIntoScreen();
-        return;
+      } else {
+        routeToCorrectScreen(state);
       }
+      return;
 
     } else {
-      // ─── תרחיש ב': פתיחה רגילה (לא מה-FAB) ───
+      // ─── תרחיש ב': משרה חדשה באשף (נלחצה הרגע ב-FAB) ───
+      console.log('[JMA:init] New job detected in wizard. Initializing and streaming questions...');
       
-      if (hasAdvancedStatus) {
-        // משרה קיימת עם התקדמות -> משחזרים ומציגים
-        restoreSavedState(saved);
-        routeToCorrectScreen(saved);
-        return;
+      if (saved) {
+        // 🔥 תיקון: שופכים את כל הנתונים העשירים שה-FAB אסף (כותרת, פלטפורמה, שפה) ישירות לסטייט
+        Object.assign(state, saved);
       } else {
-        // משרה חדשה לחלוטין או קיימת ללא סטטוס (רק נשמרה) -> מראים מסך Ready
-        await showReadyScreen();
-        return;
+        state.jobText = '';
+        state.baseScore = 0;
       }
+      
+      state.wizard_step = 'questions';
+
+      // 🔥 תיקון: שומרים את האובייקט המלא (כולל הכותרת והפלטפורמה), לא רק 3 שדות!
+      await saveJobState({
+        ...state,
+        wizard_step: 'questions'
+      });
+
+      // מפעילים מיד את הזרמת השאלות למסך כשהסטייט מלא לגמרי
+      await streamQuestionsIntoScreen();
+      return;
     }
 
   } catch (e) { 
@@ -2357,6 +2430,94 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
     await showReadyScreen();
   }
 })();
+
+// // ── Init ───────────────────────────────────────────────────────────────────────
+// (async () => {
+//   // 1. בדיקת רישיון קודם כל
+//   const licensed = await checkLicense();
+//   if (!licensed) { showScreen('license'); return; }
+
+//   try {
+//     // 2. הבאת הטאב וה-URL הנוכחי
+//     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+//     const tabUrl = tab?.url || '';
+//     if (!tabUrl) { await showReadyScreen(); return; }
+
+//     // 3. בדיקה אם המשתמש עבר לינק (שינוי משרה בלינקדאין)
+//     // אם ה-URL הנוכחי שונה ממה שהיה שמור בתוך ה-state הגלובלי, מאתחלים את ה-state
+//     if (state.jobUrl && state.jobUrl !== tabUrl) {
+//       console.log('[JMA:init] Detected URL change. Resetting current job state.');
+//       // מנקים רק נתונים ספציפיים למשרה הקודמת כדי לא לערבב
+//       state.questions = [];
+//       state.answers = [];
+//       state.analysis = null;
+//       state.generatedCV = null;
+//     }
+
+//     // 4. שמירה ועדכון הנתונים הבסיסיים של המשרה הנוכחית בכל מקרה
+//     state.jobUrl = tabUrl;
+//     state.jobPlatform = tabUrl.includes('linkedin.com') ? 'linkedin' : 'other';
+//     // כאן אפשר להוסיף חילוץ של כותרת המשרה או אלמנטים נוספים במידת הצורך
+
+//     // 5. שליפת המפתחות של ה-FAB וה-Storage
+//     const asKey = _autoStreamKey(tabUrl);
+//     const jtKey = _jobTextKey(tabUrl);
+//     const lsKey = _localScoreKey(tabUrl);
+    
+//     const storageData = await chrome.storage.local.get([asKey, jtKey, 'licenseKey', 'cvText', lsKey]);
+//     const cameFromFAB = !!storageData[asKey]; // דגל: האם הגענו בלחיצה על ה-FAB
+
+//     // טעינת רישיון וקורות חיים בסיסיים
+//     state.licenseKey = storageData.licenseKey || '';
+//     state.cvText = storageData.cvText || '';
+
+//     // 6. טעינת מצב המשרה מתוך ה-Storage (בודק אם קיימת ומה הסטטוס שלה)
+//     const saved = await loadJobState(tabUrl);
+
+//     // הגדרת תנאי: האם למשרה הזו יש כבר סטטוס/מצב מתקדם כלשהו?
+//     const hasAdvancedStatus = saved && (
+//       (saved.questions && saved.questions.length > 0) || 
+//       saved.analysis || 
+//       saved.generatedCV
+//     );
+
+//     if (cameFromFAB) {
+//       // ─── תרחיש א': לחיצה על ה-FAB ───
+//       await chrome.storage.local.remove([asKey]); // מנקים את הדגל
+
+//       if (hasAdvancedStatus) {
+//         // משרה קיימת עם התקדמות -> משחזרים ומציגים
+//         restoreSavedState(saved);
+//         routeToCorrectScreen(saved);
+//         return;
+//       } else {
+//         // משרה חדשה לחלוטין או קיימת ללא סטטוס (רק נשמרה) -> ישר לשאלות!
+//         state.jobText = storageData[jtKey] || (saved ? saved.jobText : '');
+//         state.baseScore = storageData[lsKey] || (saved ? saved.baseScore : 0);
+//         await streamQuestionsIntoScreen();
+//         return;
+//       }
+
+//     } else {
+//       // ─── תרחיש ב': פתיחה רגילה (לא מה-FAB) ───
+      
+//       if (hasAdvancedStatus) {
+//         // משרה קיימת עם התקדמות -> משחזרים ומציגים
+//         restoreSavedState(saved);
+//         routeToCorrectScreen(saved);
+//         return;
+//       } else {
+//         // משרה חדשה לחלוטין או קיימת ללא סטטוס (רק נשמרה) -> מראים מסך Ready
+//         await showReadyScreen();
+//         return;
+//       }
+//     }
+
+//   } catch (e) { 
+//     console.error('[JMA:init] Error during initialization:', e); 
+//     await showReadyScreen();
+//   }
+// })();
 
 // ─── פונקציות העזר לשחזור וניתוב (נשארות נקיות וממוקדות) ───
 
@@ -2370,24 +2531,69 @@ function restoreSavedState(saved) {
   state.baseScore = saved.baseScore ?? 0;
   state.gapPct = saved.gapPct ?? 0;
 }
-
 function routeToCorrectScreen(saved) {
-  if (saved.generatedCV) {
-    state.generatedCV = saved.generatedCV;
-    state.coverLetterText = saved.coverLetterText || '';
-    state.analysis = saved.analysis;
-    state.cvIsRtl = (saved.cvLanguage || saved.jobLanguage || 'english') === 'hebrew';
-    showCVResult(saved.generatedCV, state.coverLetterText);
-  } else if (saved.analysis) {
-    state.analysis = saved.analysis;
-    showScreen('main');
-    showMainResult(saved.analysis);
-  } else if (saved.questions && saved.questions.length > 0) {
-    showQuestionsScreen(saved.questions, saved.answers || []);
-  } else {
-    showReadyScreen();
+  console.log(state);
+  // קודם כל משחזרים את הנתונים הבסיסיים ל-state בזיכרון, ללא קשר למסך
+  state.analysis = saved.analysis || null;
+  state.generatedCV = saved.generatedCV || null;
+  state.coverLetterText = saved.coverLetterText || '';
+  state.cvIsRtl = (saved.cvLanguage || saved.jobLanguage || 'english') === 'hebrew';
+
+  // ניווט מדויק ומבוסס שלב (wizard_step)
+  switch (saved.wizard_step) {
+    
+    case 'cv_result':
+    case 'cv':
+      if (state.generatedCV) {
+        showCVResult(state.generatedCV, state.coverLetterText);
+      } else {
+        showScreen('main'); // הגנת קצה - אם הדגל אומר קורות חיים אבל אין דאטה, נחזיר למסך הראשי
+      }
+      break;
+
+    case 'analysis':
+    case 'main':
+      if (state.analysis) {
+        showScreen('main');
+        showMainResult(state.analysis);
+      } else {
+        showQuestionsScreen(saved.questions || [], saved.answers || []);
+      }
+      break;
+
+    case 'questions':
+      if (saved.questions && saved.questions.length > 0) {
+        showQuestionsScreen(saved.questions, saved.answers || []);
+      } else {
+        // אם סומן שאלות אבל המערך ריק, כנראה צריך להזרים אותן מחדש
+        streamQuestionsIntoScreen();
+      }
+      break;
+
+    default:
+      // לכל מקרה קצה אחר או אם הסטטוס לא מוכר
+      showReadyScreen();
+      break;
   }
 }
+
+// function routeToCorrectScreen(saved) {
+//   if (saved.generatedCV) {
+//     state.generatedCV = saved.generatedCV;
+//     state.coverLetterText = saved.coverLetterText || '';
+//     state.analysis = saved.analysis;
+//     state.cvIsRtl = (saved.cvLanguage || saved.jobLanguage || 'english') === 'hebrew';
+//     showCVResult(saved.generatedCV, state.coverLetterText);
+//   } else if (saved.analysis) {
+//     state.analysis = saved.analysis;
+//     showScreen('main');
+//     showMainResult(saved.analysis);
+//   } else if (saved.questions && saved.questions.length > 0) {
+//     showQuestionsScreen(saved.questions, saved.answers || []);
+//   } else {
+//     showReadyScreen();
+//   }
+// }
 // (async () => {
 //   const licensed = await checkLicense();
 //   if (!licensed) { showScreen('license'); return; }

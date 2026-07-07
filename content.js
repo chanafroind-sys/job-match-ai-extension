@@ -1,3 +1,57 @@
+// פונקציית עזר פנימית לשליפת המערך המלא של 5 המשרות מהסטורג'
+async function getRecentJobsArray() {
+  const res = await chrome.storage.local.get(['jma_recent_jobs']);
+  return res.jma_recent_jobs || [];
+}
+
+// הפונקציה נשארת עם פרמטר אחד בלבד (updates) כמו בקוד המקורי שלך!
+async function saveJobState(updates) {
+  // חילוץ אוטומטי של ה-URL בהתאם לסביבה שבה הקוד רץ
+  const url = (typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null);
+  
+  if (!url) return;
+  
+  let jobs = await getRecentJobsArray();
+  const existingIndex = jobs.findIndex(j => j.url === url);
+  
+  // מיזוג נתונים קודמים בתוך מערך ה-5
+  let jobData = existingIndex !== -1 ? jobs[existingIndex] : { url, ts: Date.now() };
+  jobData = { ...jobData, ...updates, ts: Date.now() };
+
+  if (existingIndex !== -1) {
+    jobs.splice(existingIndex, 1); // הקפצה לראש הרשימה
+  }
+  
+  jobs.unshift(jobData);
+  
+  // חוק 5 המשרות - מונע סלט ועומס בסטורג'
+  if (jobs.length > 5) {
+    jobs = jobs.slice(0, 5);
+  }
+  
+  await chrome.storage.local.set({ 'jma_recent_jobs': jobs });
+}
+
+// גם כאן, אם לא נשלח URL, נחלץ אותו אוטומטית
+async function loadJobState(url) {
+  const targetUrl = url || ((typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null));
+  
+  if (!targetUrl) return null;
+  
+  const jobs = await getRecentJobsArray();
+  const job = jobs.find(j => j.url === targetUrl);
+  
+  if (!job) return null;
+  
+  // בדיקת תוקף של 4 שעות (כמו הלוגיקה המקורית שלך ב-image_d1cb20.png)
+  if ((Date.now() - job.ts) > 4 * 60 * 60 * 1000) {
+    const filteredJobs = jobs.filter(j => j.url !== targetUrl);
+    await chrome.storage.local.set({ 'jma_recent_jobs': filteredJobs });
+    return null;
+  }
+  
+  return job;
+}
 (() => {
   // ── Job text extraction (for popup analysis) ───────────────────────────────
 
@@ -282,23 +336,43 @@
   let _fabProgressTimer = null;
   let _panelOpen = false;
   const FAB_CIRC = 207.3; // 2π×33
+function initJobFab() {
+  if (document.getElementById('jma-float-btn')) return; 
+  if (document.getElementById('jma-fab-wrap')) return;
+  if (!pageHasJobKeywords()) return; 
+  const jobText = extractJobText();
+  if (!jobText || jobText.length < 350) return;
 
-  function initJobFab() {
-    if (document.getElementById('jma-float-btn')) return; // listing page has own FAB
-    if (document.getElementById('jma-fab-wrap')) return;
-    if (!pageHasJobKeywords()) return; // must look like a job page
-    const jobText = extractJobText();
-    if (!jobText || jobText.length < 350) return;
-    chrome.storage.local.get(['licenseKey', 'cvText', 'jma_user_profile'], (conf) => {
-      if (!conf.licenseKey || !conf.cvText) return;
-      const cKey = _prefKey(location.href);
-      chrome.storage.local.get([cKey], (stored) => {
-        const cached = stored[cKey];
-        const fresh = cached && (Date.now() - cached.ts) < 10 * 60 * 1000;
-        _createFabGauge(jobText, fresh ? cached : null);
-      });
-    });
-  }
+  chrome.storage.local.get(['licenseKey', 'cvText', 'jma_recent_jobs'], (conf) => {
+    if (!conf.licenseKey || !conf.cvText) return;
+
+    // שליפת המשרה הנוכחית מתוך המערך המאוחד
+    const recentJobs = conf.jma_recent_jobs || [];
+    const cachedJob = recentJobs.find(j => j.url === location.href);
+
+    // תוקף של 10 דקות לחישוב מקומי
+    const isFresh = cachedJob && cachedJob.ts && (Date.now() - cachedJob.ts) < 10 * 60 * 1000;
+
+    // מעבירים את הנתונים השמורים (אם ישנם וטריים) לתוך ה-Gauge
+    _createFabGauge(jobText, isFresh ? cachedJob : null);
+  });
+}
+  // function initJobFab() {
+  //   if (document.getElementById('jma-float-btn')) return; // listing page has own FAB
+  //   if (document.getElementById('jma-fab-wrap')) return;
+  //   if (!pageHasJobKeywords()) return; // must look like a job page
+  //   const jobText = extractJobText();
+  //   if (!jobText || jobText.length < 350) return;
+  //   chrome.storage.local.get(['licenseKey', 'cvText', 'jma_user_profile'], (conf) => {
+  //     if (!conf.licenseKey || !conf.cvText) return;
+  //     const cKey = _prefKey(location.href);
+  //     chrome.storage.local.get([cKey], (stored) => {
+  //       const cached = stored[cKey];
+  //       const fresh = cached && (Date.now() - cached.ts) < 10 * 60 * 1000;
+  //       _createFabGauge(jobText, fresh ? cached : null);
+  //     });
+  //   });
+  // }
 function _createFabGauge(jobText, cached) {
   // 1. הזרקת ה-CSS - שימי לב שהאפקטים של הכפתור (Hover ו-Active) יפעלו רק כשיש את הקלאס .jma-fab-clickable
   const fabStyle = document.createElement('style');
@@ -406,8 +480,8 @@ function _createFabGauge(jobText, cached) {
   if (cached && cached.base_score != null) {
     _fabSetScore(cached.base_score);
     _activateFabButton(cached.base_score);
-  } else {
-    chrome.storage.local.get(['jma_user_profile', 'cvText'], (s) => {
+} else {
+    chrome.storage.local.get(['jma_user_profile', 'cvText'], async (s) => {
       if (!window.JMA_Matcher) return;
       let profile = s.jma_user_profile || null;
       if (!profile && s.cvText) {
@@ -418,51 +492,133 @@ function _createFabGauge(jobText, cached) {
       const { score, bullets } = window.JMA_Matcher.computeScore(profile, jobText);
       _updateFabArc(score, true);
 
-      // שמירת הנתונים בזיכרון המקומי
-      chrome.storage.local.set({
-        [_localScoreKey(location.href)]:   score,
-        [_localBulletsKey(location.href)]: bullets,
-      });
+      // 🔥 שמירה זמנית במשתנים בקובץ (לא בסטורג') עד לרגע הלחיצה האקטיבית!
+      window.jma_current_score = score;
+      window.jma_current_bullets = bullets;
       
-      // 1. קודם כל מקפיצים את הנתונים/הבלטים (הסיבות למה האחוז ככה)
       if (bullets.length > 0) {
         setTimeout(() => _showFabReasons(bullets), 600);
       }
 
-      // 2. ורק עכשיו, כשהנתונים עלו, הופכים את העיגול לכפתור לחיץ ומשנים את המראה והטקסט!
       setTimeout(() => {
         _activateFabButton(score);
       }, 700); 
     });
   }
+wrap.addEventListener('click', async () => {
+  // 1. הגנה: מאפשר לחיצה רק אם הכפתור מוכן (clickable)
+  if (!wrap.classList.contains('jma-fab-clickable')) return;
 
-  // לוגיקת הלחיצה - תעבוד רק אם הכפתור כבר סומן כבלחיץ ( clickable )
-  wrap.addEventListener('click', () => {
-    if (!wrap.classList.contains('jma-fab-clickable')) {
-      return; // אם החישוב לא הסתיים, לחיצה לא תעשה כלום
+  const currentUrl = window.location.href;
+  const extractedText = extractJobText();
+
+  // ── אסטרטגיית חילוץ כותרת דינמית (מתוך ה-onMessage שלך) ──────────────────
+  const getJobTitle = () => {
+    const h1 = document.querySelector('h1')?.innerText?.trim() || '';
+    const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
+    
+    const rawTitle = h1 || ogTitle || document.title || 'משרה ללא כותרת';
+    
+    // ניקוי סיומות מיותרות מהכותרת (למשל: "מפתח תוכנה - LinkedIn")
+    if (typeof _cleanPageTitle === 'function') {
+      return _cleanPageTitle(rawTitle);
+    }
+    return rawTitle.split(/[|•\-–]/)[0].trim();
+  };
+
+  // ── אסטרטגיית חילוץ פלטפורמה דינמית ──────────────────────────────────────
+  const getJobPlatform = () => {
+    if (typeof detectPlatform === 'function') {
+      return detectPlatform();
+    }
+    const metaSiteName = document.querySelector('meta[property="og:site_name"]')?.content;
+    if (metaSiteName) return metaSiteName.trim();
+
+    const host = window.location.hostname;
+    const parts = host.replace('www.', '').split('.');
+    if (parts.length >= 2) {
+      return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+    }
+    return host;
+  };
+
+  // ── זיהוי שפה ואסימילציה של הנתונים ──────────────────────────────────────
+  const jobLanguage = (typeof detectLanguage === 'function') 
+    ? detectLanguage(extractedText) 
+    : (/[\u0590-\u05FF]/.test(extractedText.substring(0, 300)) ? 'hebrew' : 'english');
+
+  // שליפת הציון והבולטים הקיים שנשמרו זמנית על ה-window בחלק הפסיבי
+  const finalScore = window.jma_current_score || (cached ? cached.baseScore : 0);
+  const finalBullets = window.jma_current_bullets || (cached ? cached.bullets : []);
+
+  // 🎯 2. בניית אובייקט ה-state המלא והמאוחד למשרה הנוכחית
+  const fullJobState = {
+    url: currentUrl,          // מפתח הזיהוי בתוך המערך המאוחד
+    jobUrl: currentUrl,
+    jobText: extractedText,
+    jobTitle: getJobTitle(),
+    jobPlatform: getJobPlatform(),
+    jobLanguage: jobLanguage,
+    wizard_step: 'questions', // מעביר את הפופ-אפ ישירות למסך השאלות
+    baseScore: finalScore,
+    bullets: finalBullets,
+    ts: Date.now(),
+    activelyOpened: true,      // דגל מסמן: נפתח אקטיבית ע"י המשתמש!
+    analysis: cached?.analysis || null,
+    questions: cached?.questions || [],
+    answers: cached?.answers || [],
+    generatedCV: cached?.generatedCV || '',
+    gapPct: cached?.gapPct || 0
+  };
+
+  try {
+    // 📦 3. שמירה אקטיבית ומרוכזת לתוך מערך 5 המשרות ב-Storage
+    if (typeof saveJobState === 'function') {
+      await saveJobState(fullJobState);
+    } else {
+      // פתרון גיבוי ישיר במידה ו-saveJobState לא נגישה באותו הסקופ
+      const storageData = await chrome.storage.local.get('jma_recent_jobs');
+      let recentJobs = storageData.jma_recent_jobs || [];
+      recentJobs = recentJobs.filter(j => j.url !== currentUrl);
+      recentJobs.unshift(fullJobState);
+      if (recentJobs.length > 5) recentJobs.pop();
+      await chrome.storage.local.set({ jma_recent_jobs: recentJobs });
     }
 
-    const currentUrl = location.href;
-    chrome.storage.local.get([
-      `wizard_step_${currentUrl}`, 
-      `questions_analyzed_${currentUrl}`
-    ], (res) => {
-      const currentStep = res[`wizard_step_${currentUrl}`];
-      const questionsAnalyzed = res[`questions_analyzed_${currentUrl}`];
+    // 🔄 4. עדכון משתנה הסטייט הלוקאלי המקומי (אם קיים בסקופ הקובץ)
+    if (typeof state !== 'undefined') {
+      Object.assign(state, fullJobState);
+    }
+  } catch (err) {
+    console.error("⚠️ שגיאה בשמירת נתוני המשרה בסטורג':", err);
+  }
 
-      if (currentStep === 'analysis' || currentStep === 'settings' || questionsAnalyzed) {
-        _togglePanel(); 
-      } else {
-        chrome.storage.local.set({
-          [_autoStreamKey(currentUrl)]: true,
-          [_jobTextKey(currentUrl)]: extractJobText(),
-          [`wizard_step_${currentUrl}`]: 'questions'
-        }, () => {
-          _togglePanel();
-        });
-      }
-    });
-  });
+  // 🚀 5. פתיחת הפאנל הצדדי/סידבר למשתמש
+  if (typeof _togglePanel === 'function') {
+    _togglePanel();
+  } else if (typeof initSidebar === 'function') {
+    initSidebar();
+  }
+});
+  // לוגיקת הלחיצה - תעבוד רק אם הכפתור כבר סומן כבלחיץ ( clickable )
+  // wrap.addEventListener('click', () => {
+
+      // const currentStep = res[`wizard_step_${currentUrl}`];
+      // const questionsAnalyzed = res[`questions_analyzed_${currentUrl}`];
+
+      // if (currentStep === 'analysis' || currentStep === 'settings' || questionsAnalyzed) {
+      //   _togglePanel(); 
+      // } else {
+      //   chrome.storage.local.set({
+      //     [_autoStreamKey(currentUrl)]: true,
+      //     [_jobTextKey(currentUrl)]: extractJobText(),
+      //     [`wizard_step_${currentUrl}`]: 'questions'
+      //   }, () => {
+      //     _togglePanel();
+      //   });
+      // }
+    // });
+  // });
 }
   // function _createFabGauge(jobText, cached) {
   //   injectStyles();
@@ -940,12 +1096,12 @@ function _createFabGauge(jobText, cached) {
       /* Default: panel body off-screen but grab tab (36px wide at left:-36px) is fully
          visible at the viewport's right edge. right = -(panel_width - tab_width) = -364px */
       #jma-panel{
-        position:fixed;top:0;right:-364px;width:400px;height:100vh;
+        position:fixed;top:0;right:-400px !important;width:400px;height:100vh;
         z-index:2147483647;border-left:1px solid #e2e8f0;
         box-shadow:-6px 0 28px rgba(0,0,0,0.15);
         transition:right .35s cubic-bezier(.4,0,.2,1);
       }
-      #jma-panel.jma-panel-open{right:0}
+      #jma-panel.jma-panel-open{right:0 !important}
       #jma-panel iframe{width:100%;height:100%;border:none;display:block}
       /* Grab tab — always visible at right edge; slides with the panel */
       #jma-panel-tab{

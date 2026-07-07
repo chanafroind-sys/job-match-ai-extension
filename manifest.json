@@ -1,35 +1,54 @@
 {
+
   "manifest_version": 3,
   "name": "Job Match AI",
   "version": "3.2.0",
   "description": "ניתוח משרות חכם + קורות חיים מותאמים + מעקב הגשות",
-  "permissions": ["activeTab", "storage", "scripting", "tabs"],
+  "permissions": [
+    "activeTab", 
+    "storage", 
+    "scripting", 
+    "tabs"
+  ],
   "host_permissions": [
     "https://job-match-ai-extension.onrender.com/*",
     "https://*/*",
     "http://*/*"
   ],
   "action": {
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
   },
-  "web_accessible_resources": [{
-    "resources": ["popup.html", "popup.js", "tracker.js", "docx-builder.js", "matcher.js", "icons/*"],
+
+"web_accessible_resources": [
+  {
+    "resources": [
+      "*.html",
+      "*.js",
+      "*.css",
+      "icons/*"
+    ],
     "matches": ["https://*/*", "http://*/*"]
-  }],
-  "background": { "service_worker": "background.js" },
+  }
+],
+  "background": { 
+    "service_worker": "background.js" 
+  },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "content_scripts": [{
-    "matches": ["https://*/*", "http://*/*"],
-    "js": ["matcher.js", "content.js"],
-    "run_at": "document_idle",
-    "all_frames": false
-  }]
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["matcher.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
 }
