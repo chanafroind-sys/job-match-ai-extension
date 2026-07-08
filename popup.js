@@ -775,7 +775,16 @@ async function startFlow() {
   if (localStored[_localScoreKey(state.jobUrl)]) state.baseScore = localStored[_localScoreKey(state.jobUrl)];
   // Save premium flag to cvOptions for model selector rendering
   cvOptions._isPremium = !!localStored.jma_is_premium;
-  await saveJobState({ jobText: state.jobText, jobLanguage: state.jobLanguage, jobPlatform: state.jobPlatform });
+  // 💾 שמירת מצב מלא כמו שה-FAB עושה - כדי שסגירה ופתיחה מחדש ישחזרו את המשרה
+  await saveJobState({
+    jobText: state.jobText,
+    jobTitle: state.jobTitle,
+    jobLanguage: state.jobLanguage,
+    jobPlatform: state.jobPlatform,
+    baseScore: state.baseScore || 0,
+    wizard_step: 'questions',
+    activelyOpened: true,
+  });
 
   // ── 3. Check FAB preflight cache ─────────────────────────────────────────
   const pKey = _prefKey(state.jobUrl);
@@ -951,6 +960,7 @@ function showQuestionsScreen(questions, savedAnswers) {
         ta.value = val === 100 ? 'כן, יש לי ניסיון בתחום זה.' : val === 40 ? 'מכיר את התחום ברמה תיאורטית.' : 'אין לי ניסיון בתחום זה.';
       }
       _updateQuestionsScore();
+      _persistAnswersDebounced();
     });
   });
 
@@ -965,6 +975,7 @@ function showQuestionsScreen(questions, savedAnswers) {
         const card = ta.closest('.question-card');
         card?.querySelectorAll('.qa-btn').forEach(b => b.classList.remove('selected'));
         _updateQuestionsScore();
+        _persistAnswersDebounced();
       }, 600);
     });
   });
@@ -1126,6 +1137,7 @@ async function streamQuestionsIntoScreen() {
           state.answers[i] = ta ? ta.value : btn.textContent;
         }
         _updateQuestionsScore();
+        _persistAnswersDebounced();
       });
     });
     const ta = card.querySelector('.q-textarea');
@@ -1138,6 +1150,7 @@ async function streamQuestionsIntoScreen() {
         ta.closest('.question-card')?.querySelectorAll('.qa-btn')
           .forEach(b => b.classList.remove('selected'));
         _updateQuestionsScore();
+        _persistAnswersDebounced();
       }, 600);
     });
   }
@@ -1239,7 +1252,7 @@ async function streamQuestionsIntoScreen() {
             const qa = info.card.querySelector('.quick-answers');
             info.card.insertBefore(exp, qa);
             const q = state.questions.find(q => q.id === id);
-            if (q) q.explanation = explanation;
+            if (q) { q.explanation = explanation; q.heExplanation = explanation; }
           }
           _cards[id]?.card.classList.remove('qs-streaming');
         }
@@ -1257,7 +1270,24 @@ async function streamQuestionsIntoScreen() {
     }
   }
 
+  // 💾 שמירת השאלות שהוזרמו למערך המשרות
+  // (בשלב ה-meta נשמר קודם לכן מערך ריק דרך _loadPreflightCache - כאן דורסים אותו בשאלות האמיתיות)
+  if (state.questions.length > 0) {
+    await saveJobState({ questions: state.questions, wizard_step: 'questions' });
+  }
+
   // ── Footer: no inline options — user continues to cv-options screen ──────
+}
+
+// 💾 שמירה מושהית של תשובות תוך כדי מענה.
+// תמיד דרך collectAnswers() כדי לשמור בפורמט האובייקטים האחיד
+// {skill, answer, sliderValue, weight} - הפורמט היחיד שהשחזור ב-showQuestionsScreen יודע לקרוא.
+let _answersSaveTimer = null;
+function _persistAnswersDebounced() {
+  clearTimeout(_answersSaveTimer);
+  _answersSaveTimer = setTimeout(() => {
+    saveJobState({ answers: collectAnswers() });
+  }, 1500);
 }
 
 function collectAnswers() {
