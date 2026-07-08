@@ -319,7 +319,7 @@ async function loadJobState(url) {
       const win = lo.slice(Math.max(0, idx - 150), idx + 150);
       const ym = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?)/i);
       const yrs = ym ? parseFloat(ym[1]) : (totalYears > 0 ? Math.round(totalYears * 0.5 * 10) / 10 : 1.0);
-      exp[domain][tech] = { industry_years: yrs, personal_years: 0 };
+      exp[domain][tech] = { industry_years: yrs, personal_years: 0, personal_weight: 0 };
       domainYears[domain] = (domainYears[domain] || 0) + yrs;
     }
 
