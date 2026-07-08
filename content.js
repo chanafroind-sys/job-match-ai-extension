@@ -351,20 +351,25 @@ async function loadJobState(url) {
   let _panelOpen = false;
   const FAB_CIRC = 207.3; // 2π×33
 
-  // שער קשיח: ה-FAB מופיע רק אם בטקסט יש סימן מובהק לסעיף דרישות/כישורים
+  // שער קשיח: ה-FAB מופיע רק אם בטקסט יש סימן מובהק לסעיף דרישות/תפקיד
   const REQUIREMENTS_SIGNALS = [
+    // עברית
     'דרישות התפקיד', 'דרישות המשרה', 'דרישות:', 'כישורים נדרשים', 'ניסיון נדרש',
-    'requirements', 'qualifications', 'what you\'ll need', 'what we\'re looking for',
-    'must have', 'nice to have', 'we are looking for', 'skills',
+    'תיאור המשרה', 'על התפקיד', 'תחומי אחריות', 'יתרון משמעותי', 'חובה:',
+    // אנגלית (הטקסט מנורמל לגרש ישר לפני ההשוואה)
+    'requirements', 'qualifications', "what you'll need", "what we're looking for",
+    "what you'll do", 'the role', 'about the role', 'responsibilities',
+    'must have', 'nice to have', 'we are looking for', 'bonus points', 'skills',
   ];
   function _hasJobRequirementsSignal(text) {
-    const lo = (text || '').toLowerCase();
+    // נרמול גרשיים טיפוגרפיים (' ') לגרש ישר - "What We're" מגיע לרוב עם ’
+    const lo = (text || '').toLowerCase().replace(/[‘’]/g, "'");
     return REQUIREMENTS_SIGNALS.some(sig => lo.includes(sig));
   }
 function initJobFab() {
   if (document.getElementById('jma-float-btn')) return; 
   if (document.getElementById('jma-fab-wrap')) return;
-  if (!pageHasJobKeywords()) return; 
+  if (!pageHasJobKeywords() && !_hasJobRequirementsSignal(document.body.innerText || '')) return;
   const jobText = extractJobText();
   if (!jobText || jobText.length < 350) return;
 
@@ -1340,7 +1345,10 @@ wrap.addEventListener('click', async () => {
   // הפאנל (iframe) נוצר רק בלחיצה על ה-FAB או בהודעת toggleSidebar.
   // pingBackend + scrapeJob עברו לתוך initJobFab, אחרי שער הדרישות.
   function _initPage() {
-    if (!pageHasJobKeywords()) return; // עמוד רגיל: יציאה מוחלטת
+    // עמוד רגיל: יציאה מוחלטת. סימן דרישות מובהק מספיק גם כשספירת מילות המפתח נמוכה
+    // (למשל משרה באנגלית בתוך לוח ישראלי).
+    const _bodySample = (document.body.innerText || '').slice(0, 30000);
+    if (!pageHasJobKeywords() && !_hasJobRequirementsSignal(_bodySample)) return;
 
     injectStyles();
 
@@ -1397,6 +1405,11 @@ wrap.addEventListener('click', async () => {
 
   // ── Initial page load ──────────────────────────────────────────────────────
   _initPage();
+
+  // רשת ביטחון ל-SPA: יירוט history.pushState לא רואה ניווטים של סקריפטים של
+  // האתר עצמו (עולם מבודד ב-MV3), לכן בדיקה תקופתית זולה הכרחית.
+  // _onUrlChange בודק בעצמו אם ה-URL השתנה ויוצא מיד אם לא - עלות זניחה.
+  setInterval(_onUrlChange, 1500);
 })();
 
 // ── Deep-analysis floating panel (left side of page, separate from popup) ──────
