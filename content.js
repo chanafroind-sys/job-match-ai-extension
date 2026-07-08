@@ -350,12 +350,34 @@ async function loadJobState(url) {
   let _fabProgressTimer = null;
   let _panelOpen = false;
   const FAB_CIRC = 207.3; // 2π×33
+
+  // שער קשיח: ה-FAB מופיע רק אם בטקסט יש סימן מובהק לסעיף דרישות/כישורים
+  const REQUIREMENTS_SIGNALS = [
+    'דרישות התפקיד', 'דרישות המשרה', 'דרישות:', 'כישורים נדרשים', 'ניסיון נדרש',
+    'requirements', 'qualifications', 'what you\'ll need', 'what we\'re looking for',
+    'must have', 'nice to have', 'we are looking for', 'skills',
+  ];
+  function _hasJobRequirementsSignal(text) {
+    const lo = (text || '').toLowerCase();
+    return REQUIREMENTS_SIGNALS.some(sig => lo.includes(sig));
+  }
 function initJobFab() {
   if (document.getElementById('jma-float-btn')) return; 
   if (document.getElementById('jma-fab-wrap')) return;
   if (!pageHasJobKeywords()) return; 
   const jobText = extractJobText();
   if (!jobText || jobText.length < 350) return;
+
+  if (!_hasJobRequirementsSignal(jobText)) return; // אין סעיף דרישות - לא עמוד משרה מלא
+
+  // עמוד משרה מאומת: מעירים את השרת + שומרים את המשרה למאגר (השרת מסנן כפילויות לפי URL)
+  chrome.runtime.sendMessage({ action: 'pingBackend' });
+  chrome.runtime.sendMessage({
+    action: 'scrapeJob',
+    url: location.href,
+    text: jobText.substring(0, 5000),
+    title: document.title || '',
+  });
 
   chrome.storage.local.get(['licenseKey', 'cvText', 'jma_recent_jobs'], (conf) => {
     if (!conf.licenseKey || !conf.cvText) return;
@@ -792,6 +814,7 @@ wrap.addEventListener('click', async () => {
 
   function _ensurePanel() {
     if (document.getElementById('jma-panel')) return;
+    injectStyles();
     const panel = document.createElement('div');
     panel.id = 'jma-panel';
 
@@ -1313,37 +1336,23 @@ wrap.addEventListener('click', async () => {
     }
   }
 
-  // Full page init: always inject panel, then conditionally run job logic.
+  // Full page init: LAZY - שום דבר לא מוזרק בעמוד רגיל.
+  // הפאנל (iframe) נוצר רק בלחיצה על ה-FAB או בהודעת toggleSidebar.
+  // pingBackend + scrapeJob עברו לתוך initJobFab, אחרי שער הדרישות.
   function _initPage() {
+    if (!pageHasJobKeywords()) return; // עמוד רגיל: יציאה מוחלטת
+
     injectStyles();
-    _ensurePanel(); // panel present on EVERY page so user can always open it
 
-    if (pageHasJobKeywords()) {
-      chrome.runtime.sendMessage({ action: 'pingBackend' });
+    // Listing page: delayed to let SPA finish rendering cards
+    setTimeout(() => {
+      if (!document.getElementById('jma-float-btn')) initSidebar();
+    }, 1800);
 
-      // Listing page: delayed to let SPA finish rendering cards
-      setTimeout(() => {
-        if (!document.getElementById('jma-float-btn')) initSidebar();
-      }, 1800);
-
-      // Single-job FAB: slightly later so page content is fully rendered
-      setTimeout(() => {
-        if (!document.getElementById('jma-fab-wrap')) initJobFab();
-      }, 2200);
-
-      // Crowdsourced scraping — only for single-job pages
-      setTimeout(() => {
-        if (document.getElementById('jma-float-btn')) return;
-        const text = extractJobText();
-        if (!text || text.length < 400) return;
-        chrome.runtime.sendMessage({
-          action: 'scrapeJob',
-          url: location.href,
-          text: text.substring(0, 5000),
-          title: document.title || '',
-        });
-      }, 5000);
-    }
+    // Single-job FAB: slightly later so page content is fully rendered
+    setTimeout(() => {
+      if (!document.getElementById('jma-fab-wrap')) initJobFab();
+    }, 2200);
   }
 
   // Called whenever a navigation to a new URL is detected.
@@ -1353,6 +1362,11 @@ wrap.addEventListener('click', async () => {
     clearTimeout(_navDebounceTimer);
     // Debounce: SPA routers often fire multiple events in rapid succession.
     _navDebounceTimer = setTimeout(() => {
+      _rankingDone = false; _collectedJobs = null; _sidebarOpen = false;
+      _fabState = 'idle'; _panelOpen = false;
+      clearInterval(_fabProgressTimer);
+      document.getElementById('jma-float-btn')?.remove();
+      document.getElementById('jma-sidebar')?.remove();
       _teardownFab();
       _initPage();
     }, 400);
@@ -1383,24 +1397,6 @@ wrap.addEventListener('click', async () => {
 
   // ── Initial page load ──────────────────────────────────────────────────────
   _initPage();
-
-  // Re-init on SPA navigation
-  let _lastHref = location.href;
-  setInterval(() => {
-    if (location.href !== _lastHref) {
-      _lastHref = location.href;
-      _rankingDone = false; _collectedJobs = null; _sidebarOpen = false;
-      document.getElementById('jma-float-btn')?.remove();
-      document.getElementById('jma-sidebar')?.remove();
-      document.getElementById('jma-fab-wrap')?.remove();
-      document.getElementById('jma-panel')?.remove();
-      document.getElementById('jma-styles')?.remove();
-      _fabState = 'idle'; _panelOpen = false;
-      clearInterval(_fabProgressTimer);
-      setTimeout(initSidebar, 2000);
-      setTimeout(initJobFab, 2500);
-    }
-  }, 1200);
 })();
 
 // ── Deep-analysis floating panel (left side of page, separate from popup) ──────

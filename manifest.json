@@ -8,7 +8,9 @@
     "activeTab", 
     "storage", 
     "scripting", 
-    "tabs"
+    "tabs",
+    "alarms",
+    "notifications"
   ],
   "host_permissions": [
     "https://job-match-ai-extension.onrender.com/*",
