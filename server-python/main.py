@@ -1092,6 +1092,8 @@ async def health():
 # ~1 200-token instruction block is billed only on the first call per cache window.
 # The dynamic CV text travels in the user message, which is never cached.
 
+
+
 EXTRACT_PROFILE_SYSTEM = """\
 You are an expert tech-recruiter talent analyst. Extract a structured JSON profile \
 from the candidate CV the user will provide. Follow every instruction exactly.
@@ -1110,13 +1112,13 @@ JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
   },
   "traits": [<string>],
   "experience": {
-    "backend":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "frontend":     { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "ai_ml_llm":    { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "data_bi":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "devops_cloud": { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "mobile":       { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "other_domains":{ "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} }
+    "backend":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "personal_weight": <int 0-100>, "search_tags": [<string>]} },
+    "frontend":     { ... same shape ... },
+    "ai_ml_llm":    { ... },
+    "data_bi":      { ... },
+    "devops_cloud": { ... },
+    "mobile":       { ... },
+    "other_domains":{ ... }
   },
   "tools_and_methods": { "<tool>": {"found": <bool>, "search_tags": [<string>]} },
   "languages": { "<lang>": "<level>" }
@@ -1124,34 +1126,104 @@ JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
 
 CRITICAL RULES:
 1. SEPARATION: `industry_years` = verified paid employment only. \
-`personal_years` = side projects, academia, bootcamps, online courses.
-2. DURATION INFERENCE: If a tech is listed inside a job role that has explicit dates, \
-compute its duration from those dates. If dates are missing, default to 1.0 year.
-3. TRAITS: English adjective/noun phrases only. Examples: "Analytically-Minded", \
-"Self-Directed", "Team-Player".
-4. DOMAIN YEARS in `industry_summary.domain_years` = sum of `industry_years` across all \
+`personal_years` = side projects, academia, bootcamps, online courses, open source.
+2. YEAR-TO-TECH ATTACHMENT: Attach years to a tech ONLY from roles/projects whose \
+description actually mentions that tech (or an unambiguous alias). NEVER spread total \
+career years across all listed skills. A skill that appears only in a "Skills" list \
+with no role/project context gets: industry_years 0, personal_years 0.5, personal_weight 25.
+3. PERSONAL EXPERIENCE WEIGHTING: For every tech, set `personal_weight` (0-100) = how \
+substantial the NON-industry experience is, judged from CV evidence:
+   - 90-100: production system with real users; launched startup MVP; paid freelance; \
+     open-source with real adoption
+   - 60-85:  end-to-end project that was actually deployed/live; working product built \
+     independently; meaningful contribution to a real codebase
+   - 35-55:  substantial portfolio project; final degree project; hackathon finalist work
+   - 10-30:  coursework, bootcamp exercises, tutorials, "familiar with X" claims
+   - personal_years == 0 → personal_weight = 0. No evidence either way → 40.
+   Signals of substance: "deployed", "production", "live", "users", scale numbers, \
+   links to a working product, App Store / cloud hosting mentions, depth of description. \
+   One-line mention = low. Detailed project with outcomes = high.
+4. DURATION INFERENCE: If a tech appears inside a role with explicit dates, compute its \
+duration from those dates. If dates are missing, default to 1.0 year.
+5. TRAITS: English adjective/noun phrases only, e.g. "Analytically-Minded", "Team-Player".
+6. DOMAIN YEARS in `industry_summary.domain_years` = sum of `industry_years` across all \
 techs in that domain, capped at total career years.
-5. FULLSTACK INFERENCE: If the person has ≥1 year backend AND ≥1 year frontend \
-(industry), add "fullstack" to domain_years with min(backend_years, frontend_years).
-6. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
+7. FULLSTACK INFERENCE: If ≥1 industry year in both backend AND frontend, add \
+"fullstack" with min(backend_years, frontend_years).
+8. DOMAIN PLACEMENT: Place each tech in the domain matching HOW THE CANDIDATE USED IT \
+(Python for ML pipelines → ai_ml_llm). Never duplicate a tech across domains.
+9. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
 microservices, rest, graphql, tdd, and any others found.
 
 SEARCH TAGS RULES (apply to every tech/tool entry):
-For each extracted skill, technology, framework, or qualification populate `search_tags` \
-with synonyms, aliases, and equivalents for raw text pattern-matching. \
-LIMIT: maximum 6 tags per entry — choose only the most useful ones. Include the best from:
-a. Industry-standard English synonyms and acronyms \
-   (e.g. "PostgreSQL" → ["SQL", "Postgres", "DB", "RDBMS"]).
-b. The most common Hebrew transliteration/translation used in Israeli job postings. \
-   CRITICAL: also include the most frequent prefix-attached forms because Hebrew prepends \
-   prepositions directly to words — add at least one prefixed variant for each Hebrew tag \
-   (e.g. "Python" → ["פייתון", "בפייתון"]; \
-    "Machine Learning" → ["למידת מכונה", "בלמידת מכונה"]; \
-    "Database" → ["בסיסי נתונים", "דאטהבייס"]).
-c. One related higher-level domain if highly relevant \
-   (e.g. "React" → ["Frontend"]).
-All Hebrew characters must be output as valid, clean UTF-8 strings inside the JSON \
-(do NOT escape them as \\uXXXX sequences)."""
+Populate `search_tags` with synonyms, aliases, and equivalents for raw text matching. \
+LIMIT: max 6 per entry. Every Latin-script tag MUST be at least 3 characters long \
+(never emit tags like "go", "ai", "bi", "ml" — use "golang", "genai", "power bi", \
+"machine learning" instead). Include the best from:
+a. Industry-standard English synonyms/acronyms ("PostgreSQL" → ["SQL", "Postgres", "RDBMS"]).
+b. The most common Hebrew transliteration used in Israeli job postings, including at \
+least one prefix-attached form ("Python" → ["פייתון", "בפייתון"]).
+c. One related higher-level domain if highly relevant ("React" → ["Frontend"]).
+All Hebrew must be clean UTF-8 (no \\uXXXX escapes)."""
+# You are an expert tech-recruiter talent analyst. Extract a structured JSON profile \
+# from the candidate CV the user will provide. Follow every instruction exactly.
+
+# OUTPUT: Return ONLY valid JSON — no markdown, no explanation, no extra keys.
+
+# JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
+# {
+#   "industry_summary": {
+#     "total_years_industry": <float>,
+#     "domain_years": {
+#       "<domain>": <float>
+#       // only domains actually found: backend, frontend, fullstack, mobile, devops_cloud,
+#       // ai_ml_llm, data_bi, cyber, qa, embedded, other
+#     }
+#   },
+#   "traits": [<string>],
+#   "experience": {
+#     "backend":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "frontend":     { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "ai_ml_llm":    { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "data_bi":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "devops_cloud": { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "mobile":       { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "other_domains":{ "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} }
+#   },
+#   "tools_and_methods": { "<tool>": {"found": <bool>, "search_tags": [<string>]} },
+#   "languages": { "<lang>": "<level>" }
+# }
+
+# CRITICAL RULES:
+# 1. SEPARATION: `industry_years` = verified paid employment only. \
+# `personal_years` = side projects, academia, bootcamps, online courses.
+# 2. DURATION INFERENCE: If a tech is listed inside a job role that has explicit dates, \
+# compute its duration from those dates. If dates are missing, default to 1.0 year.
+# 3. TRAITS: English adjective/noun phrases only. Examples: "Analytically-Minded", \
+# "Self-Directed", "Team-Player".
+# 4. DOMAIN YEARS in `industry_summary.domain_years` = sum of `industry_years` across all \
+# techs in that domain, capped at total career years.
+# 5. FULLSTACK INFERENCE: If the person has ≥1 year backend AND ≥1 year frontend \
+# (industry), add "fullstack" to domain_years with min(backend_years, frontend_years).
+# 6. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
+# microservices, rest, graphql, tdd, and any others found.
+
+# SEARCH TAGS RULES (apply to every tech/tool entry):
+# For each extracted skill, technology, framework, or qualification populate `search_tags` \
+# with synonyms, aliases, and equivalents for raw text pattern-matching. \
+# LIMIT: maximum 6 tags per entry — choose only the most useful ones. Include the best from:
+# a. Industry-standard English synonyms and acronyms \
+#    (e.g. "PostgreSQL" → ["SQL", "Postgres", "DB", "RDBMS"]).
+# b. The most common Hebrew transliteration/translation used in Israeli job postings. \
+#    CRITICAL: also include the most frequent prefix-attached forms because Hebrew prepends \
+#    prepositions directly to words — add at least one prefixed variant for each Hebrew tag \
+#    (e.g. "Python" → ["פייתון", "בפייתון"]; \
+#     "Machine Learning" → ["למידת מכונה", "בלמידת מכונה"]; \
+#     "Database" → ["בסיסי נתונים", "דאטהבייס"]).
+# c. One related higher-level domain if highly relevant \
+#    (e.g. "React" → ["Frontend"]).
+# All Hebrew characters must be output as valid, clean UTF-8 strings inside the JSON \
+# (do NOT escape them as \\uXXXX sequences)."""
 
 
 class ExtractProfileRequest(BaseModel):
@@ -1354,13 +1426,36 @@ After the last question output exactly:
 # The parser (_stream_q_parse) detects these markers and emits q_open / q_token
 # / q_close SSE events so the client can open a textarea before the sentence ends.
 
+# STREAM_QUESTIONS_LIVE_PROMPT = """\
+# You are a senior career consultant. The candidate CV is in your system prompt.
+
+# The initial match score is {base_score}% with {gap_pct} improvement points available.
+
+# Identify the {n_questions} most important skill gaps that are unclear or missing in \
+# the CV and are clearly required by the job below.
+
+# CRITICAL OUTPUT FORMAT — for EACH gap emit EXACTLY these 3 lines the MOMENT you identify it:
+# Line 1 (metadata — emit immediately): [META]{{"id":"qN","skill":"<English name>","weight":<int>}}
+# Line 2 (question   — stream freely):  <full Hebrew question text, one line>
+# Line 3 (close):                        [EXPL]<Hebrew explanation, max 15 words>[/EXPL]
+
+# Rules:
+# • Your FIRST token must be `[` — no preamble, no thinking text, no introduction.
+# • Emit gap #1 the instant you find it — do NOT read the whole job first.
+# • weights must sum to exactly {gap_pct}. Skill names in English; all text in Hebrew.
+# • Do NOT add any other lines, commentary, or JSON wrappers.
+# • After the last question output: [QUESTIONS_DONE]
+
+# === JOB DESCRIPTION ===
+# {job_text}"""
+
 STREAM_QUESTIONS_LIVE_PROMPT = """\
 You are a senior career consultant. The candidate CV is in your system prompt.
 
 The initial match score is {base_score}% with {gap_pct} improvement points available.
 
-Identify the {n_questions} most important skill gaps that are unclear or missing in \
-the CV and are clearly required by the job below.
+Identify UP TO {n_questions} of the most critical and substantial skill gaps that are unclear or missing in \
+the CV and are clearly required by the job below. Focus only on high-impact gaps; do not force minor questions just to meet a count.
 
 CRITICAL OUTPUT FORMAT — for EACH gap emit EXACTLY these 3 lines the MOMENT you identify it:
 Line 1 (metadata — emit immediately): [META]{{"id":"qN","skill":"<English name>","weight":<int>}}
@@ -1374,9 +1469,13 @@ Rules:
 • Do NOT add any other lines, commentary, or JSON wrappers.
 • After the last question output: [QUESTIONS_DONE]
 
+--- ADVANCED GAP EVALUATION RULES ---
+1. DO NOT ask novice-level questions if the CV demonstrates advanced experience in a related domain. 
+2. If the job requires AI tooling (like Copilot/Cursor) and the CV already shows hands-on AI Development (LLMs, Prompts, Agents), acknowledge their AI background in the question rather than assuming they lack AI literacy.
+3. Tailor the phrasing to match the candidate's existing professional depth (e.g., blend their Java/Python/AI background into the context of the question).
+
 === JOB DESCRIPTION ===
 {job_text}"""
-
 
 async def _stream_q_parse(token_iter):
     """
