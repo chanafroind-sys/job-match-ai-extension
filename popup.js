@@ -389,11 +389,7 @@ const CONSTRAINT_MAP = {
 // The FAB matcher reads jma_user_profile instead of raw cvText, giving accurate scoring.
 async function _extractAndSaveProfile(cvText) {
   const { licenseKey } = await chrome.storage.local.get(['licenseKey']);
-  if (!licenseKey || !cvText) return;
-
-  // Show a subtle status on the settings upload area
-  const statusEl = document.getElementById('uploadSuccess');
-  if (statusEl) { statusEl.textContent = '⏳ מנתח פרופיל מיומנויות...'; statusEl.style.display = 'block'; }
+  if (!licenseKey || !cvText) return false;
 
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
   try {
@@ -406,11 +402,11 @@ async function _extractAndSaveProfile(cvText) {
     const data = await resp.json();
     if (!data.profile) throw new Error('empty profile');
     await chrome.storage.local.set({ jma_user_profile: data.profile });
-    if (statusEl) statusEl.textContent = '✅ פרופיל מיומנויות עודכן — ניקוד המשרות ישתפר מיידית';
     console.log('[JMA] profile extracted and saved', data.profile);
+    return true;
   } catch (e) {
     console.warn('[JMA] profile extraction failed:', e.message);
-    if (statusEl) statusEl.textContent = '⚠️ שגיאה בחילוץ פרופיל. הניתוח המהיר ימשיך לפעול.';
+    return false;
   }
 }
 
@@ -503,6 +499,10 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   const statusEl = document.getElementById('licenseSettingsStatus');
   errEl.style.display = 'none';
 
+  const btn = document.getElementById('btnSaveSettings');
+  btn.disabled = true;
+  btn.textContent = '💾 שומר...';
+
   const toSave = {};
   if (fileInput._extractedText) {
     toSave.cvText = fileInput._extractedText;
@@ -517,18 +517,15 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
 
   const newKey = document.getElementById('licenseKeySettings').value.trim();
   if (newKey) {
-    const btn = document.getElementById('btnSaveSettings');
     btn.textContent = '⏳ מאמת מפתח...';
-    btn.disabled = true;
     statusEl.textContent = 'מאמת...';
     statusEl.style.color = '#888';
 
     const res = await chrome.runtime.sendMessage({ action: 'verifyLicense', licenseKey: newKey });
 
-    btn.textContent = '💾 שמור הגדרות';
-    btn.disabled = false;
-
     if (res.error) {
+      btn.textContent = '💾 שמור הגדרות';
+      btn.disabled = false;
       statusEl.textContent = '❌ ' + res.error;
       statusEl.style.color = '#e53935';
       errEl.textContent = res.error;
@@ -548,15 +545,30 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   }
 
   if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
-  document.getElementById('btnSaveSettings').textContent = '✅ נשמר!';
 
-  // If a new CV was uploaded, extract the structured profile in the background.
-  if (toSave.cvText) _extractAndSaveProfile(toSave.cvText);
+  // If a new CV was uploaded, wait for profile extraction before declaring success.
+  let extractFailed = false;
+  if (toSave.cvText) {
+    btn.textContent = '🔍 מנתח קורות חיים...';
+    const ok = await _extractAndSaveProfile(toSave.cvText);
+    extractFailed = !ok;
+  }
 
-  setTimeout(async () => {
-    document.getElementById('btnSaveSettings').textContent = '💾 שמור הגדרות';
-    await loadSettings();
-  }, 800);
+  if (extractFailed) {
+    btn.textContent = '⚠️ נשמר, אך ניתוח הקו"ח נכשל';
+    setTimeout(async () => {
+      btn.textContent = '💾 שמור הגדרות';
+      btn.disabled = false;
+      await loadSettings();
+    }, 3000);
+  } else {
+    btn.textContent = '✅ שינויים נשמרו';
+    setTimeout(async () => {
+      btn.textContent = '💾 שמור הגדרות';
+      btn.disabled = false;
+      await loadSettings();
+    }, 2000);
+  }
 });
 
 document.getElementById('btnSettingsBack').addEventListener('click', () => {

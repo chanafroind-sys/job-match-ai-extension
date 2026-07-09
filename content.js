@@ -839,8 +839,20 @@ wrap.addEventListener('click', async () => {
         requestAnimationFrame(() => pill.classList.add('jma-fab-reason-in'));
       }, i * 190);
     });
-    // Auto-dismiss after 8 s
-    setTimeout(() => wrap.remove(), 8000);
+    // מסתירים אחרי 8 שניות - לא מוחקים, כדי שריחוף על ה-FAB יחזיר אותם
+    setTimeout(() => wrap.classList.add('jma-fab-reasons-hidden'), 8000);
+
+    // ריחוף מעל ה-FAB מציג/מסתיר את הבלונים חזרה
+    const fabEl = document.getElementById('jma-fab-wrap');
+    if (fabEl && !fabEl._jmaReasonsHoverBound) {
+      fabEl._jmaReasonsHoverBound = true;
+      fabEl.addEventListener('mouseenter', () => {
+        document.getElementById('jma-fab-reasons')?.classList.remove('jma-fab-reasons-hidden');
+      });
+      fabEl.addEventListener('mouseleave', () => {
+        document.getElementById('jma-fab-reasons')?.classList.add('jma-fab-reasons-hidden');
+      });
+    }
   }
 
   // ── Injected sidebar panel (contains popup.html as iframe) ────────────────
@@ -1150,6 +1162,7 @@ wrap.addEventListener('click', async () => {
         z-index:2147483646;display:flex;flex-direction:column;gap:7px;
         max-width:210px;pointer-events:none;
       }
+      #jma-fab-reasons.jma-fab-reasons-hidden{display:none}
       .jma-fab-reason-pill{
         background:rgba(15,23,42,0.90);color:#f8fafc;
         border-radius:10px;padding:6px 11px;

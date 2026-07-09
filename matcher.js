@@ -20,6 +20,7 @@
     // personal_weight (0-100) from the profile scales personal_years.
     // 50 = ברירת מחדל לפרופילים ישנים - משחזר בדיוק את ההתנהגות הקודמת (i + 0.5p).
     DEFAULT_PERSONAL_WEIGHT: 50,
+    DEFAULT_REQ_YEARS: 1,   // דרישה בלי מספר שנים מניחה שנה - ניסיון אישי קטן לא שווה 100%
 
     // Caps / floors
     MIN_SCORE:  18,
@@ -187,6 +188,19 @@
   // סמן קבוצת בחירה: "אחת או יותר מ...", "one of", או " או "/" or " בין טכנולוגיות בשורה
   const OR_GROUP_RE = /(אחת|אחד) או יותר|לפחות (אחת|אחד)|one or more|at least one|one of the following| או |, or | or /i;
 
+  // "שנתיים לפחות" חייב להיקרא כ"2 שנים" - ה-regex מזהה רק ספרות
+  const _HEB_YEAR_WORDS = [
+    [/שנתיים/g, '2 שנים'], [/שלוש שנים/g, '3 שנים'], [/ארבע שנים/g, '4 שנים'],
+    [/חמש שנים/g, '5 שנים'], [/שש שנים/g, '6 שנים'], [/שבע שנים/g, '7 שנים'],
+    [/שמונה שנים/g, '8 שנים'], [/תשע שנים/g, '9 שנים'], [/עשר שנים/g, '10 שנים'],
+    [/שנה אחת/g, '1 שנים'], [/שנה לפחות/g, '1 שנים לפחות'],
+  ];
+  function _normalizeYearWords(s) {
+    let out = s;
+    for (const [re, rep] of _HEB_YEAR_WORDS) out = out.replace(re, rep);
+    return out;
+  }
+
   function _extractRequirements(text, profile) {
     const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
     const reqs = [];
@@ -194,7 +208,7 @@
     let groupSeq = 0;
 
     for (const line of lines) {
-      const lineLo = line.toLowerCase();
+      const lineLo = _normalizeYearWords(line.toLowerCase());
       const rangeMatch = lineLo.match(YEARS_RANGE_RE);
       const singleMatch = rangeMatch ? null : lineLo.match(YEARS_RE);
       const lineYears = rangeMatch ? parseFloat(rangeMatch[1])
@@ -218,6 +232,8 @@
             if (seen.has(key)) continue;
             const tags = Array.isArray(entry.search_tags) ? entry.search_tags : [];
             if (tags.some(t => seen.has(String(t).toLowerCase()))) continue;
+            // "sql server" כשכבר נתפס "sql" באותה שורה = אותה דרישה, לא כפילות
+            if (key.split(/[\s.\-/]+/).some(w => seen.has(w))) continue;
             if (!_techMentionedInJob(lineLo, techName, tags)) continue;
             seen.add(key);
             lineReqs.push({ tech: techName, reqYears: lineYears, domain, industryOnly });
@@ -237,7 +253,7 @@
 
   // Extract total-years-of-experience requirement from job text.
   function _extractTotalYears(text) {
-    const lo = text.toLowerCase();
+    const lo = _normalizeYearWords(text.toLowerCase());
     const patterns = [
       /(\d+)\+?\s*years?\s*(?:of\s*)?(?:professional\s*)?experience/i,
       /(\d+)\+?\s*שנות?\s*ניסיון/i,
@@ -356,7 +372,7 @@
       const effective = req.industryOnly ? yrs.industry : yrs.effective;
       const ratio = req.reqYears
         ? Math.min(1.0, effective / req.reqYears)
-        : (effective > 0 ? 1.0 : 0);
+        : Math.min(1.0, effective / CFG.DEFAULT_REQ_YEARS);
       return { industry: yrs.industry, personal: yrs.personal, effective, ratio };
     }
 
@@ -371,8 +387,10 @@
         earned += w * s.ratio;
         const pct = Math.round(s.ratio * 100);
         const label = industryOnly ? `${s.industry} שנ' תעשייה` : `${s.industry}i+${s.personal}p yr`;
-        if (!reqYears) {
+        if (!reqYears && s.ratio >= 0.85) {
           matchBullets.push(`✅ ${_cap(tech)}`);
+        } else if (!reqYears) {
+          matchBullets.push(`⚡ ${_cap(tech)} — ניסיון חלקי (${Math.round(s.ratio * 100)}%)`);
         } else if (s.ratio >= 0.85) {
           matchBullets.push(`✅ ${_cap(tech)} — ${label} (${pct}%)`);
         } else if (s.ratio >= 0.5) {
