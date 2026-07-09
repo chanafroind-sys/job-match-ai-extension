@@ -125,7 +125,12 @@ async function loadJobState(url) {
   }
 
   function cleanText(text) {
-    return text.replace(/\s+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    // קריטי: שומרים על שבירות שורה! הפרסר של matcher.js עובד לפי שורות/בולטים.
+    return text
+      .replace(/[ \t ]+/g, ' ')   // מכווצים רק רווחים אופקיים
+      .replace(/ ?\n ?/g, '\n')        // מנקים רווחים סביב שבירות שורה
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   function extractJobText() {
@@ -250,6 +255,10 @@ async function loadJobState(url) {
     }
 
     if (req.action === 'runFabPipeline') {
+      if (typeof runFabPipeline !== 'function') {
+        sendResponse({ ok: false, error: 'fab-not-initialized' });
+        return; // ה-FAB לא אותחל בעמוד הזה - הפופ-אפ ייפול ל-fallback שלו
+      }
       runFabPipeline()
         .then(res => sendResponse(res || { ok: true }))
         .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }));
