@@ -1769,6 +1769,7 @@ async function startCVGeneration(answers, language, format, coverLetter) {
     enableTracking: cvOptions.tracking !== false,
     jobTitle: _bestJobTitle(),
     company: _bestCompany(),
+    model: cvOptions.model || 'sonnet',
   });
 
   clearInterval(_progressInterval);

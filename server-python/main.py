@@ -428,26 +428,50 @@ async def require_license(license_key: str) -> str:
 
 # ── Claude API ────────────────────────────────────────────────────────────────
 
-async def call_claude(prompt: str, max_tokens: int = 1200) -> str:
+# async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-haiku-4-5-20251001") -> str:
+#     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
+#     last_exc: Exception | None = None
+#     for attempt in range(1, 4):
+#         try:
+#             message = await anthropic_client.messages.create(
+#                 model="claude-haiku-4-5-20251001",
+#                 max_tokens=max_tokens,
+#                 messages=[{"role": "user", "content": prompt}],
+#             )
+#             result = "".join(block.text for block in message.content if hasattr(block, "text"))
+#             print(f"[JMA:claude] attempt={attempt} response_len={len(result)} stop_reason={message.stop_reason}")
+#             return result
+#         except Exception as e:
+#             last_exc = e
+#             print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
+#             if attempt < 3:
+#                 await asyncio.sleep(3)
+#     raise last_exc
+async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-haiku-4-5-20251001",
+                       check_truncation: bool = False) -> str:
     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
     last_exc: Exception | None = None
     for attempt in range(1, 4):
         try:
             message = await anthropic_client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=model,
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
             result = "".join(block.text for block in message.content if hasattr(block, "text"))
             print(f"[JMA:claude] attempt={attempt} response_len={len(result)} stop_reason={message.stop_reason}")
+            if check_truncation and message.stop_reason == "max_tokens":
+                raise HTTPException(status_code=422,
+                    detail="התוכן שנוצר ארוך מדי וקוצץ באמצע. אנא נסי שוב או קצרי את קורות החיים המקוריים.")
             return result
+        except HTTPException:
+            raise
         except Exception as e:
             last_exc = e
             print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
             if attempt < 3:
                 await asyncio.sleep(3)
     raise last_exc
-
 
 async def call_claude_cached(
     system_blocks: list,
@@ -554,7 +578,25 @@ def parse_cv_sections_py(cv_text: str) -> dict:
         sections[current] = '\n'.join(lines).strip()
     return sections
 
+def _validate_cv_output(cv_final: str, original_cv: str) -> list[str]:
+    """Cheap heuristic checks — does NOT call the AI. Flags likely content loss."""
+    issues: list[str] = []
+    sections = parse_cv_sections_py(cv_final)
 
+    for marker in ['[NAME]', '[PROFILE]', '[EXPERIENCE]', '[EDUCATION]', '[SKILLS]']:
+        if not sections.get(marker, '').strip():
+            issues.append(f"missing_or_empty:{marker}")
+
+    exp_final = sections.get('[EXPERIENCE]', '')
+    if exp_final.strip() and exp_final.count('$ ') == 0:
+        issues.append("experience_has_no_bullets")
+
+    orig_len = len(original_cv.strip())
+    final_len = len(cv_final.strip())
+    if orig_len > 300 and final_len < orig_len * 0.25:
+        issues.append(f"drastic_shrink orig_chars={orig_len} final_chars={final_len}")
+
+    return issues
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 # ── Preflight system block builder ───────────────────────────────────────────
@@ -718,6 +760,20 @@ _CV_LANG_CHECK_HE = "1. LANGUAGE: Is the CV body written in Hebrew? Technical te
 CV_PASS1_PROMPT = """You are a senior CV writer and recruiter expert.
 Create a tailored CV in {language} based on the original CV and job requirements.
 
+MANDATORY WORD-BUDGET PLANNING — do this BEFORE writing any content:
+1. Target total length: 480-550 words (Hebrew) or 550-620 words (English) across ALL
+   sections combined. This is what fits one printed page at standard CV formatting.
+2. Allocate roughly: Profile 35-45 words | Per role: 3-5 bullets, ~12-18 words each |
+   Education 20-35 words | Skills: compact list | Languages 10-15 words.
+3. If original content exceeds budget, tighten WORDING first (remove filler adjectives,
+   merge clauses) — NOT by deleting whole bullets, unless a role has 5+ bullets and you
+   cut only the least job-relevant one.
+4. NEVER shorten or remove a bullet containing a quantified achievement (%, $, users,
+   scale, team size, time saved).
+5. If still over budget after tightening wording, prefer trimming older/less relevant
+   roles over recent/more relevant ones — never drop a role entirely unless it's clearly
+   unrelated filler.
+
 ABSOLUTE RULES — never break these:
 1. ONE PAGE MAXIMUM — the final CV must fit on a single printed page, no exceptions. Cut the least relevant bullet points or shorten descriptions to stay within one page. Never sacrifice core tech, key metrics, or the profile to save space — cut filler first.
 2. NEVER invent experience, skills, dates, or company names
@@ -796,14 +852,18 @@ Review and improve this CV against ALL of these criteria — fix every issue you
 8. HUMAN TONE: Should not sound AI-generated. Adjust phrasing if needed.
 9. CORE TECH & METRICS PRESERVATION: Are all core programming languages still present? Are high-value data points (grades, honors, achievements) visible? Restore if removed.
 10. HONESTY: Do not add anything not in the original CV. Do not present freelance work as full-time employment.
-11. URLs: Are all URLs from the draft present verbatim in [CONTACT]? GitHub, LinkedIn, portfolio, and personal site URLs must not be removed or shortened. Restore any missing URLs exactly as they appear in the draft. If the draft contains [LINK:display|url] tokens, copy them unchanged — do not unwrap or reformat them.
+11. URLs: Are all URLs from the ORIGINAL CV present verbatim in [CONTACT]? Restore any missing URLs by copying them exactly from the ORIGINAL CV. If either the original or the draft contains [LINK:display|url] tokens, copy them unchanged — do not unwrap or reformat them.
+12. CONTENT COMPLETENESS: Compare the draft's [EXPERIENCE] section against the ORIGINAL CV role by role. If a bullet, technology, or metric from the original was dropped without an equivalent replacement, restore it.
 
 Output ONLY the improved CV using the same section markers.
 CRITICAL FORMAT RULES — any violation breaks the Word document:
 - Write each marker on its own line exactly: [NAME], [HEADLINE], [CONTACT], [PROFILE], [EXPERIENCE], [EDUCATION], [SKILLS], [LANGUAGES]
 - Do NOT prefix markers with #, ##, **, or any other character
 - Do NOT add explanations, comments, or labels outside the CV content
-=== CV TO REVIEW ===
+
+=== ORIGINAL CV (ground truth — use this to verify nothing was lost or invented) ===
+{original_cv}
+=== DRAFT CV TO REVIEW ===
 {cv_draft}
 === JOB DESCRIPTION ===
 {job_text}"""
@@ -904,6 +964,7 @@ class GenerateCVRequest(BaseModel):
     enableTracking: bool = True
     jobTitle: str = ""
     company: str = ""
+    model: str = "sonnet"
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -2090,14 +2151,35 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         answers_text=answers_text,
         job_text=body.jobText,
     ) + url_instruction + constraints_block
-    cv_draft = await call_claude(pass1_prompt, max_tokens=2000)
+    cv_draft = await call_claude(pass1_prompt, max_tokens=4000, model="claude-haiku-4-5-20251001", check_truncation=True)
 
     pass2_prompt = CV_PASS2_PROMPT.format(
         language_check=language_check,
         cv_draft=cv_draft,
         job_text=body.jobText,
+        original_cv=body.cvText,
     ) + url_instruction + constraints_block
-    cv_final = await call_claude(pass2_prompt, max_tokens=2000)
+    cv_final = await call_claude(pass2_prompt, max_tokens=3800,
+                                  model=_resolve_model(body.model), check_truncation=True)
+
+    validation_issues = _validate_cv_output(cv_final, body.cvText)
+    if validation_issues:
+        print(f"[JMA:generate_cv] VALIDATION ISSUES: {validation_issues} — retrying Pass2 once")
+        retry_prompt = pass2_prompt + (
+            "\n\nIMPORTANT: your previous output had structural problems: "
+            f"{', '.join(validation_issues)}. Ensure every section marker is present with "
+            "real content, and do not shrink the CV drastically compared to the original."
+        )
+        try:
+            cv_final_retry = await call_claude(retry_prompt, max_tokens=3800,
+                                                 model=_resolve_model(body.model), check_truncation=True)
+            if not _validate_cv_output(cv_final_retry, body.cvText):
+                cv_final = cv_final_retry
+                print("[JMA:generate_cv] retry succeeded")
+            else:
+                print("[JMA:generate_cv] retry still has issues — using original output")
+        except Exception as e:
+            print(f"[JMA:generate_cv] retry failed: {e} — using original output")
 
     # Inject tracking links only when original CV had GitHub/LinkedIn URLs and tracking is enabled
     app_id = str(uuid.uuid4())[:8]
@@ -2123,17 +2205,17 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
                 continue
             label = SECTION_LABELS[marker]
             # Truncate very long sections to keep prompt size reasonable
-            truncated = content[:600] + ('…' if len(content) > 600 else '')
+            truncated = content[:1800] + ('…' if len(content) > 1800 else '')
             sections_block_parts.append(
                 f"Section {idx} — {marker} (label: {label}, id: {idx}):\n{truncated}"
             )
         if sections_block_parts:
             diff_prompt = CV_DIFF_PROMPT.format(
                 sections_block='\n\n'.join(sections_block_parts),
-                original_cv=body.cvText[:3000],
+                original_cv=body.cvText[:7000],
                 job_context=body.jobText[:200],
             )
-            raw_diff = await call_claude(diff_prompt, max_tokens=1800)
+            raw_diff = await call_claude(diff_prompt, max_tokens=2500)
             sections = parse_json_array(raw_diff)
             print(f"[JMA:diff] parsed {len(sections)} sections")
     except Exception as e:
