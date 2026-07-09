@@ -1307,6 +1307,27 @@ function _persistAnswersDebounced() {
   }, 1500);
 }
 
+// 🧠 מאגר תשובות מצטבר: כל תשובה איכותית נשמרת לפי סקיל ומשרתת משרות עתידיות
+const ANSWER_BANK_KEY = 'jma_answer_bank';
+async function updateAnswerBank(answers, jobTitle) {
+  try {
+    const stored = await chrome.storage.local.get([ANSWER_BANK_KEY]);
+    const bank = stored[ANSWER_BANK_KEY] || [];
+    for (const a of (answers || [])) {
+      const txt = (a.answer || '').trim();
+      if (!txt || txt === 'לא ענה' || txt.length < 4) continue; // רק תשובות אמיתיות
+      const rec = {
+        skill: a.skill || '', answer: txt.slice(0, 300),
+        sliderValue: a.sliderValue ?? null, jobTitle: (jobTitle || '').slice(0, 80),
+        ts: Date.now(),
+      };
+      const idx = bank.findIndex(b => (b.skill || '').toLowerCase() === rec.skill.toLowerCase());
+      if (idx !== -1) bank[idx] = rec; else bank.unshift(rec); // עדכני גובר על ישן
+    }
+    await chrome.storage.local.set({ [ANSWER_BANK_KEY]: bank.slice(0, 100) });
+  } catch (e) { console.warn('[JMA] answer bank update failed:', e); }
+}
+
 function collectAnswers() {
   return (state.questions || []).map((q, idx) => {
     const ta     = document.getElementById(`qs_ta_${q.id || idx}`);
@@ -1330,7 +1351,7 @@ async function startDeepAnalysisOverlay(answers) {
   chrome.tabs.sendMessage(tab.id, { action: 'openAnalysisPanel' }).catch(() => {});
 
   try {
-    const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
+    const stored = await chrome.storage.local.get(['licenseKey', 'cvText', ANSWER_BANK_KEY]);
     const resp = await fetch(`${BACKEND}/api/stream-deep-analysis`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-License-Key': stored.licenseKey || state.licenseKey || '' },
@@ -1338,6 +1359,7 @@ async function startDeepAnalysisOverlay(answers) {
         cvText:  stored.cvText || state.cvText || '',
         jobText: state.jobText || '',
         answers,
+        answerBank: (stored[ANSWER_BANK_KEY] || []).slice(0, 40),
       }),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -1369,6 +1391,7 @@ document.getElementById('btnContinueToCV').addEventListener('click', async () =>
   const answers = collectAnswers();
   state.answers = answers;
   await saveJobState({ answers });
+  await updateAnswerBank(answers, state.jobTitle); // מצטבר חוצה-משרות
 
   // Update local score estimate from weighted answers
   if (state.baseScore) {

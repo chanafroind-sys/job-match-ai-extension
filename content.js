@@ -1514,6 +1514,7 @@ function _handleAnalysisEvent(evt) {
     if (scoreEl) { scoreEl.style.color = c; scoreEl.textContent = `ציון AI: ${evt.score}%`; }
     // Update FAB
     _updateFabArc(evt.score, true);
+    saveJobState({ baseScore: evt.score }); // הציון הסופי של ה-AI גובר על האלגוריתמי
     const inner  = document.getElementById('jma-fab-inner');
     const numEl  = inner?.querySelector('.jma-fab-score-num');
     if (numEl) { numEl.style.color = c; numEl.textContent = evt.score; }

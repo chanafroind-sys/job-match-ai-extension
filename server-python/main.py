@@ -1662,15 +1662,27 @@ async def stream_questions_endpoint(
 DEEP_ANALYSIS_PROMPT = """\
 You are a senior career consultant. The candidate CV is in your system prompt.
 
-Based on the CV, job description, and the candidate's answers to gap questions below,
-produce a concise updated assessment.
+You receive: the job description, the candidate's answers to gap questions, and a
+bank of verified answers from PREVIOUS applications. Treat bank facts as reliable
+CV supplements.
 
-STRICT OUTPUT FORMAT — no preamble, no thinking:
+SCORING METHOD - score ONLY by coverage of the job's actual requirements:
+1. Identify the job's core requirements. For each: is it covered by the CV, the
+   answers, or the answer bank?
+2. Judge answer CONTENT only - NEVER style, length, or phrasing. A short answer
+   stating a fact counts as that fact. FORBIDDEN: describing any answer as vague,
+   unprofessional, or insufficient.
+3. A live MVP, deployed product, or production project counts as significant
+   experience even if not employment.
+4. Do NOT default to a "safe" 60-65. Requirements substantially covered -> 80+.
+   Core must-haves truly absent -> below 40. The score must follow the evidence.
+
+STRICT OUTPUT FORMAT - no preamble, no thinking:
 Line 1: [SCORE]<integer 0-100>[/SCORE]
-Then immediately write a flowing Hebrew analysis (~150 words):
-• 2-3 חוזקות מרכזיות מהמועמד ביחס למשרה
-• פערים ואיך תשובות המועמד השפיעו על הציון
-• המלצה סופית — האם כדאי להגיש מועמדות
+Then a flowing Hebrew analysis (~130 words):
+- חוזקות: 2-3 נקודות קונקרטיות מול דרישות המשרה
+- פערים אמיתיים בלבד: דרישות ליבה שאינן מכוסות (אם אין - כתוב שאין)
+- המלצה חד-משמעית: להגיש / להגיש עם חיזוק קו"ח / לא להגיש - ונימוק במשפט
 
 All text in Hebrew. No markdown. No JSON.
 
@@ -1678,13 +1690,17 @@ All text in Hebrew. No markdown. No JSON.
 {job_text}
 
 === CANDIDATE ANSWERS TO GAP QUESTIONS ===
-{answers_text}"""
+{answers_text}
+
+=== VERIFIED ANSWER BANK FROM PREVIOUS APPLICATIONS ===
+{answer_bank}"""
 
 
 class DeepAnalysisRequest(BaseModel):
-    cvText:   str  = ""
-    jobText:  str  = ""
-    answers:  list = []
+    cvText:     str  = ""
+    jobText:    str  = ""
+    answers:    list = []
+    answerBank: list = []
 
 
 @app.post("/api/stream-deep-analysis")
@@ -1699,8 +1715,14 @@ async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optiona
         for i, a in enumerate(body.answers or [])
     ) or "לא נענו שאלות"
 
+    answer_bank = "\n".join(
+        f"- {b.get('skill','?')}: \"{b.get('answer','')}\" (ממשרה: {b.get('jobTitle','')})"
+        for b in (body.answerBank or [])[:40]
+    ) or "אין מאגר תשובות קודמות"
+
     sys_blocks = _cv_system_blocks(cv_text)
-    prompt     = DEEP_ANALYSIS_PROMPT.format(job_text=job_text, answers_text=answers_text)
+    prompt     = DEEP_ANALYSIS_PROMPT.format(job_text=job_text, answers_text=answers_text,
+        answer_bank=answer_bank)
 
     async def generate():
         import re
