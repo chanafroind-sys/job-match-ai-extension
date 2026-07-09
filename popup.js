@@ -748,43 +748,60 @@ async function startFlow() {
   cvOptions.tracking    = stored.enableTracking !== false;
 
   // ── 2. Get job text from active tab ──────────────────────────────────────
-  let tabResult;
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    try {
-      tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
-    } catch {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-      await new Promise(r => setTimeout(r, 300));
-      tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
-    }
-  } catch { showMainError('לא הצלחנו לקרוא את הדף. נסי לרענן (F5) ואז לפתוח שוב.'); return; }
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  if (!tabResult?.text || tabResult.text.length < 100) {
-    showMainError('לא זוהתה משרה בעמוד זה. פתחי את דף המשרה הספציפי ונסי שוב.');
-    return;
+  // מפעילים את צינור ה-FAB המלא ב-content script - אותו קוד, אותם נתונים, אותו ציון.
+  let pipeRes = null;
+  try {
+    pipeRes = await chrome.tabs.sendMessage(tab.id, { action: 'runFabPipeline' });
+  } catch (e) {
+    console.warn('[JMA] content script unavailable, falling back:', e);
   }
 
-  state.jobText     = tabResult.text;
-  state.jobLanguage = tabResult.language || 'english';
-  state.jobPlatform = tabResult.platform || '';
-  state.jobUrl      = tabResult.url || '';
-  state.jobTitle    = _cleanPageTitle(tabResult.h1Title || tabResult.ogTitle || tabResult.title || '');
-  // Seed baseScore from local matcher (fixes arbitrary 65% default from AI fallback)
-  const localStored = await chrome.storage.local.get([_localScoreKey(state.jobUrl), 'jma_is_premium']);
-  if (localStored[_localScoreKey(state.jobUrl)]) state.baseScore = localStored[_localScoreKey(state.jobUrl)];
-  // Save premium flag to cvOptions for model selector rendering
-  cvOptions._isPremium = !!localStored.jma_is_premium;
-  // 💾 שמירת מצב מלא כמו שה-FAB עושה - כדי שסגירה ופתיחה מחדש ישחזרו את המשרה
-  await saveJobState({
-    jobText: state.jobText,
-    jobTitle: state.jobTitle,
-    jobLanguage: state.jobLanguage,
-    jobPlatform: state.jobPlatform,
-    baseScore: state.baseScore || 0,
-    wizard_step: 'questions',
-    activelyOpened: true,
-  });
+  if (pipeRes?.ok) {
+    // הצינור שמר הכל ל-storage - טוענים ומעדכנים את ה-state בזיכרון
+    const saved = await loadJobState(state.jobUrl);
+    if (saved) Object.assign(state, saved);
+  } else {
+    // fallback: הזרימה הישנה (עמודים בלי content script או חילוץ שנכשל)
+    let tabResult;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      try {
+        tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
+      } catch {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        await new Promise(r => setTimeout(r, 300));
+        tabResult = await chrome.tabs.sendMessage(tab.id, { action: 'getJobText' });
+      }
+    } catch { showMainError('לא הצלחנו לקרוא את הדף. נסי לרענן (F5) ואז לפתוח שוב.'); return; }
+
+    if (!tabResult?.text || tabResult.text.length < 100) {
+      showMainError('לא זוהתה משרה בעמוד זה. פתחי את דף המשרה הספציפי ונסי שוב.');
+      return;
+    }
+
+    state.jobText     = tabResult.text;
+    state.jobLanguage = tabResult.language || 'english';
+    state.jobPlatform = tabResult.platform || '';
+    state.jobUrl      = tabResult.url || '';
+    state.jobTitle    = _cleanPageTitle(tabResult.h1Title || tabResult.ogTitle || tabResult.title || '');
+    // Seed baseScore from local matcher (fixes arbitrary 65% default from AI fallback)
+    const localStored = await chrome.storage.local.get([_localScoreKey(state.jobUrl), 'jma_is_premium']);
+    if (localStored[_localScoreKey(state.jobUrl)]) state.baseScore = localStored[_localScoreKey(state.jobUrl)];
+    // Save premium flag to cvOptions for model selector rendering
+    cvOptions._isPremium = !!localStored.jma_is_premium;
+    // 💾 שמירת מצב מלא כמו שה-FAB עושה - כדי שסגירה ופתיחה מחדש ישחזרו את המשרה
+    await saveJobState({
+      jobText: state.jobText,
+      jobTitle: state.jobTitle,
+      jobLanguage: state.jobLanguage,
+      jobPlatform: state.jobPlatform,
+      baseScore: state.baseScore || 0,
+      wizard_step: 'questions',
+      activelyOpened: true,
+    });
+  }
 
   // ── 3. Check FAB preflight cache ─────────────────────────────────────────
   const pKey = _prefKey(state.jobUrl);

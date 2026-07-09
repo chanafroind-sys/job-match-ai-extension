@@ -207,6 +207,9 @@
             const key = techName.toLowerCase();
             if (seen.has(key)) continue;
             const tags = Array.isArray(entry.search_tags) ? entry.search_tags : [];
+            // אם אחת התגיות כבר נתפסה כדרישה ב-Pass 1 (למשל "sql") - הרשומה הזו
+            // כבר מיוצגת; תיקון 1 ידאג שהדרישה ההיא תמצא את השנים דרך האליאס.
+            if (tags.some(t => seen.has(String(t).toLowerCase()))) continue;
             if (!_techMentionedInJob(lineLo, techName, tags)) continue;
             seen.add(key);
             reqs.push({ tech: techName, reqYears: lineYears, domain, industryOnly });
@@ -246,8 +249,9 @@
   // ── PROFILE LOOKUP HELPERS ────────────────────────────────────────────────
 
   // Effective years = industry + personal × (personal_weight/100).
-  // Searches the hinted domain first, then ALL domains - the AI may place Python
-  // under ai_ml_llm while TECH_DOMAIN says backend.
+  // Pass A: exact tech-name match across all domains (hinted domain first).
+  // Pass B: alias match - the required term equals one of an entry's search_tags,
+  // so a job requiring "SQL" resolves to the profile's "PostgreSQL" entry.
   function _profileYears(profile, tech, domainHint) {
     const exp = profile.experience || {};
     const tl = tech.toLowerCase();
@@ -259,11 +263,7 @@
       if (!domains.includes(d)) domains.push(d);
     }
 
-    for (const d of domains) {
-      const domainExp = exp[d] || {};
-      const key = Object.keys(domainExp).find(k => k.toLowerCase() === tl);
-      if (!key) continue;
-      const entry = domainExp[key] || {};
+    function _entryYears(entry) {
       const ind = parseFloat(entry.industry_years) || 0;
       const per = parseFloat(entry.personal_years) || 0;
       let w = parseInt(entry.personal_weight, 10);
@@ -271,6 +271,24 @@
       w = Math.max(0, Math.min(100, w));
       return { effective: ind + per * (w / 100), industry: ind, personal: per };
     }
+
+    // Pass A: exact name
+    for (const d of domains) {
+      const domainExp = exp[d] || {};
+      const key = Object.keys(domainExp).find(k => k.toLowerCase() === tl);
+      if (key) return _entryYears(domainExp[key] || {});
+    }
+
+    // Pass B: reverse alias via search_tags
+    for (const d of domains) {
+      const domainExp = exp[d] || {};
+      for (const key of Object.keys(domainExp)) {
+        const entry = domainExp[key] || {};
+        const tags = Array.isArray(entry.search_tags) ? entry.search_tags : [];
+        if (tags.some(t => String(t).toLowerCase() === tl)) return _entryYears(entry);
+      }
+    }
+
     return { effective: 0, industry: 0, personal: 0 };
   }
 

@@ -248,6 +248,13 @@ async function loadJobState(url) {
         ogTitle,
       });
     }
+
+    if (req.action === 'runFabPipeline') {
+      runFabPipeline()
+        .then(res => sendResponse(res || { ok: true }))
+        .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }));
+      return true; // async response
+    }
     return true;
   });
 
@@ -350,6 +357,10 @@ async function loadJobState(url) {
   let _fabProgressTimer = null;
   let _panelOpen = false;
   const FAB_CIRC = 207.3; // 2π×33
+
+  // ref ל-runFabPipeline של ה-FAB הפעיל הנוכחי, כדי שגם onMessage (מחוץ ל-scope
+  // של _createFabGauge) יוכל להפעיל אותה כשמגיעה הודעה מהפופ-אפ.
+  let runFabPipeline = null;
 
   // שער קשיח: ה-FAB מופיע רק אם בטקסט יש סימן מובהק לסעיף דרישות/תפקיד
   const REQUIREMENTS_SIGNALS = [
@@ -546,93 +557,101 @@ function _createFabGauge(jobText, cached) {
       }, 700); 
     });
   }
+  // הצינור המלא של ה-FAB: חילוץ → ציון מקומי → שמירה מלאה ל-storage.
+  // משמש גם את לחיצת ה-FAB וגם את כפתור "ניתוח והתאמה מעמיקה" בפופ-אפ.
+  runFabPipeline = async function () {
+    const currentUrl = window.location.href;
+    const extractedText = extractJobText();
+
+    // ── אסטרטגיית חילוץ כותרת דינמית (מתוך ה-onMessage שלך) ──────────────────
+    const getJobTitle = () => {
+      const h1 = document.querySelector('h1')?.innerText?.trim() || '';
+      const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
+    
+      const rawTitle = h1 || ogTitle || document.title || 'משרה ללא כותרת';
+    
+      // ניקוי סיומות מיותרות מהכותרת (למשל: "מפתח תוכנה - LinkedIn")
+      if (typeof _cleanPageTitle === 'function') {
+        return _cleanPageTitle(rawTitle);
+      }
+      return rawTitle.split(/[|•\-–]/)[0].trim();
+    };
+
+    // ── אסטרטגיית חילוץ פלטפורמה דינמית ──────────────────────────────────────
+    const getJobPlatform = () => {
+      if (typeof detectPlatform === 'function') {
+        return detectPlatform();
+      }
+      const metaSiteName = document.querySelector('meta[property="og:site_name"]')?.content;
+      if (metaSiteName) return metaSiteName.trim();
+
+      const host = window.location.hostname;
+      const parts = host.replace('www.', '').split('.');
+      if (parts.length >= 2) {
+        return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+      }
+      return host;
+    };
+
+    // ── זיהוי שפה ואסימילציה של הנתונים ──────────────────────────────────────
+    const jobLanguage = (typeof detectLanguage === 'function') 
+      ? detectLanguage(extractedText) 
+      : (/[\u0590-\u05FF]/.test(extractedText.substring(0, 300)) ? 'hebrew' : 'english');
+
+    // שליפת הציון והבולטים הקיים שנשמרו זמנית על ה-window בחלק הפסיבי
+    const finalScore = window.jma_current_score || (cached ? cached.baseScore : 0);
+    const finalBullets = window.jma_current_bullets || (cached ? cached.bullets : []);
+
+    // 🎯 2. בניית אובייקט ה-state המלא והמאוחד למשרה הנוכחית
+    const fullJobState = {
+      url: currentUrl,          // מפתח הזיהוי בתוך המערך המאוחד
+      jobUrl: currentUrl,
+      jobText: extractedText,
+      jobTitle: getJobTitle(),
+      jobPlatform: getJobPlatform(),
+      jobLanguage: jobLanguage,
+      wizard_step: 'questions', // מעביר את הפופ-אפ ישירות למסך השאלות
+      baseScore: finalScore,
+      bullets: finalBullets,
+      ts: Date.now(),
+      activelyOpened: true,      // דגל מסמן: נפתח אקטיבית ע"י המשתמש!
+      analysis: cached?.analysis || null,
+      questions: cached?.questions || [],
+      answers: cached?.answers || [],
+      generatedCV: cached?.generatedCV || '',
+      gapPct: cached?.gapPct || 0
+    };
+
+    try {
+      // 📦 3. שמירה אקטיבית ומרוכזת לתוך מערך 5 המשרות ב-Storage
+      if (typeof saveJobState === 'function') {
+        await saveJobState(fullJobState);
+      } else {
+        // פתרון גיבוי ישיר במידה ו-saveJobState לא נגישה באותו הסקופ
+        const storageData = await chrome.storage.local.get('jma_recent_jobs');
+        let recentJobs = storageData.jma_recent_jobs || [];
+        recentJobs = recentJobs.filter(j => j.url !== currentUrl);
+        recentJobs.unshift(fullJobState);
+        if (recentJobs.length > 5) recentJobs.pop();
+        await chrome.storage.local.set({ jma_recent_jobs: recentJobs });
+      }
+
+      // 🔄 4. עדכון משתנה הסטייט הלוקאלי המקומי (אם קיים בסקופ הקובץ)
+      if (typeof state !== 'undefined') {
+        Object.assign(state, fullJobState);
+      }
+    } catch (err) {
+      console.error("⚠️ שגיאה בשמירת נתוני המשרה בסטורג':", err);
+    }
+
+    return { ok: true, baseScore: finalScore };
+  };
+
 wrap.addEventListener('click', async () => {
   // 1. הגנה: מאפשר לחיצה רק אם הכפתור מוכן (clickable)
   if (!wrap.classList.contains('jma-fab-clickable')) return;
 
-  const currentUrl = window.location.href;
-  const extractedText = extractJobText();
-
-  // ── אסטרטגיית חילוץ כותרת דינמית (מתוך ה-onMessage שלך) ──────────────────
-  const getJobTitle = () => {
-    const h1 = document.querySelector('h1')?.innerText?.trim() || '';
-    const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
-    
-    const rawTitle = h1 || ogTitle || document.title || 'משרה ללא כותרת';
-    
-    // ניקוי סיומות מיותרות מהכותרת (למשל: "מפתח תוכנה - LinkedIn")
-    if (typeof _cleanPageTitle === 'function') {
-      return _cleanPageTitle(rawTitle);
-    }
-    return rawTitle.split(/[|•\-–]/)[0].trim();
-  };
-
-  // ── אסטרטגיית חילוץ פלטפורמה דינמית ──────────────────────────────────────
-  const getJobPlatform = () => {
-    if (typeof detectPlatform === 'function') {
-      return detectPlatform();
-    }
-    const metaSiteName = document.querySelector('meta[property="og:site_name"]')?.content;
-    if (metaSiteName) return metaSiteName.trim();
-
-    const host = window.location.hostname;
-    const parts = host.replace('www.', '').split('.');
-    if (parts.length >= 2) {
-      return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-    }
-    return host;
-  };
-
-  // ── זיהוי שפה ואסימילציה של הנתונים ──────────────────────────────────────
-  const jobLanguage = (typeof detectLanguage === 'function') 
-    ? detectLanguage(extractedText) 
-    : (/[\u0590-\u05FF]/.test(extractedText.substring(0, 300)) ? 'hebrew' : 'english');
-
-  // שליפת הציון והבולטים הקיים שנשמרו זמנית על ה-window בחלק הפסיבי
-  const finalScore = window.jma_current_score || (cached ? cached.baseScore : 0);
-  const finalBullets = window.jma_current_bullets || (cached ? cached.bullets : []);
-
-  // 🎯 2. בניית אובייקט ה-state המלא והמאוחד למשרה הנוכחית
-  const fullJobState = {
-    url: currentUrl,          // מפתח הזיהוי בתוך המערך המאוחד
-    jobUrl: currentUrl,
-    jobText: extractedText,
-    jobTitle: getJobTitle(),
-    jobPlatform: getJobPlatform(),
-    jobLanguage: jobLanguage,
-    wizard_step: 'questions', // מעביר את הפופ-אפ ישירות למסך השאלות
-    baseScore: finalScore,
-    bullets: finalBullets,
-    ts: Date.now(),
-    activelyOpened: true,      // דגל מסמן: נפתח אקטיבית ע"י המשתמש!
-    analysis: cached?.analysis || null,
-    questions: cached?.questions || [],
-    answers: cached?.answers || [],
-    generatedCV: cached?.generatedCV || '',
-    gapPct: cached?.gapPct || 0
-  };
-
-  try {
-    // 📦 3. שמירה אקטיבית ומרוכזת לתוך מערך 5 המשרות ב-Storage
-    if (typeof saveJobState === 'function') {
-      await saveJobState(fullJobState);
-    } else {
-      // פתרון גיבוי ישיר במידה ו-saveJobState לא נגישה באותו הסקופ
-      const storageData = await chrome.storage.local.get('jma_recent_jobs');
-      let recentJobs = storageData.jma_recent_jobs || [];
-      recentJobs = recentJobs.filter(j => j.url !== currentUrl);
-      recentJobs.unshift(fullJobState);
-      if (recentJobs.length > 5) recentJobs.pop();
-      await chrome.storage.local.set({ jma_recent_jobs: recentJobs });
-    }
-
-    // 🔄 4. עדכון משתנה הסטייט הלוקאלי המקומי (אם קיים בסקופ הקובץ)
-    if (typeof state !== 'undefined') {
-      Object.assign(state, fullJobState);
-    }
-  } catch (err) {
-    console.error("⚠️ שגיאה בשמירת נתוני המשרה בסטורג':", err);
-  }
+  await runFabPipeline();
 
   // 🚀 5. פתיחת הפאנל הצדדי/סידבר למשתמש
   if (typeof _togglePanel === 'function') {
