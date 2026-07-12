@@ -44,7 +44,7 @@ const JOB_FIELDS = [
   'url', 'jobUrl', 'jobText', 'jobTitle', 'jobPlatform', 'jobLanguage',
   'wizard_step', 'baseScore', 'bullets', 'ts', 'activelyOpened',
   'analysis', 'questions', 'answers', 'generatedCV', 'coverLetterText',
-  'cvLanguage', 'gapPct'
+  'cvLanguage', 'gapPct', 'sentToRecruiter'
 ];
 
 function _pickJobFields(obj) {
@@ -780,19 +780,163 @@ function showMainResult(analysis, doTypewriter = false) {
 
 // Best-effort lookup of a recruiter for this job's company. Silent on failure —
 // this is a nice-to-have surfaced on the results screen, not a blocking check.
+let _foundRecruiter = null; // { id, full_name, company, phone, is_verified } — never has email (see backend)
+
 async function _checkRecruiterForCompany(company) {
   const row = document.getElementById('recruiterFoundRow');
   row.style.display = 'none';
+  _foundRecruiter = null;
   if (!company || !company.trim()) return;
   try {
     const resp = await chrome.runtime.sendMessage({ action: 'searchRecruiters', company: company.trim() });
     const results = resp?.results || [];
     if (results.length === 0) return;
     const r = results[0];
+    _foundRecruiter = r;
     document.getElementById('recruiterFoundDetails').textContent = `${r.full_name} (${r.company})`;
     row.style.display = 'flex';
   } catch {}
 }
+
+// ── Send CV to recruiter: draft letter → confirm+charge → Gmail compose tab ──
+
+function _rlReset() {
+  document.getElementById('rlNoCv').style.display = 'none';
+  document.getElementById('rlForm').style.display = 'none';
+  document.getElementById('rlError').style.display = 'none';
+  document.getElementById('rlSuccessWrap').style.display = 'none';
+  document.getElementById('rlLoading').style.display = 'none';
+}
+
+document.getElementById('btnRlCancel').addEventListener('click', () => showScreen('main'));
+document.getElementById('btnRlNoCvBack').addEventListener('click', () => showScreen('main'));
+document.getElementById('btnRlDone').addEventListener('click', () => showScreen('main'));
+
+document.getElementById('btnRlGoGenerateCv').addEventListener('click', () => {
+  showCVOptionsScreen();
+});
+
+document.getElementById('btnSendToRecruiter').addEventListener('click', async () => {
+  if (!_foundRecruiter) return;
+
+  showScreen('recruiter-letter');
+  _rlReset();
+
+  if (!state.generatedCV) {
+    document.getElementById('rlNoCv').style.display = 'block';
+    return;
+  }
+
+  document.getElementById('rlRecruiterName').textContent = _foundRecruiter.full_name || '';
+  document.getElementById('rlRecruiterCompany').textContent = _foundRecruiter.company || '';
+  document.getElementById('rlLoading').style.display = 'block';
+
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      action: 'draftRecruiterLetter',
+      jobTitle: _bestJobTitle(),
+      company: _bestCompany(),
+      jobText: state.jobText || '',
+      recruiterName: _foundRecruiter.full_name || '',
+      cvSummary: (state.cvText || '').slice(0, 1500),
+    });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  document.getElementById('rlLoading').style.display = 'none';
+
+  if (resp?.error) {
+    document.getElementById('rlError').textContent = resp.error;
+    document.getElementById('rlError').style.display = 'block';
+    return;
+  }
+
+  const draft = resp.result || {};
+  document.getElementById('rlSubjectInput').value = draft.subject || '';
+  document.getElementById('rlBodyTextarea').value = draft.body || '';
+
+  let balance = 0;
+  try {
+    const balResp = await chrome.runtime.sendMessage({ action: 'getPointsBalance' });
+    balance = balResp?.balance ?? 0;
+  } catch {}
+  document.getElementById('rlCostLine').textContent = `הכנת המייל תעלה נקודה אחת (יתרה: ${balance})`;
+
+  document.getElementById('rlForm').style.display = 'block';
+});
+
+document.getElementById('btnRlConfirm').addEventListener('click', async () => {
+  if (!_foundRecruiter) return;
+  const btn = document.getElementById('btnRlConfirm');
+  const subject = document.getElementById('rlSubjectInput').value.trim();
+  const body = document.getElementById('rlBodyTextarea').value.trim();
+  if (!subject || !body) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ שולח...';
+  const errEl = document.getElementById('rlError');
+  errEl.style.display = 'none';
+  errEl.innerHTML = '';
+
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      action: 'logRecruiterEmailOpen',
+      recruiterId: _foundRecruiter.id,
+      jobUrlHash: _urlHash(state.jobUrl || ''),
+      jobTitle: _bestJobTitle(),
+      company: _bestCompany(),
+    });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  btn.disabled = false;
+  btn.textContent = '✅ פתח מייל ב-Gmail ושלח/י';
+
+  if (resp?.error) {
+    errEl.textContent = resp.error;
+    errEl.style.display = 'block';
+    if (resp.error.includes('נקודות')) {
+      const goEarn = document.createElement('button');
+      goEarn.className = 'btn btn-secondary';
+      goEarn.style.marginTop = '8px';
+      goEarn.textContent = '🧑‍💼 עברי למגייסים לצבירת נקודות';
+      goEarn.addEventListener('click', () => {
+        _recruitersReturnScreen = 'recruiter-letter';
+        _resetRecruiterForm();
+        showScreen('recruiters');
+      });
+      errEl.appendChild(document.createElement('br'));
+      errEl.appendChild(goEarn);
+    }
+    return;
+  }
+
+  const result = resp.result || {};
+  if (typeof result.balance === 'number') {
+    document.getElementById('pointsBadgeValue').textContent = result.balance;
+  }
+
+  // Download the matching DOCX so the user can attach it in Gmail (drag & drop —
+  // there is no way to attach a file via a mailto/compose URL).
+  const jt = _bestJobTitle();
+  const filename = `CV_${jt.replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`;
+  downloadDocx(state.generatedCV, filename, !!state.cvIsRtl);
+
+  // Pre-filled Gmail compose tab — the user reviews and clicks send themselves.
+  const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(result.email || '')}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  chrome.tabs.create({ url: gmailUrl });
+
+  await updateJobData({ sentToRecruiter: true });
+  await markJobSentToRecruiter(state.jobUrl);
+
+  document.getElementById('rlForm').style.display = 'none';
+  document.getElementById('rlSuccess').textContent = '📨 המייל נפתח בטאב חדש — צרף/י את קובץ הקו״ח שירד ולחץ/י שלח.';
+  document.getElementById('rlSuccessWrap').style.display = 'block';
+});
 
 // Load preflight cache into state
 function _loadPreflightCache(pCache) {
@@ -2321,6 +2465,7 @@ async function showTrackerScreen() {
       <td><span class="platform-tag">${j.platform || '-'}</span></td>
       <td class="score-cell ${scoreClass}">${score}%</td>
       <td>${j.cvGenerated ? '✅' : '❌'}</td>
+      <td>${j.sentToRecruiter ? '✅' : '❌'}</td>
       <td>${linkTargetCell}</td>
       <td style="text-align:center">${clickCountCell}</td>
       <td>${lastOpenedCell}</td>
@@ -2350,6 +2495,7 @@ async function showTrackerScreen() {
             <th>פלטפורמה</th>
             <th>ציון</th>
             <th>CV</th>
+            <th>נשלח למגייס</th>
             <th>לינק נפתח</th>
             <th>לחיצות</th>
             <th>פתיחה אחרונה</th>

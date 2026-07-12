@@ -61,6 +61,18 @@ def _serialize(r: Recruiter) -> dict:
     }
 
 
+def _serialize_public(r: Recruiter) -> dict:
+    """Search results never include the recruiter's email — it's only handed
+    out by POST /api/emails/log-open, after a point has been charged."""
+    return {
+        "id": r.id,
+        "full_name": r.full_name,
+        "phone": r.phone,
+        "company": r.company,
+        "is_verified": r.is_verified,
+    }
+
+
 async def _daily_recruiter_credits_today(db: AsyncSession, user_id: int) -> int:
     # Naive UTC, matching how SQLite stores DateTime(timezone=True) values under
     # the server_default CURRENT_TIMESTAMP (no offset suffix).
@@ -227,4 +239,4 @@ async def search_recruiters(
         .order_by(Recruiter.company_normalized)
         .limit(10)
     )
-    return {"results": [_serialize(r) for r in result.scalars().all()]}
+    return {"results": [_serialize_public(r) for r in result.scalars().all()]}

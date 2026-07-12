@@ -823,7 +823,7 @@
         <strong id="recruiterFoundLabel">נמצא מגייס במאגר</strong>
         <span id="recruiterFoundDetails"></span>
       </div>
-      <button class="btn-icon" id="btnSendToRecruiter" disabled title="בקרוב">📤 שלח קו״ח למגייס</button>
+      <button class="btn-icon" id="btnSendToRecruiter">📤 שלח קו״ח למגייס</button>
     </div>
 
     <button class="btn btn-primary" id="btnGenerateCV" style="display:none">
@@ -853,6 +853,42 @@
 
     <button class="btn btn-primary" id="btnSubmitRecruiter">➕ הוסף/י מגייס/ת</button>
     <button class="btn btn-secondary" id="btnRecruitersBack" style="margin-top:8px">← חזור</button>
+  </div>
+</div>
+
+<!-- RECRUITER LETTER SCREEN -->
+<div class="screen" id="screen-recruiter-letter">
+  <div class="screen-title" style="margin-bottom:10px">📤 שליחת קו״ח למגייס/ת</div>
+
+  <div id="rlNoCv" style="display:none">
+    <div class="license-subtitle">כדי לשלוח מייל למגייס/ת צריך קודם ליצור קורות חיים מותאמים למשרה הזו.</div>
+    <button class="btn btn-primary" id="btnRlGoGenerateCv" style="margin-top:10px">✨ צור קורות חיים מותאמים</button>
+    <button class="btn btn-secondary" id="btnRlNoCvBack" style="margin-top:8px">← חזור</button>
+  </div>
+
+  <div id="rlLoading" style="display:none" class="loading-wrap">
+    <div class="spinner"></div>
+    <div class="loading-text">מנסח מכתב פנייה...</div>
+  </div>
+
+  <div id="rlError" class="error-box" style="display:none;margin-bottom:10px"></div>
+  <div id="rlSuccessWrap" style="display:none">
+    <div id="rlSuccess" class="license-success" style="margin-bottom:10px"></div>
+    <button class="btn btn-secondary" id="btnRlDone">← חזור לניתוח</button>
+  </div>
+
+  <div id="rlForm" style="display:none">
+    <div class="license-subtitle" style="margin-bottom:8px">
+      פנייה אל <strong id="rlRecruiterName"></strong> ב-<span id="rlRecruiterCompany"></span>
+    </div>
+
+    <input type="text" class="license-input" id="rlSubjectInput" placeholder="נושא המייל" style="direction:rtl">
+    <textarea class="cover-letter-textarea" id="rlBodyTextarea" style="min-height:160px"></textarea>
+
+    <div class="ready-warning" id="rlCostLine" style="margin-top:10px"></div>
+
+    <button class="btn btn-primary" id="btnRlConfirm" style="margin-top:8px">✅ פתח מייל ב-Gmail ושלח/י</button>
+    <button class="btn btn-secondary" id="btnRlCancel" style="margin-top:8px">← ביטול</button>
   </div>
 </div>
 

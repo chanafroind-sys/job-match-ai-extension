@@ -332,6 +332,43 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  if (req.action === 'draftRecruiterLetter') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/recruiter-letter', {
+          jobTitle: req.jobTitle || '',
+          company: req.company || '',
+          jobText: req.jobText || '',
+          recruiterName: req.recruiterName || '',
+          cvSummary: req.cvSummary || '',
+        }, stored.licenseKey, { maxAttempts: 2, delayMs: 8000 });
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'logRecruiterEmailOpen') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/emails/log-open', {
+          recruiter_id: req.recruiterId,
+          job_url_hash: req.jobUrlHash || '',
+          job_title: req.jobTitle || '',
+          company: req.company || '',
+        }, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
   if (req.action === 'pingBackend') {
     // Fire-and-forget wake-up call to prevent Render cold start delay
     fetch(`${BACKEND_URL}/health`).catch(() => {});
