@@ -33,8 +33,7 @@ class ActionType(str, enum.Enum):
 
 
 class SendStatus(str, enum.Enum):
-    SENT = "sent"
-    FAILED = "failed"
+    OPENED = "opened"
 
 
 class ReferralStatus(str, enum.Enum):
@@ -93,14 +92,15 @@ class PointsLedger(Base):
 class SendLog(Base):
     __tablename__ = "send_log"
     __table_args__ = (
-        # Partial unique index — only a *successful* send blocks re-sending to the
-        # same recruiter for the same job; failed attempts can be retried freely.
+        # Partial unique index — a logged "opened" row blocks preparing a second
+        # email to the same recruiter for the same job (that's the whole point:
+        # one point charge per user+recruiter+job).
         Index(
             "uq_send_log_user_recruiter_job_sent",
             "user_id", "recruiter_id", "job_url_hash",
             unique=True,
-            sqlite_where=text("status = 'sent'"),
-            postgresql_where=text("status = 'sent'"),
+            sqlite_where=text("status = 'opened'"),
+            postgresql_where=text("status = 'opened'"),
         ),
     )
 
@@ -130,6 +130,18 @@ class Employee(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=_utcnow
     )
+
+
+class SyncMeta(Base):
+    """One row per external sync source. Currently just the employees Google
+    Sheet — key='employees_sheet'. Lazily read/written by sync_service on every
+    GET /api/referrals/check, since Render's free tier has no cron."""
+
+    __tablename__ = "sync_meta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ReferralRequest(Base):

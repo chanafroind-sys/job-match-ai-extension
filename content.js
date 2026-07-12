@@ -395,13 +395,20 @@ function initJobFab() {
 
   if (!_hasJobRequirementsSignal(jobText)) return; // אין סעיף דרישות - לא עמוד משרה מלא
 
-  // עמוד משרה מאומת: מעירים את השרת + שומרים את המשרה למאגר (השרת מסנן כפילויות לפי URL)
-  chrome.runtime.sendMessage({ action: 'pingBackend' });
-  chrome.runtime.sendMessage({
-    action: 'scrapeJob',
-    url: location.href,
-    text: jobText.substring(0, 5000),
-    title: document.title || '',
+  // עמוד משרה מאומת: מעירים את השרת + שומרים את המשרה למאגר (השרת מסנן כפילויות לפי URL),
+  // אבל רק אם המשתמש אישר בהגדרות שיתוף אנונימי של עמודי משרות
+  chrome.storage.local.get(['shareJobsConsent'], (settings) => {
+    if (settings.shareJobsConsent === true) {
+      chrome.runtime.sendMessage({ action: 'pingBackend' });
+      chrome.runtime.sendMessage({
+        action: 'scrapeJob',
+        url: location.href,
+        text: jobText.substring(0, 5000),
+        title: document.title || '',
+      });
+    } else {
+      console.log("[JMA] Job scraping skipped: User did not consent to share job links.");
+    }
   });
 
   chrome.storage.local.get(['licenseKey', 'cvText', 'jma_recent_jobs'], (conf) => {

@@ -44,8 +44,15 @@ const JOB_FIELDS = [
   'url', 'jobUrl', 'jobText', 'jobTitle', 'jobPlatform', 'jobLanguage',
   'wizard_step', 'baseScore', 'bullets', 'ts', 'activelyOpened',
   'analysis', 'questions', 'answers', 'generatedCV', 'coverLetterText',
-  'cvLanguage', 'gapPct'
+  'cvLanguage', 'gapPct', 'sentToRecruiter', 'referralStatus'
 ];
+
+const REFERRAL_STATUS_LABELS = {
+  pending: '⏳ בהמתנה',
+  accepted: '✅ אושר',
+  declined: '❌ נדחה',
+  expired: '⏱️ פג תוקף',
+};
 
 function _pickJobFields(obj) {
   const out = {};
@@ -412,7 +419,8 @@ async function _extractAndSaveProfile(cvText) {
 
 // Settings screen
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints']);
+  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints', 'shareJobsConsent']);
+  document.getElementById('chkShareJobsData').checked = !!data.shareJobsConsent;
   if (data.cvName) {
     document.getElementById('uploadText').textContent = `✅ ${data.cvName}`;
     document.getElementById('uploadArea').classList.add('has-file');
@@ -504,6 +512,7 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   btn.textContent = '💾 שומר...';
 
   const toSave = {};
+  toSave.shareJobsConsent = document.getElementById('chkShareJobsData').checked;
   if (fileInput._extractedText) {
     toSave.cvText = fileInput._extractedText;
     toSave.cvName = fileInput._fileName;
@@ -592,6 +601,82 @@ document.getElementById('btnTracker').addEventListener('click', () => {
 chrome.action.getBadgeText({}, (text) => {
   if (text && text.trim()) {
     document.getElementById('trackerNewDot').style.display = 'block';
+  }
+});
+
+// Recruiters screen
+let _recruitersReturnScreen = 'ready';
+
+function _resetRecruiterForm() {
+  document.getElementById('recruiterNameInput').value = '';
+  document.getElementById('recruiterEmailInput').value = '';
+  document.getElementById('recruiterPhoneInput').value = '';
+  document.getElementById('recruiterCompanyInput').value = '';
+  document.getElementById('recruiterError').style.display = 'none';
+  document.getElementById('recruiterSuccess').style.display = 'none';
+}
+
+document.getElementById('btnRecruiters').addEventListener('click', () => {
+  const active = document.querySelector('.screen.active');
+  _recruitersReturnScreen = active ? active.id.replace('screen-', '') : 'ready';
+  _resetRecruiterForm();
+  showScreen('recruiters');
+});
+
+document.getElementById('btnRecruitersBack').addEventListener('click', () => {
+  showScreen(_recruitersReturnScreen);
+});
+
+document.getElementById('btnSubmitRecruiter').addEventListener('click', async () => {
+  const errEl = document.getElementById('recruiterError');
+  const okEl  = document.getElementById('recruiterSuccess');
+  errEl.style.display = 'none';
+  okEl.style.display = 'none';
+
+  const fullName = document.getElementById('recruiterNameInput').value.trim();
+  const email    = document.getElementById('recruiterEmailInput').value.trim();
+  const phone    = document.getElementById('recruiterPhoneInput').value.trim();
+  const company  = document.getElementById('recruiterCompanyInput').value.trim();
+
+  if (!fullName || !email || !company) {
+    errEl.textContent = 'נא למלא שם, אימייל וחברה.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btnSubmitRecruiter');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'שולח...';
+
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({ action: 'addRecruiter', fullName, email, phone, company });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  btn.disabled = false;
+  btn.textContent = originalText;
+
+  if (resp?.error) {
+    errEl.textContent = resp.error;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const result = resp.result || {};
+  document.getElementById('recruiterNameInput').value = '';
+  document.getElementById('recruiterEmailInput').value = '';
+  document.getElementById('recruiterPhoneInput').value = '';
+  document.getElementById('recruiterCompanyInput').value = '';
+  okEl.textContent = result.message || 'המגייס/ת נשמר/ה במאגר.';
+  okEl.style.display = 'block';
+
+  if (typeof result.balance === 'number') {
+    document.getElementById('pointsBadgeValue').textContent = result.balance;
+  } else {
+    loadPointsBalance();
   }
 });
 
@@ -696,7 +781,226 @@ function showMainResult(analysis, doTypewriter = false) {
   // CV button
   const btnCV = document.getElementById('btnGenerateCV');
   btnCV.style.display = score >= 40 ? 'block' : 'none';
+
+  _checkRecruiterForCompany(analysis.company);
+  _checkReferralAvailability(analysis.company, score);
 }
+
+// Best-effort lookup of a recruiter for this job's company. Silent on failure —
+// this is a nice-to-have surfaced on the results screen, not a blocking check.
+let _foundRecruiter = null; // { id, full_name, company, phone, is_verified } — never has email (see backend)
+
+async function _checkRecruiterForCompany(company) {
+  const row = document.getElementById('recruiterFoundRow');
+  row.style.display = 'none';
+  _foundRecruiter = null;
+  if (!company || !company.trim()) return;
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'searchRecruiters', company: company.trim() });
+    const results = resp?.results || [];
+    if (results.length === 0) return;
+    const r = results[0];
+    _foundRecruiter = r;
+    document.getElementById('recruiterFoundDetails').textContent = `${r.full_name} (${r.company})`;
+    row.style.display = 'flex';
+  } catch {}
+}
+
+// Best-effort "an employee can refer you" check. Silent on failure — same
+// nice-to-have-not-blocking treatment as the recruiter lookup above.
+let _referralCost = 5;
+
+async function _checkReferralAvailability(company, score) {
+  const row = document.getElementById('referralFoundRow');
+  row.style.display = 'none';
+  if (!company || !company.trim() || score < 75) return;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      action: 'checkReferral',
+      company: company.trim(),
+      score,
+      jobUrlHash: _urlHash(state.jobUrl || ''),
+    });
+    if (!resp?.available) return;
+    _referralCost = resp.cost ?? 5;
+    row.style.display = 'flex';
+  } catch {}
+}
+
+document.getElementById('btnConfirmReferral').addEventListener('click', async () => {
+  const btn = document.getElementById('btnConfirmReferral');
+  btn.disabled = true;
+  btn.textContent = '⏳ שולח...';
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      action: 'confirmReferral',
+      jobUrlHash: _urlHash(state.jobUrl || ''),
+      jobTitle: _bestJobTitle(),
+      company: _bestCompany(),
+      score: state.analysis?.score || 0,
+      candidateSummary: (state.cvText || state.analysis?.summary || '').slice(0, 1500),
+    });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  if (resp?.error) {
+    btn.disabled = false;
+    btn.textContent = '🤝 בקש/י הפניה';
+    alert(resp.error);
+    return;
+  }
+
+  const result = resp.result || {};
+  if (typeof result.balance === 'number') {
+    document.getElementById('pointsBadgeValue').textContent = result.balance;
+  }
+  btn.textContent = '✅ הבקשה נשלחה';
+
+  await updateJobData({ referralStatus: 'pending' });
+  await markJobReferralStatus(state.jobUrl, 'pending');
+});
+
+// ── Send CV to recruiter: draft letter → confirm+charge → Gmail compose tab ──
+
+function _rlReset() {
+  document.getElementById('rlNoCv').style.display = 'none';
+  document.getElementById('rlForm').style.display = 'none';
+  document.getElementById('rlError').style.display = 'none';
+  document.getElementById('rlSuccessWrap').style.display = 'none';
+  document.getElementById('rlLoading').style.display = 'none';
+}
+
+document.getElementById('btnRlCancel').addEventListener('click', () => showScreen('main'));
+document.getElementById('btnRlNoCvBack').addEventListener('click', () => showScreen('main'));
+document.getElementById('btnRlDone').addEventListener('click', () => showScreen('main'));
+
+document.getElementById('btnRlGoGenerateCv').addEventListener('click', () => {
+  showCVOptionsScreen();
+});
+
+document.getElementById('btnSendToRecruiter').addEventListener('click', async () => {
+  if (!_foundRecruiter) return;
+
+  showScreen('recruiter-letter');
+  _rlReset();
+
+  if (!state.generatedCV) {
+    document.getElementById('rlNoCv').style.display = 'block';
+    return;
+  }
+
+  document.getElementById('rlRecruiterName').textContent = _foundRecruiter.full_name || '';
+  document.getElementById('rlRecruiterCompany').textContent = _foundRecruiter.company || '';
+  document.getElementById('rlLoading').style.display = 'block';
+
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      action: 'draftRecruiterLetter',
+      jobTitle: _bestJobTitle(),
+      company: _bestCompany(),
+      jobText: state.jobText || '',
+      recruiterName: _foundRecruiter.full_name || '',
+      cvSummary: (state.cvText || '').slice(0, 1500),
+    });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  document.getElementById('rlLoading').style.display = 'none';
+
+  if (resp?.error) {
+    document.getElementById('rlError').textContent = resp.error;
+    document.getElementById('rlError').style.display = 'block';
+    return;
+  }
+
+  const draft = resp.result || {};
+  document.getElementById('rlSubjectInput').value = draft.subject || '';
+  document.getElementById('rlBodyTextarea').value = draft.body || '';
+
+  let balance = 0;
+  try {
+    const balResp = await chrome.runtime.sendMessage({ action: 'getPointsBalance' });
+    balance = balResp?.balance ?? 0;
+  } catch {}
+  document.getElementById('rlCostLine').textContent = `הכנת המייל תעלה נקודה אחת (יתרה: ${balance})`;
+
+  document.getElementById('rlForm').style.display = 'block';
+});
+
+document.getElementById('btnRlConfirm').addEventListener('click', async () => {
+  if (!_foundRecruiter) return;
+  const btn = document.getElementById('btnRlConfirm');
+  const subject = document.getElementById('rlSubjectInput').value.trim();
+  const body = document.getElementById('rlBodyTextarea').value.trim();
+  if (!subject || !body) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ שולח...';
+  const errEl = document.getElementById('rlError');
+  errEl.style.display = 'none';
+  errEl.innerHTML = '';
+
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      action: 'logRecruiterEmailOpen',
+      recruiterId: _foundRecruiter.id,
+      jobUrlHash: _urlHash(state.jobUrl || ''),
+      jobTitle: _bestJobTitle(),
+      company: _bestCompany(),
+    });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  btn.disabled = false;
+  btn.textContent = '✅ פתח מייל ב-Gmail ושלח/י';
+
+  if (resp?.error) {
+    errEl.textContent = resp.error;
+    errEl.style.display = 'block';
+    if (resp.error.includes('נקודות')) {
+      const goEarn = document.createElement('button');
+      goEarn.className = 'btn btn-secondary';
+      goEarn.style.marginTop = '8px';
+      goEarn.textContent = '🧑‍💼 עברי למגייסים לצבירת נקודות';
+      goEarn.addEventListener('click', () => {
+        _recruitersReturnScreen = 'recruiter-letter';
+        _resetRecruiterForm();
+        showScreen('recruiters');
+      });
+      errEl.appendChild(document.createElement('br'));
+      errEl.appendChild(goEarn);
+    }
+    return;
+  }
+
+  const result = resp.result || {};
+  if (typeof result.balance === 'number') {
+    document.getElementById('pointsBadgeValue').textContent = result.balance;
+  }
+
+  // Download the matching DOCX so the user can attach it in Gmail (drag & drop —
+  // there is no way to attach a file via a mailto/compose URL).
+  const jt = _bestJobTitle();
+  const filename = `CV_${jt.replace(/[^a-zA-Z0-9א-ת]/g, '_')}.docx`;
+  downloadDocx(state.generatedCV, filename, !!state.cvIsRtl);
+
+  // Pre-filled Gmail compose tab — the user reviews and clicks send themselves.
+  const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(result.email || '')}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  chrome.tabs.create({ url: gmailUrl });
+
+  await updateJobData({ sentToRecruiter: true });
+  await markJobSentToRecruiter(state.jobUrl);
+
+  document.getElementById('rlForm').style.display = 'none';
+  document.getElementById('rlSuccess').textContent = '📨 המייל נפתח בטאב חדש — צרף/י את קובץ הקו״ח שירד ולחץ/י שלח.';
+  document.getElementById('rlSuccessWrap').style.display = 'block';
+});
 
 // Load preflight cache into state
 function _loadPreflightCache(pCache) {
@@ -2225,6 +2529,8 @@ async function showTrackerScreen() {
       <td><span class="platform-tag">${j.platform || '-'}</span></td>
       <td class="score-cell ${scoreClass}">${score}%</td>
       <td>${j.cvGenerated ? '✅' : '❌'}</td>
+      <td>${j.sentToRecruiter ? '✅' : '❌'}</td>
+      <td>${REFERRAL_STATUS_LABELS[j.referralStatus] || '<span class="no-data">-</span>'}</td>
       <td>${linkTargetCell}</td>
       <td style="text-align:center">${clickCountCell}</td>
       <td>${lastOpenedCell}</td>
@@ -2254,6 +2560,8 @@ async function showTrackerScreen() {
             <th>פלטפורמה</th>
             <th>ציון</th>
             <th>CV</th>
+            <th>נשלח למגייס</th>
+            <th>הפניה</th>
             <th>לינק נפתח</th>
             <th>לחיצות</th>
             <th>פתיחה אחרונה</th>
@@ -2382,9 +2690,10 @@ document.getElementById('btnRankPageJobs').addEventListener('click', async () =>
 // ── Premium import screen ─────────────────────────────────────────────────────
 
 async function showPremiumScreen() {
-  const data = await chrome.storage.local.get(['isPremium']);
-  document.getElementById('premiumLocked').style.display = data.isPremium ? 'none' : 'block';
-  document.getElementById('premiumActive').style.display = data.isPremium ? 'block' : 'none';
+  const data = await chrome.storage.local.get(['shareJobsConsent']);
+  const consented = !!data.shareJobsConsent;
+  document.getElementById('premiumLocked').style.display = consented ? 'none' : 'block';
+  document.getElementById('premiumActive').style.display = consented ? 'block' : 'none';
   // Reset UI state
   document.getElementById('importStatus').textContent = '';
   document.getElementById('importError').style.display = 'none';
@@ -2395,6 +2704,10 @@ async function showPremiumScreen() {
 
 document.getElementById('btnPremium').addEventListener('click', () => showPremiumScreen());
 document.getElementById('btnPremiumBack').addEventListener('click', () => showScreen('ready'));
+document.getElementById('btnGoConsentSettings').addEventListener('click', () => {
+  loadSettings();
+  showScreen('settings');
+});
 
 document.getElementById('btnImportJobs').addEventListener('click', async () => {
   const minScore = parseInt(document.getElementById('minScoreInput').value, 10) || 70;

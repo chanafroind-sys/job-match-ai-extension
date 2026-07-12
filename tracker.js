@@ -22,6 +22,32 @@ async function updateJobStatus(id, status) {
   }
 }
 
+// Marks the most recent tracker record for this job URL as sent-to-recruiter
+// (a job can have several records across repeated CV generations — findIndex
+// picks the newest one since saveJob() unshifts).
+async function markJobSentToRecruiter(url) {
+  if (!url) return;
+  const jobs = await getAllJobs();
+  const idx = jobs.findIndex(j => j.url === url);
+  if (idx !== -1) {
+    jobs[idx].sentToRecruiter = true;
+    await chrome.storage.local.set({ [TRACKER_KEY]: jobs });
+  }
+}
+
+// Marks the most recent tracker record for this job URL with its referral
+// status (pending/accepted/declined/expired) — same lookup shape as
+// markJobSentToRecruiter above.
+async function markJobReferralStatus(url, status) {
+  if (!url) return;
+  const jobs = await getAllJobs();
+  const idx = jobs.findIndex(j => j.url === url);
+  if (idx !== -1) {
+    jobs[idx].referralStatus = status;
+    await chrome.storage.local.set({ [TRACKER_KEY]: jobs });
+  }
+}
+
 async function deleteJob(id) {
   const jobs = await getAllJobs();
   const filtered = jobs.filter(j => j.id !== id);
@@ -30,7 +56,7 @@ async function deleteJob(id) {
 
 function exportToExcel(jobs, clicksMap = {}) {
   const BOM = '﻿';
-  const headers = ['תאריך', 'תפקיד', 'חברה', 'פלטפורמה', 'ציון התאמה', 'קורות חיים הוכנו', 'לינק נפתח', 'מספר לחיצות', 'זמן פתיחה אחרון', 'סטטוס', 'קישור למשרה'];
+  const headers = ['תאריך', 'תפקיד', 'חברה', 'פלטפורמה', 'ציון התאמה', 'קורות חיים הוכנו', 'נשלח למגייס', 'לינק נפתח', 'מספר לחיצות', 'זמן פתיחה אחרון', 'סטטוס', 'קישור למשרה'];
   const rows = jobs.map(j => {
     const clicks = (j.appId && clicksMap[j.appId]) || [];
     let linkOpened = 'לא';
@@ -50,6 +76,7 @@ function exportToExcel(jobs, clicksMap = {}) {
       j.platform || '',
       (j.score || 0) + '%',
       j.cvGenerated ? 'כן' : 'לא',
+      j.sentToRecruiter ? 'כן' : 'לא',
       linkOpened,
       clickCount,
       lastOpened,

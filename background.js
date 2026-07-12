@@ -109,7 +109,7 @@ function friendlyError(msg) {
   if (lo.includes('מתעורר') || lo.includes('waking') || msg.includes('502') || msg.includes('503')) {
     return 'האפליקציה מתעוררת — זה יכול לקחת עד דקה. נסי שוב בעוד רגע.';
   }
-  if (lo.includes('לא הצלחנו') || lo.includes('מגבלה') || lo.includes('רישיון')) return msg;
+  if (lo.includes('לא הצלחנו') || lo.includes('מגבלה') || lo.includes('רישיון') || lo.includes('אימייל') || lo.includes('מגייס')) return msg;
   return 'משהו השתבש. נסי שוב בעוד רגע.';
 }
 
@@ -297,6 +297,115 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  if (req.action === 'addRecruiter') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/recruiters', {
+          full_name: req.fullName || '',
+          email: req.email || '',
+          phone: req.phone || null,
+          company: req.company || '',
+        }, stored.licenseKey);
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'searchRecruiters') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ results: [] }); return; }
+      try {
+        const data = await backendGet(
+          `/api/recruiters/search?company=${encodeURIComponent(req.company || '')}`,
+          stored.licenseKey,
+          { maxAttempts: 1, delayMs: 0 }
+        );
+        sendResponse({ results: data.results || [] });
+      } catch (e) {
+        sendResponse({ results: [], error: e.message });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'draftRecruiterLetter') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/recruiter-letter', {
+          jobTitle: req.jobTitle || '',
+          company: req.company || '',
+          jobText: req.jobText || '',
+          recruiterName: req.recruiterName || '',
+          cvSummary: req.cvSummary || '',
+        }, stored.licenseKey, { maxAttempts: 2, delayMs: 8000 });
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'logRecruiterEmailOpen') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/emails/log-open', {
+          recruiter_id: req.recruiterId,
+          job_url_hash: req.jobUrlHash || '',
+          job_title: req.jobTitle || '',
+          company: req.company || '',
+        }, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'checkReferral') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ available: false }); return; }
+      try {
+        const params = new URLSearchParams({
+          company: req.company || '',
+          score: String(req.score || 0),
+          job_url_hash: req.jobUrlHash || '',
+        });
+        const data = await backendGet(`/api/referrals/check?${params.toString()}`, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ available: !!data.available, cost: data.cost ?? 5 });
+      } catch (e) {
+        sendResponse({ available: false, error: e.message });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'confirmReferral') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/referrals', {
+          job_url_hash: req.jobUrlHash || '',
+          job_title: req.jobTitle || '',
+          company: req.company || '',
+          score: req.score || 0,
+          candidate_summary: req.candidateSummary || '',
+        }, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
   if (req.action === 'pingBackend') {
     // Fire-and-forget wake-up call to prevent Render cold start delay
     fetch(`${BACKEND_URL}/health`).catch(() => {});
@@ -425,9 +534,13 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req.action === 'importPremiumJobs') {
-    chrome.storage.local.get(['licenseKey', 'cvText'], async (stored) => {
+    chrome.storage.local.get(['licenseKey', 'cvText', 'shareJobsConsent'], async (stored) => {
       if (!stored.licenseKey || !stored.cvText) {
         sendResponse({ error: 'נדרשים רישיון וקורות חיים כדי להשתמש בפיצ\'ר זה.' });
+        return;
+      }
+      if (!stored.shareJobsConsent) {
+        sendResponse({ error: 'נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.' });
         return;
       }
       try {
@@ -443,6 +556,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             cvText: stored.cvText,
             minScore: req.minScore,
             timeRange: req.timeRange,
+            shareJobsConsent: true,
           }),
           signal: controller.signal,
         });

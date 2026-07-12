@@ -718,7 +718,8 @@
   </div>
   <div class="header-actions">
     <span class="points-badge" id="pointsBadge" title="יתרת נקודות קהילתיות">🪙 <span id="pointsBadgeValue">–</span></span>
-    <button class="btn-icon" id="btnPremium" title="ייבוא משרות פרימיום">⭐</button>
+    <button class="btn-icon" id="btnRecruiters" title="הוסף מגייס/ת למאגר">🧑‍💼</button>
+    <button class="btn-icon" id="btnPremium" title="ייבוא משרות מותאמות">📥</button>
     <button class="btn-icon" id="btnTracker" title="מעקב משרות" style="position:relative">📊<span id="trackerNewDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;background:#EA580C;border-radius:50%;border:1.5px solid var(--bg-primary)"></span></button>
     <button class="btn-icon" id="btnDashboard" title="דשבורד אנליטיקה">📈</button>
     <button class="btn-icon" id="btnSettings" title="הגדרות">⚙️</button>
@@ -816,10 +817,86 @@
       <div class="tags-wrap" id="gapsTags"></div>
     </div>
 
+    <div class="ready-meta" id="recruiterFoundRow" style="display:none">
+      <div class="ready-meta-icon">🧑‍💼</div>
+      <div class="ready-meta-text">
+        <strong id="recruiterFoundLabel">נמצא מגייס במאגר</strong>
+        <span id="recruiterFoundDetails"></span>
+      </div>
+      <button class="btn-icon" id="btnSendToRecruiter">📤 שלח קו״ח למגייס</button>
+    </div>
+
+    <div class="ready-meta" id="referralFoundRow" style="display:none">
+      <div class="ready-meta-icon">🤝</div>
+      <div class="ready-meta-text">
+        <span>עובד/ת בחברה מוכנ/ה להגיש אותך דרך חבר-מביא-חבר (עלות: 5 נקודות, יוחזרו אם הבקשה תידחה)</span>
+      </div>
+      <button class="btn-icon" id="btnConfirmReferral">🤝 בקש/י הפניה</button>
+    </div>
+
     <button class="btn btn-primary" id="btnGenerateCV" style="display:none">
       ✨ צור קורות חיים מותאמים
     </button>
     <button class="btn btn-secondary" id="btnReanalyze">🔄 נתח מחדש</button>
+  </div>
+</div>
+
+<!-- RECRUITERS SCREEN -->
+<div class="screen" id="screen-recruiters">
+  <div class="license-wrap">
+    <div class="license-icon">🧑‍💼</div>
+    <div class="license-title">הוספת מגייס/ת למאגר הקהילתי</div>
+    <div class="license-subtitle">
+      שיתוף פרטי מגייס/ת עוזר לכל הקהילה למצוא איש קשר ישיר בחברה.<br>
+      תקבל/י <strong>+10 נקודות</strong> על מגייס/ת חדש/ה, ו-+2 נקודות על עדכון פרטים חסרים למגייס/ת קיים/ת.
+    </div>
+
+    <input type="text" class="license-input" id="recruiterNameInput" placeholder="שם מלא" autocomplete="off">
+    <input type="email" class="license-input" id="recruiterEmailInput" placeholder="אימייל ארגוני (לא Gmail/Outlook)" autocomplete="off" style="direction:ltr;text-align:left">
+    <input type="text" class="license-input" id="recruiterPhoneInput" placeholder="טלפון (אופציונלי)" autocomplete="off" style="direction:ltr;text-align:left">
+    <input type="text" class="license-input" id="recruiterCompanyInput" placeholder="שם החברה" autocomplete="off">
+
+    <div class="license-error" id="recruiterError"></div>
+    <div class="license-success" id="recruiterSuccess"></div>
+
+    <button class="btn btn-primary" id="btnSubmitRecruiter">➕ הוסף/י מגייס/ת</button>
+    <button class="btn btn-secondary" id="btnRecruitersBack" style="margin-top:8px">← חזור</button>
+  </div>
+</div>
+
+<!-- RECRUITER LETTER SCREEN -->
+<div class="screen" id="screen-recruiter-letter">
+  <div class="screen-title" style="margin-bottom:10px">📤 שליחת קו״ח למגייס/ת</div>
+
+  <div id="rlNoCv" style="display:none">
+    <div class="license-subtitle">כדי לשלוח מייל למגייס/ת צריך קודם ליצור קורות חיים מותאמים למשרה הזו.</div>
+    <button class="btn btn-primary" id="btnRlGoGenerateCv" style="margin-top:10px">✨ צור קורות חיים מותאמים</button>
+    <button class="btn btn-secondary" id="btnRlNoCvBack" style="margin-top:8px">← חזור</button>
+  </div>
+
+  <div id="rlLoading" style="display:none" class="loading-wrap">
+    <div class="spinner"></div>
+    <div class="loading-text">מנסח מכתב פנייה...</div>
+  </div>
+
+  <div id="rlError" class="error-box" style="display:none;margin-bottom:10px"></div>
+  <div id="rlSuccessWrap" style="display:none">
+    <div id="rlSuccess" class="license-success" style="margin-bottom:10px"></div>
+    <button class="btn btn-secondary" id="btnRlDone">← חזור לניתוח</button>
+  </div>
+
+  <div id="rlForm" style="display:none">
+    <div class="license-subtitle" style="margin-bottom:8px">
+      פנייה אל <strong id="rlRecruiterName"></strong> ב-<span id="rlRecruiterCompany"></span>
+    </div>
+
+    <input type="text" class="license-input" id="rlSubjectInput" placeholder="נושא המייל" style="direction:rtl">
+    <textarea class="cover-letter-textarea" id="rlBodyTextarea" style="min-height:160px"></textarea>
+
+    <div class="ready-warning" id="rlCostLine" style="margin-top:10px"></div>
+
+    <button class="btn btn-primary" id="btnRlConfirm" style="margin-top:8px">✅ פתח מייל ב-Gmail ושלח/י</button>
+    <button class="btn btn-secondary" id="btnRlCancel" style="margin-top:8px">← ביטול</button>
   </div>
 </div>
 
@@ -907,19 +984,19 @@
 
 <!-- PREMIUM IMPORT SCREEN -->
 <div class="screen" id="screen-premium">
-  <div class="screen-title" style="margin-bottom:14px">⭐ ייבוא משרות מותאמות</div>
+  <div class="screen-title" style="margin-bottom:14px">📥 ייבוא משרות מותאמות</div>
 
-  <!-- Locked state (non-premium) -->
+  <!-- Locked state (no consent given yet) -->
   <div id="premiumLocked" style="display:none">
     <div class="premium-lock-box">
       <div class="premium-lock-icon">🔒</div>
-      <div class="premium-lock-title">פיצ'ר פרימיום</div>
-      <div class="premium-lock-text">ייבוא משרות מותאמות אישית זמין למשתמשי פרימיום בלבד. שדרגי את הרישיון כדי לגשת לכל המשרות שנאספו ולקבל ניתוח מעמיק מותאם לקורות החיים שלך.</div>
-      <a id="linkUpgradePremium" href="#" target="_blank" class="btn btn-primary" style="display:block;text-decoration:none;margin-top:6px">⭐ שדרג לפרימיום</a>
+      <div class="premium-lock-title">נדרש אישור שיתוף משרות</div>
+      <div class="premium-lock-text">כדי לגשת לייבוא משרות מותאמות אישית, יש לאשר בהגדרות שיתוף אנונימי של עמודי המשרות שאת מבקרת בהן — בתמורה תקבלי גם משרות שנאספו ממשתמשות אחרות ומותאמות אלייך.</div>
+      <button id="btnGoConsentSettings" class="btn btn-primary" style="display:block;margin-top:6px">⚙️ פתח הגדרות</button>
     </div>
   </div>
 
-  <!-- Active state (premium) -->
+  <!-- Active state (consent given) -->
   <div id="premiumActive" style="display:none">
     <div class="premium-input-row">
       <span class="premium-input-label">התאמה מינימלית</span>
@@ -951,13 +1028,7 @@
   </div>
   <div id="trackerContent"></div>
 </div>
-<!-- שדה אישור שיתוף משרות לקבלת גישה מותאמת אישית -->
-<div class="settings-section" style="margin-top: 14px; display: flex; align-items: center; gap: 8px;">
-  <input type="checkbox" id="chkShareJobsData" style="cursor: pointer;">
-  <label for="chkShareJobsData" style="cursor: pointer; font-size: 13px; font-weight: bold;">
-    🔄 אני מסכים לשתף משרות באופן אנונימי כדי לקבל גישה למשרות מותאמות אישית
-  </label>
-</div>
+
 <!-- SETTINGS SCREEN -->
 <div class="screen" id="screen-settings">
   <div class="screen-title" style="margin-bottom:14px">⚙️ הגדרות</div>
@@ -979,6 +1050,14 @@
       placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" autocomplete="off" spellcheck="false"
       style="width:100%;box-sizing:border-box;margin-bottom:6px">
     <div id="licenseSettingsStatus" style="font-size:11px;color:#888;min-height:16px"></div>
+  </div>
+<!-- שדה אישור שיתוף משרות לקבלת גישה מותאמת אישית -->
+  <div class="settings-section" style="margin-top:14px">
+    <div class="settings-label">🔄 שיתוף משרות קהילתי</div>
+    <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:12px;color:var(--text-muted);line-height:1.5">
+      <input type="checkbox" id="chkShareJobsData" style="margin-top:2px;cursor:pointer">
+      <span>האם את/ה מסכים/ה שנאסוף באופן אנונימי את עמודי המשרות שבהם את/ה מבקר/ת? בתמורה תקבל/י גישה לייבוא משרות שנאספו ממשתמשות אחרות ומותאמות אישית אליך.</span>
+    </label>
   </div>
 
   <div class="settings-section" id="premiumConstraintsSection" style="margin-top:14px;display:none">
