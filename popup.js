@@ -2439,6 +2439,19 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
   a.click();
   document.body.removeChild(a);
 });
+
+// Points badge is always visible (shows "–" as a placeholder); only the number
+// is best-effort. If the server is old/sleeping/unreachable it just stays on
+// "–" instead of blocking or hiding the rest of the popup UI.
+async function loadPointsBalance() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'getPointsBalance' });
+    if (resp && typeof resp.balance === 'number') {
+      document.getElementById('pointsBadgeValue').textContent = resp.balance;
+    }
+  } catch {}
+}
+
 (async () => {
   const licensed = await checkLicense();
   if (!licensed) { showScreen('license'); return; }
@@ -2462,6 +2475,7 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
     const storageData = await chrome.storage.local.get(['licenseKey', 'cvText']);
     state.licenseKey = storageData.licenseKey || '';
     state.cvText = storageData.cvText || '';
+    loadPointsBalance(); // fire-and-forget, doesn't block the rest of init
 
     const saved = await loadJobState(tabUrl);
     console.log('[JMA:init] Raw data loaded from storage for this URL:', saved);

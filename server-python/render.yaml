@@ -4,7 +4,7 @@ services:
     runtime: python
     rootDir: server-python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false
@@ -14,3 +14,11 @@ services:
         value: "3"
       - key: MONTHLY_USAGE_LIMIT
         value: "100"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: job-match-ai-db
+          property: connectionString
+
+databases:
+  - name: job-match-ai-db
+    plan: free

@@ -90,6 +90,18 @@
     transition: all 0.18s;
   }
   .btn-icon:hover { background: var(--bg-card); color: var(--accent); border-color: var(--accent); box-shadow: var(--shadow-sm); }
+  .points-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-weight: 600;
+  }
 
   /* ── Screens ─────────────────────────────────────────────── */
   .screen { display: none; padding: 20px; }
@@ -705,6 +717,7 @@
     <span>🎯</span> Job Match AI
   </div>
   <div class="header-actions">
+    <span class="points-badge" id="pointsBadge" title="יתרת נקודות קהילתיות">🪙 <span id="pointsBadgeValue">–</span></span>
     <button class="btn-icon" id="btnPremium" title="ייבוא משרות פרימיום">⭐</button>
     <button class="btn-icon" id="btnTracker" title="מעקב משרות" style="position:relative">📊<span id="trackerNewDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;background:#EA580C;border-radius:50%;border:1.5px solid var(--bg-primary)"></span></button>
     <button class="btn-icon" id="btnDashboard" title="דשבורד אנליטיקה">📈</button>
@@ -938,7 +951,13 @@
   </div>
   <div id="trackerContent"></div>
 </div>
-
+<!-- שדה אישור שיתוף משרות לקבלת גישה מותאמת אישית -->
+<div class="settings-section" style="margin-top: 14px; display: flex; align-items: center; gap: 8px;">
+  <input type="checkbox" id="chkShareJobsData" style="cursor: pointer;">
+  <label for="chkShareJobsData" style="cursor: pointer; font-size: 13px; font-weight: bold;">
+    🔄 אני מסכים לשתף משרות באופן אנונימי כדי לקבל גישה למשרות מותאמות אישית
+  </label>
+</div>
 <!-- SETTINGS SCREEN -->
 <div class="screen" id="screen-settings">
   <div class="screen-title" style="margin-bottom:14px">⚙️ הגדרות</div>

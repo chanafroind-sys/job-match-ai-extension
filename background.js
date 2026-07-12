@@ -172,6 +172,15 @@ async function backendPost(endpoint, body, licenseKey, opts = {}) {
   }, opts.maxAttempts || 6, opts.delayMs || 12000);
 }
 
+async function backendGet(endpoint, licenseKey, opts = {}) {
+  return fetchWithRetry(endpoint, {
+    method: 'GET',
+    headers: {
+      'x-license-key': licenseKey || '',
+    },
+  }, opts.maxAttempts || 6, opts.delayMs || 12000);
+}
+
 function _urlHash(url) {
   let h = 0;
   for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
@@ -271,6 +280,19 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         }, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
         sendResponse({ score_pct: data.score_pct ?? 50 });
       } catch { sendResponse({ score_pct: 50 }); }
+    });
+    return true;
+  }
+
+  if (req.action === 'getPointsBalance') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: 'no license key' }); return; }
+      try {
+        const data = await backendGet('/api/points/balance', stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ balance: data.balance ?? 0 });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
     });
     return true;
   }
