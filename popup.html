@@ -719,7 +719,7 @@
   <div class="header-actions">
     <span class="points-badge" id="pointsBadge" title="יתרת נקודות קהילתיות">🪙 <span id="pointsBadgeValue">–</span></span>
     <button class="btn-icon" id="btnRecruiters" title="הוסף מגייס/ת למאגר">🧑‍💼</button>
-    <button class="btn-icon" id="btnPremium" title="ייבוא משרות פרימיום">⭐</button>
+    <button class="btn-icon" id="btnPremium" title="ייבוא משרות מותאמות">📥</button>
     <button class="btn-icon" id="btnTracker" title="מעקב משרות" style="position:relative">📊<span id="trackerNewDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;background:#EA580C;border-radius:50%;border:1.5px solid var(--bg-primary)"></span></button>
     <button class="btn-icon" id="btnDashboard" title="דשבורד אנליטיקה">📈</button>
     <button class="btn-icon" id="btnSettings" title="הגדרות">⚙️</button>
@@ -940,19 +940,19 @@
 
 <!-- PREMIUM IMPORT SCREEN -->
 <div class="screen" id="screen-premium">
-  <div class="screen-title" style="margin-bottom:14px">⭐ ייבוא משרות מותאמות</div>
+  <div class="screen-title" style="margin-bottom:14px">📥 ייבוא משרות מותאמות</div>
 
-  <!-- Locked state (non-premium) -->
+  <!-- Locked state (no consent given yet) -->
   <div id="premiumLocked" style="display:none">
     <div class="premium-lock-box">
       <div class="premium-lock-icon">🔒</div>
-      <div class="premium-lock-title">פיצ'ר פרימיום</div>
-      <div class="premium-lock-text">ייבוא משרות מותאמות אישית זמין למשתמשי פרימיום בלבד. שדרגי את הרישיון כדי לגשת לכל המשרות שנאספו ולקבל ניתוח מעמיק מותאם לקורות החיים שלך.</div>
-      <a id="linkUpgradePremium" href="#" target="_blank" class="btn btn-primary" style="display:block;text-decoration:none;margin-top:6px">⭐ שדרג לפרימיום</a>
+      <div class="premium-lock-title">נדרש אישור שיתוף משרות</div>
+      <div class="premium-lock-text">כדי לגשת לייבוא משרות מותאמות אישית, יש לאשר בהגדרות שיתוף אנונימי של עמודי המשרות שאת מבקרת בהן — בתמורה תקבלי גם משרות שנאספו ממשתמשות אחרות ומותאמות אלייך.</div>
+      <button id="btnGoConsentSettings" class="btn btn-primary" style="display:block;margin-top:6px">⚙️ פתח הגדרות</button>
     </div>
   </div>
 
-  <!-- Active state (premium) -->
+  <!-- Active state (consent given) -->
   <div id="premiumActive" style="display:none">
     <div class="premium-input-row">
       <span class="premium-input-label">התאמה מינימלית</span>
@@ -984,13 +984,7 @@
   </div>
   <div id="trackerContent"></div>
 </div>
-<!-- שדה אישור שיתוף משרות לקבלת גישה מותאמת אישית -->
-<div class="settings-section" style="margin-top: 14px; display: flex; align-items: center; gap: 8px;">
-  <input type="checkbox" id="chkShareJobsData" style="cursor: pointer;">
-  <label for="chkShareJobsData" style="cursor: pointer; font-size: 13px; font-weight: bold;">
-    🔄 אני מסכים לשתף משרות באופן אנונימי כדי לקבל גישה למשרות מותאמות אישית
-  </label>
-</div>
+
 <!-- SETTINGS SCREEN -->
 <div class="screen" id="screen-settings">
   <div class="screen-title" style="margin-bottom:14px">⚙️ הגדרות</div>
@@ -1012,6 +1006,14 @@
       placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" autocomplete="off" spellcheck="false"
       style="width:100%;box-sizing:border-box;margin-bottom:6px">
     <div id="licenseSettingsStatus" style="font-size:11px;color:#888;min-height:16px"></div>
+  </div>
+<!-- שדה אישור שיתוף משרות לקבלת גישה מותאמת אישית -->
+  <div class="settings-section" style="margin-top:14px">
+    <div class="settings-label">🔄 שיתוף משרות קהילתי</div>
+    <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:12px;color:var(--text-muted);line-height:1.5">
+      <input type="checkbox" id="chkShareJobsData" style="margin-top:2px;cursor:pointer">
+      <span>האם את/ה מסכים/ה שנאסוף באופן אנונימי את עמודי המשרות שבהם את/ה מבקר/ת? בתמורה תקבל/י גישה לייבוא משרות שנאספו ממשתמשות אחרות ומותאמות אישית אליך.</span>
+    </label>
   </div>
 
   <div class="settings-section" id="premiumConstraintsSection" style="margin-top:14px;display:none">

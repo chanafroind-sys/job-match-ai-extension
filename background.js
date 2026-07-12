@@ -460,9 +460,13 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req.action === 'importPremiumJobs') {
-    chrome.storage.local.get(['licenseKey', 'cvText'], async (stored) => {
+    chrome.storage.local.get(['licenseKey', 'cvText', 'shareJobsConsent'], async (stored) => {
       if (!stored.licenseKey || !stored.cvText) {
         sendResponse({ error: 'נדרשים רישיון וקורות חיים כדי להשתמש בפיצ\'ר זה.' });
+        return;
+      }
+      if (!stored.shareJobsConsent) {
+        sendResponse({ error: 'נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.' });
         return;
       }
       try {
@@ -478,6 +482,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             cvText: stored.cvText,
             minScore: req.minScore,
             timeRange: req.timeRange,
+            shareJobsConsent: true,
           }),
           signal: controller.signal,
         });

@@ -1002,6 +1002,7 @@ class ImportJobsRequest(BaseModel):
     cvText: str
     minScore: int = 70
     timeRange: str = "3days"  # "3days" | "since_last"
+    shareJobsConsent: bool = False
 
 RANK_SINGLE_JOB_PROMPT = """You are a strict but fair senior hiring manager. Score this single job posting against the candidate's CV.
 
@@ -2458,12 +2459,17 @@ async def scrape_job(body: ScrapeJobRequest):
 
 @app.post("/api/import-jobs")
 async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = Header(None)):
-    """Premium: 2-stage filtering of scraped jobs → Excel download."""
+    """2-stage filtering of scraped jobs → Excel download. Gated on the user having
+    opted in to anonymous job-page sharing (not premium — anyone who contributes
+    scraped job pages gets access to the community pool in return)."""
     license_key = x_license_key or ""
+    await require_license(license_key)
 
-    # Real-time Gumroad premium check (TEST_LICENSE_KEY bypasses instantly)
-    if not await _verify_premium(license_key):
-        raise HTTPException(status_code=403, detail="דרוש רישיון פרימיום לפיצ'ר זה.")
+    if not body.shareJobsConsent:
+        raise HTTPException(
+            status_code=403,
+            detail="נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.",
+        )
 
     all_jobs = _load_raw_jobs()
     if not all_jobs:

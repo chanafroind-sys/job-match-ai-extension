@@ -412,7 +412,8 @@ async function _extractAndSaveProfile(cvText) {
 
 // Settings screen
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints']);
+  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints', 'shareJobsConsent']);
+  document.getElementById('chkShareJobsData').checked = !!data.shareJobsConsent;
   if (data.cvName) {
     document.getElementById('uploadText').textContent = `✅ ${data.cvName}`;
     document.getElementById('uploadArea').classList.add('has-file');
@@ -504,6 +505,7 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   btn.textContent = '💾 שומר...';
 
   const toSave = {};
+  toSave.shareJobsConsent = document.getElementById('chkShareJobsData').checked;
   if (fileInput._extractedText) {
     toSave.cvText = fileInput._extractedText;
     toSave.cvName = fileInput._fileName;
@@ -2476,9 +2478,10 @@ document.getElementById('btnRankPageJobs').addEventListener('click', async () =>
 // ── Premium import screen ─────────────────────────────────────────────────────
 
 async function showPremiumScreen() {
-  const data = await chrome.storage.local.get(['isPremium']);
-  document.getElementById('premiumLocked').style.display = data.isPremium ? 'none' : 'block';
-  document.getElementById('premiumActive').style.display = data.isPremium ? 'block' : 'none';
+  const data = await chrome.storage.local.get(['shareJobsConsent']);
+  const consented = !!data.shareJobsConsent;
+  document.getElementById('premiumLocked').style.display = consented ? 'none' : 'block';
+  document.getElementById('premiumActive').style.display = consented ? 'block' : 'none';
   // Reset UI state
   document.getElementById('importStatus').textContent = '';
   document.getElementById('importError').style.display = 'none';
@@ -2489,6 +2492,10 @@ async function showPremiumScreen() {
 
 document.getElementById('btnPremium').addEventListener('click', () => showPremiumScreen());
 document.getElementById('btnPremiumBack').addEventListener('click', () => showScreen('ready'));
+document.getElementById('btnGoConsentSettings').addEventListener('click', () => {
+  loadSettings();
+  showScreen('settings');
+});
 
 document.getElementById('btnImportJobs').addEventListener('click', async () => {
   const minScore = parseInt(document.getElementById('minScoreInput').value, 10) || 70;
