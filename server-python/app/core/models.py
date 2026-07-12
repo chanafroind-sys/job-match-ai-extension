@@ -132,6 +132,18 @@ class Employee(Base):
     )
 
 
+class SyncMeta(Base):
+    """One row per external sync source. Currently just the employees Google
+    Sheet — key='employees_sheet'. Lazily read/written by sync_service on every
+    GET /api/referrals/check, since Render's free tier has no cron."""
+
+    __tablename__ = "sync_meta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ReferralRequest(Base):
     __tablename__ = "referral_requests"
 
