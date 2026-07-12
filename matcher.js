@@ -17,9 +17,10 @@
     REQUIRED_MULT:   1.00,   // חובה  — full weight
     ADVANTAGE_MULT:  0.40,   // יתרון — 40 % of weight
 
-    // Source multipliers applied to years
-    INDUSTRY_MULT:   2.0,    // industry_years counts double
-    PERSONAL_MULT:   1.0,    // personal_years counts single
+    // personal_weight (0-100) from the profile scales personal_years.
+    // 50 = ברירת מחדל לפרופילים ישנים - משחזר בדיוק את ההתנהגות הקודמת (i + 0.5p).
+    DEFAULT_PERSONAL_WEIGHT: 50,
+    DEFAULT_REQ_YEARS: 1,   // דרישה בלי מספר שנים מניחה שנה - ניסיון אישי קטן לא שווה 100%
 
     // Caps / floors
     MIN_SCORE:  18,
@@ -102,15 +103,25 @@
 
   // ── HEBREW-AWARE TEXT MATCHING ────────────────────────────────────────────
 
-  // Hebrew prepositions/conjunctions attach directly to the following word.
-  // Searching for "פייתון" misses "בפייתון" (in Python) or "ופייתון" (and Python).
-  // This helper checks the bare tag AND the most common single-letter prefix forms.
+  // Hebrew prepositions attach directly to words: "בפייתון" = "in Python".
+  // Latin tags get word-boundary matching so "rest" never matches "interested".
   const _HE_PREFIXES = ['ב', 'כ', 'ל', 'מ', 'ו', 'ה', 'ש'];
+  const _termReCache = new Map();
 
   function _includesHebrew(textLower, tag) {
     const tl = tag.toLowerCase();
+    if (/^[a-z0-9]/.test(tl)) {
+      // Latin/digit tag → strict word boundaries, compiled once and cached
+      let re = _termReCache.get(tl);
+      if (!re) {
+        const esc = tl.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+        re = new RegExp('(?<![a-z0-9])' + esc + '(?![a-z0-9])');
+        _termReCache.set(tl, re);
+      }
+      return re.test(textLower);
+    }
+    // Hebrew tag → substring + prefixed variants
     if (textLower.includes(tl)) return true;
-    // Only add prefix variants for Hebrew-script tags
     if (/[֐-׿]/.test(tag)) {
       for (const p of _HE_PREFIXES) {
         if (textLower.includes(p + tl)) return true;
@@ -132,89 +143,117 @@
 
   // ── JOB PARSER ────────────────────────────────────────────────────────────
 
-  // Heuristically split job text into required vs. advantage sections.
+  // Tri-state, line-based section parser: context (company blurb) / required / advantage.
+  // A header is a SHORT line (≤80 chars) matching the patterns - so "bonus" inside a
+  // salary sentence never flips the state. Requirements after an advantage section
+  // return to full weight. If no required-header exists, pre-advantage text is required
+  // (legacy behavior) so header-less jobs keep working.
+  const ADV_HEADER_RE = /(יתרון|advantage|nice[ -]?to[ -]?have|preferred qualifications?|bonus points?|desirable|beneficial|a plus)/i;
+  const REQ_HEADER_RE = /(requirements?|דרישות|חובה|must[ -]?have|qualifications?|essential|mandatory|what you(?:'|’)?ll need|what we(?:'|’)?re looking for|what you(?:'|’)?ll do|responsibilities|the role|תיאור המשרה|על התפקיד|תחומי אחריות)/i;
+  const CTX_HEADER_RE = /(אודות|על החברה|מי אנחנו|קצת עלינו|למה לעבוד|הטבות|about (?:us|the company)|who we are|our (?:story|team|benefits)|perks|benefits)/i;
+
   function _parseJobSections(jobText) {
-    const lo = jobText.toLowerCase();
+    const lines = jobText.split(/\r?\n/);
+    let state = 'context';
+    let sawReqHeader = false;
+    const buckets = { context: [], required: [], advantage: [] };
 
-    // Split on known section headers
-    const ADV_HEADERS = [
-      /יתרון|advantage|nice.to.have|preferred|bonus|plus|desirable|beneficial/i,
-    ];
-    const REQ_HEADERS = [
-      /requirement|חובה|must.have|essential|mandatory|we.require|what.you.need|you.have/i,
-    ];
-
-    // Find first advantage header position
-    let advStart = lo.length;
-    for (const re of ADV_HEADERS) {
-      const m = lo.search(re);
-      if (m !== -1 && m < advStart) advStart = m;
+    for (const line of lines) {
+      const t = line.trim();
+      if (t.length > 0 && t.length <= 80) {
+        if (ADV_HEADER_RE.test(t))      { state = 'advantage'; sawReqHeader = true; }
+        else if (REQ_HEADER_RE.test(t)) { state = 'required';  sawReqHeader = true; }
+        else if (CTX_HEADER_RE.test(t)) { state = 'context'; } // "אודות החברה" אחרי דרישות
+      }
+      buckets[state].push(line);
     }
 
-    const requiredText  = jobText.slice(0, advStart);
-    const advantageText = jobText.slice(advStart);
+    let requiredText  = buckets.required.join('\n');
+    let advantageText = buckets.advantage.join('\n');
 
+    if (!sawReqHeader) {
+      // No headers at all - legacy split: everything is required
+      requiredText = buckets.context.join('\n');
+    }
     return { requiredText, advantageText };
   }
 
-  // Extract (tech, reqYears) pairs from a text segment.
-  // profile is optional — when provided, also scans via each tech's search_tags so
-  // Hebrew job descriptions that use "פייתון" are matched to the profile's "Python" entry.
+  // Bullet-aware extraction: years are searched ONLY inside the same line/bullet as
+  // the tech, so "3+ years Python" never leaks onto an adjacent "Docker" bullet.
+  // Each requirement also gets industryOnly=true when its line demands industry experience.
+  const INDUSTRY_ONLY_RE = /(בתעשייה|ניסיון תעשייתי|industry experience|commercial experience|production environment|hands[ -]on (?:industry|commercial))/i;
+  // טווח ("3-5 שנים", "3 עד 5 years") נקרא לפי המינימום - מי שעומד בסף עומד בדרישה
+  const YEARS_RANGE_RE = /(\d+(?:\.\d+)?)\s*(?:[-–—]|עד|to)\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?|שנות?|שנ)/i;
+  const YEARS_RE = /(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?|שנות?|שנ)/i;
+  // סמן קבוצת בחירה: "אחת או יותר מ...", "one of", או " או "/" or " בין טכנולוגיות בשורה
+  const OR_GROUP_RE = /(אחת|אחד) או יותר|לפחות (אחת|אחד)|one or more|at least one|one of the following| או |, or | or /i;
+
+  // "שנתיים לפחות" חייב להיקרא כ"2 שנים" - ה-regex מזהה רק ספרות
+  const _HEB_YEAR_WORDS = [
+    [/שנתיים/g, '2 שנים'], [/שלוש שנים/g, '3 שנים'], [/ארבע שנים/g, '4 שנים'],
+    [/חמש שנים/g, '5 שנים'], [/שש שנים/g, '6 שנים'], [/שבע שנים/g, '7 שנים'],
+    [/שמונה שנים/g, '8 שנים'], [/תשע שנים/g, '9 שנים'], [/עשר שנים/g, '10 שנים'],
+    [/שנה אחת/g, '1 שנים'], [/שנה לפחות/g, '1 שנים לפחות'],
+  ];
+  function _normalizeYearWords(s) {
+    let out = s;
+    for (const [re, rep] of _HEB_YEAR_WORDS) out = out.replace(re, rep);
+    return out;
+  }
+
   function _extractRequirements(text, profile) {
-    const lo = text.toLowerCase();
+    const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
     const reqs = [];
     const seen = new Set();
+    let groupSeq = 0;
 
-    // ── Pass 1: TECH_DOMAIN keyword scan (English / hardcoded) ──────────────
-    const techKeys = Object.keys(TECH_DOMAIN).sort((a, b) => b.length - a.length);
-    for (const tech of techKeys) {
-      const escaped = tech.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp('(?<![a-z0-9])' + escaped + '(?![a-z0-9])', 'i');
-      if (!re.test(lo)) continue;
-      if (seen.has(tech)) continue;
-      seen.add(tech);
+    for (const line of lines) {
+      const lineLo = _normalizeYearWords(line.toLowerCase());
+      const rangeMatch = lineLo.match(YEARS_RANGE_RE);
+      const singleMatch = rangeMatch ? null : lineLo.match(YEARS_RE);
+      const lineYears = rangeMatch ? parseFloat(rangeMatch[1])
+                      : singleMatch ? parseFloat(singleMatch[1]) : null;
+      const industryOnly = INDUSTRY_ONLY_RE.test(line);
+      const lineReqs = [];
 
-      const idx = lo.search(re);
-      const win = lo.slice(Math.max(0, idx - 180), idx + 180);
-      const yearMatch = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?|שנ)/i);
-      reqs.push({ tech, reqYears: yearMatch ? parseFloat(yearMatch[1]) : null, domain: TECH_DOMAIN[tech] });
-    }
+      // Pass 1: hardcoded TECH_DOMAIN keywords
+      for (const tech of Object.keys(TECH_DOMAIN)) {
+        if (seen.has(tech)) continue;
+        if (!_includesHebrew(lineLo, tech)) continue;
+        seen.add(tech);
+        lineReqs.push({ tech, reqYears: lineYears, domain: TECH_DOMAIN[tech], industryOnly });
+      }
 
-    // ── Pass 2: profile search_tags scan (Hebrew + synonyms) ────────────────
-    // For each tech in the user's profile, check if its name or any search_tag
-    // appears in the job text (including Hebrew prefix variants). This catches
-    // Hebrew job descriptions that TECH_DOMAIN would miss entirely.
-    if (profile) {
-      for (const [domain, techs] of Object.entries(profile.experience || {})) {
-        for (const [techName, entry] of Object.entries(techs || {})) {
-          const key = techName.toLowerCase();
-          if (seen.has(key)) continue; // already found by Pass 1
-
-          const tags = Array.isArray(entry.search_tags) ? entry.search_tags : [];
-          if (!_techMentionedInJob(lo, techName, tags)) continue;
-
-          seen.add(key);
-          // Try to find a year requirement near any matched tag
-          let reqYears = null;
-          const allTerms = [techName, ...tags];
-          for (const term of allTerms) {
-            const idx = lo.indexOf(term.toLowerCase());
-            if (idx === -1) continue;
-            const win = lo.slice(Math.max(0, idx - 180), idx + 180);
-            const ym = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?|שנ)/i);
-            if (ym) { reqYears = parseFloat(ym[1]); break; }
+      // Pass 2: profile techs via search_tags (Hebrew + synonyms)
+      if (profile) {
+        for (const [domain, techs] of Object.entries(profile.experience || {})) {
+          for (const [techName, entry] of Object.entries(techs || {})) {
+            const key = techName.toLowerCase();
+            if (seen.has(key)) continue;
+            const tags = Array.isArray(entry.search_tags) ? entry.search_tags : [];
+            if (tags.some(t => seen.has(String(t).toLowerCase()))) continue;
+            // "sql server" כשכבר נתפס "sql" באותה שורה = אותה דרישה, לא כפילות
+            if (key.split(/[\s.\-/]+/).some(w => seen.has(w))) continue;
+            if (!_techMentionedInJob(lineLo, techName, tags)) continue;
+            seen.add(key);
+            lineReqs.push({ tech: techName, reqYears: lineYears, domain, industryOnly });
           }
-          reqs.push({ tech: techName, reqYears, domain });
         }
       }
-    }
 
+      // קבוצת בחירה: 2+ טכנולוגיות באותה שורה עם סמן "או"
+      if (lineReqs.length >= 2 && OR_GROUP_RE.test(lineLo)) {
+        const gid = 'g' + (groupSeq++);
+        for (const r of lineReqs) r.group = gid;
+      }
+      reqs.push(...lineReqs);
+    }
     return reqs;
   }
 
   // Extract total-years-of-experience requirement from job text.
   function _extractTotalYears(text) {
-    const lo = text.toLowerCase();
+    const lo = _normalizeYearWords(text.toLowerCase());
     const patterns = [
       /(\d+)\+?\s*years?\s*(?:of\s*)?(?:professional\s*)?experience/i,
       /(\d+)\+?\s*שנות?\s*ניסיון/i,
@@ -240,26 +279,48 @@
 
   // ── PROFILE LOOKUP HELPERS ────────────────────────────────────────────────
 
-  // Get effective years for a tech from profile.
-  // industry_years × INDUSTRY_MULT + personal_years × PERSONAL_MULT.
-  function _profileYears(profile, tech) {
+  // Effective years = industry + personal × (personal_weight/100).
+  // Pass A: exact tech-name match across all domains (hinted domain first).
+  // Pass B: alias match - the required term equals one of an entry's search_tags,
+  // so a job requiring "SQL" resolves to the profile's "PostgreSQL" entry.
+  function _profileYears(profile, tech, domainHint) {
     const exp = profile.experience || {};
-    const domain = TECH_DOMAIN[tech.toLowerCase()];
-    if (!domain) return { effective: 0, industry: 0, personal: 0 };
-    const domainExp = exp[domain] || {};
+    const tl = tech.toLowerCase();
+    const domains = [];
+    if (domainHint && exp[domainHint]) domains.push(domainHint);
+    const mapped = TECH_DOMAIN[tl];
+    if (mapped && mapped !== domainHint && exp[mapped]) domains.push(mapped);
+    for (const d of Object.keys(exp)) {
+      if (!domains.includes(d)) domains.push(d);
+    }
 
-    // Try exact key match (case-insensitive)
-    const key = Object.keys(domainExp).find(k => k.toLowerCase() === tech.toLowerCase());
-    if (!key) return { effective: 0, industry: 0, personal: 0 };
+    function _entryYears(entry) {
+      const ind = parseFloat(entry.industry_years) || 0;
+      const per = parseFloat(entry.personal_years) || 0;
+      let w = parseInt(entry.personal_weight, 10);
+      if (isNaN(w)) w = CFG.DEFAULT_PERSONAL_WEIGHT;
+      w = Math.max(0, Math.min(100, w));
+      return { effective: ind + per * (w / 100), industry: ind, personal: per };
+    }
 
-    const entry = domainExp[key] || {};
-    const ind = parseFloat(entry.industry_years) || 0;
-    const per = parseFloat(entry.personal_years) || 0;
-    return {
-      effective: ind * CFG.INDUSTRY_MULT + per * CFG.PERSONAL_MULT,
-      industry: ind,
-      personal: per,
-    };
+    // Pass A: exact name
+    for (const d of domains) {
+      const domainExp = exp[d] || {};
+      const key = Object.keys(domainExp).find(k => k.toLowerCase() === tl);
+      if (key) return _entryYears(domainExp[key] || {});
+    }
+
+    // Pass B: reverse alias via search_tags
+    for (const d of domains) {
+      const domainExp = exp[d] || {};
+      for (const key of Object.keys(domainExp)) {
+        const entry = domainExp[key] || {};
+        const tags = Array.isArray(entry.search_tags) ? entry.search_tags : [];
+        if (tags.some(t => String(t).toLowerCase() === tl)) return _entryYears(entry);
+      }
+    }
+
+    return { effective: 0, industry: 0, personal: 0 };
   }
 
   // Get total domain years from profile (capped by total career years).
@@ -288,48 +349,89 @@
 
     const reqTechs  = _extractRequirements(requiredText,  userProfile);
     const advTechs  = _extractRequirements(advantageText, userProfile);
-    const jobTotalYears = _extractTotalYears(jobText);
+    // שנות ניסיון כלליות: מחפשים קודם בסעיף הדרישות (לא "10 years in business" מתיאור החברה)
+    const jobTotalYears = _extractTotalYears(requiredText) ?? _extractTotalYears(jobText);
     const jobRoles  = _extractRoleDomains(jobText);
 
     let earned = 0, total = 0;
     const matchBullets = [], gapBullets = [];
 
     // ── Required technologies ────────────────────────────────────────────
-    for (const { tech, reqYears, domain } of reqTechs) {
-      const mult   = CFG.REQUIRED_MULT;
-      const wBase  = reqYears ? CFG.PTS_YEARS_SKILL : CFG.PTS_TECH_EXACT;
-      const w      = wBase * mult;
+    // דרישות-OR ("אחת או יותר מ: X,Y,Z") נספרות כדרישה אחת לפי ההתאמה הטובה בקבוצה.
+    const _groups = new Map();
+    const _singles = [];
+    for (const r of reqTechs) {
+      if (r.group) {
+        if (!_groups.has(r.group)) _groups.set(r.group, []);
+        _groups.get(r.group).push(r);
+      } else _singles.push(r);
+    }
+
+    function _scoreReq(req) {
+      const yrs = _profileYears(userProfile, req.tech, req.domain);
+      const effective = req.industryOnly ? yrs.industry : yrs.effective;
+      const ratio = req.reqYears
+        ? Math.min(1.0, effective / req.reqYears)
+        : Math.min(1.0, effective / CFG.DEFAULT_REQ_YEARS);
+      return { industry: yrs.industry, personal: yrs.personal, effective, ratio };
+    }
+
+    for (const req of _singles) {
+      const { tech, reqYears, domain, industryOnly } = req;
+      const wBase = reqYears ? CFG.PTS_YEARS_SKILL : CFG.PTS_TECH_EXACT;
+      const w = wBase * CFG.REQUIRED_MULT;
       total += w;
 
-      const { effective, industry, personal } = _profileYears(userProfile, tech);
-
-      if (effective > 0) {
-        if (reqYears) {
-          // Proportional penalty: effective_years / (reqYears × INDUSTRY_MULT)
-          const ratio = Math.min(1.0, effective / (reqYears * CFG.INDUSTRY_MULT));
-          earned += w * ratio;
-          const pct = Math.round(ratio * 100);
-          const label = `${industry}i+${personal}p yr`;
-          if (ratio >= 0.85) {
-            matchBullets.push(`✅ ${_cap(tech)} — ${label} (${pct}%)`);
-          } else if (ratio >= 0.5) {
-            matchBullets.push(`⚡ ${_cap(tech)} — ${label} / ${reqYears} נדרש (${pct}%)`);
-          } else {
-            gapBullets.push(`⚠️ ${_cap(tech)} — ${label} / ${reqYears} שנות ניסיון נדרשות`);
-          }
-        } else {
-          earned += w;
+      const s = _scoreReq(req);
+      if (s.effective > 0) {
+        earned += w * s.ratio;
+        const pct = Math.round(s.ratio * 100);
+        const label = industryOnly ? `${s.industry} שנ' תעשייה` : `${s.industry}i+${s.personal}p yr`;
+        if (!reqYears && s.ratio >= 0.85) {
           matchBullets.push(`✅ ${_cap(tech)}`);
+        } else if (!reqYears) {
+          matchBullets.push(`⚡ ${_cap(tech)} — ניסיון חלקי (${Math.round(s.ratio * 100)}%)`);
+        } else if (s.ratio >= 0.85) {
+          matchBullets.push(`✅ ${_cap(tech)} — ${label} (${pct}%)`);
+        } else if (s.ratio >= 0.5) {
+          matchBullets.push(`⚡ ${_cap(tech)} — ${label} / ${reqYears} נדרש (${pct}%)`);
+        } else {
+          gapBullets.push(`⚠️ ${_cap(tech)} — ${label} / ${reqYears} שנות ניסיון נדרשות`);
         }
       } else {
-        // No exact match — check domain coverage
         const domainYears = _profileDomainYears(userProfile, domain);
         if (domainYears > 0) {
           earned += w * 0.50;
           matchBullets.push(`↔️ ${_cap(tech)} — כיסוי דומיין (${domain})`);
         } else {
-          // Absolute zero — deduct full weight (no "free" points)
           gapBullets.push(`❌ ${_cap(tech)}`);
+        }
+      }
+    }
+
+    for (const members of _groups.values()) {
+      const anyYears = members.some(m => m.reqYears);
+      const wBase = anyYears ? CFG.PTS_YEARS_SKILL : CFG.PTS_TECH_EXACT;
+      const w = wBase * CFG.REQUIRED_MULT;
+      total += w;
+
+      let best = null, bestS = null;
+      for (const m of members) {
+        const s = _scoreReq(m);
+        if (!bestS || s.ratio > bestS.ratio) { best = m; bestS = s; }
+      }
+
+      if (bestS && bestS.effective > 0) {
+        earned += w * bestS.ratio;
+        const pct = Math.round(bestS.ratio * 100);
+        matchBullets.push(`✅ ${_cap(best.tech)} — מכסה קבוצת בחירה (${pct}%)`);
+      } else {
+        const anyDomain = members.some(m => _profileDomainYears(userProfile, m.domain) > 0);
+        if (anyDomain) {
+          earned += w * 0.50;
+          matchBullets.push(`↔️ ${members.map(m => _cap(m.tech)).join('/')} — כיסוי דומיין`);
+        } else {
+          gapBullets.push(`❌ ${members.map(m => _cap(m.tech)).join(' / ')} — אחת נדרשת`);
         }
       }
     }
@@ -341,10 +443,10 @@
       const w     = wBase * mult;
       total += w;
 
-      const { effective } = _profileYears(userProfile, tech);
+      const { effective } = _profileYears(userProfile, tech, domain);
       if (effective > 0) {
         const ratio = reqYears
-          ? Math.min(1.0, effective / (reqYears * CFG.INDUSTRY_MULT))
+          ? Math.min(1.0, effective / reqYears)
           : 1.0;
         earned += w * ratio;
         matchBullets.push(`➕ ${_cap(tech)} (יתרון)`);

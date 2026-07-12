@@ -1,104 +1,88 @@
 const BACKEND_URL = 'https://job-match-ai-extension.onrender.com';
-const WS_URL      = 'wss://job-match-ai-extension.onrender.com/ws/clicks';
 
-// ── Real-time WebSocket push (replaces chrome.alarms polling) ─────────────────
-let _ws = null;
-let _wsReconnectTimer = null;
-let _wsPingTimer = null;
-let _wsUserId = null;
-let _wsFailCount = 0;         // consecutive connection failures
-const _WS_MAX_FAILS = 5;      // stop retrying after this many back-to-back failures
+// ── Click tracking via chrome.alarms polling ──────────────────────────────────
+// בקשת HTTP אחת בדקה במקום WebSocket - chrome.alarms מעיר את ה-service worker,
+// כך שההתראות מגיעות גם אחרי שה-worker נהרג (הבעיה הקלאסית של setInterval ב-MV3).
+const CLICKS_ALARM = 'jma-clicks-poll';
+const CLICKS_SEEN_KEY = 'jma_clicks_seen'; // { [app_id]: מספר קליקים שכבר הותרעו }
 
-async function _getWsUserId() {
-  if (_wsUserId) return _wsUserId;
-  const { licenseKey } = await chrome.storage.local.get(['licenseKey']);
-  if (!licenseKey) return null;
-  // SHA-256 of license key → first 16 hex chars as stable, opaque user id
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(licenseKey));
-  _wsUserId = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
-  return _wsUserId;
+function _ensureClicksAlarm() {
+  chrome.alarms.get(CLICKS_ALARM, (a) => {
+    if (!a) chrome.alarms.create(CLICKS_ALARM, { periodInMinutes: 1 });
+  });
 }
+chrome.runtime.onInstalled.addListener(_ensureClicksAlarm);
+chrome.runtime.onStartup.addListener(_ensureClicksAlarm);
+_ensureClicksAlarm();
 
-async function _connectWs() {
-  // Close any existing connection first
-  if (_ws) { try { _ws.close(); } catch {} _ws = null; }
-  clearTimeout(_wsReconnectTimer);
-  clearInterval(_wsPingTimer);
+async function _pollClicks() {
+  const stored = await chrome.storage.local.get(['licenseKey', 'jobTracker', CLICKS_SEEN_KEY]);
+  if (!stored.licenseKey) return;
 
-  const userId = await _getWsUserId();
-  if (!userId) return; // no license key yet
+  const appIds = (stored.jobTracker || [])
+    .filter(j => j.appId)
+    .slice(0, 60)
+    .map(j => j.appId);
+  if (appIds.length === 0) return;
 
-  const ws = new WebSocket(`${WS_URL}?user_id=${userId}`);
-  _ws = ws;
+  let data;
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 10000); // שרת ישן = ויתור שקט
+    const res = await fetch(`${BACKEND_URL}/api/v1/clicks?app_ids=${appIds.join(',')}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(tid);
+    if (!res.ok) return;
+    data = await res.json();
+  } catch { return; } // כישלון שקט - ננסה שוב בדקה הבאה
 
-  ws.onopen = () => {
-    console.log('[JMA:ws] connected');
-    _wsFailCount = 0; // reset on successful connection
-    // Ping every 4 min to keep connection alive (Render closes idle WS after ~5 min)
-    _wsPingTimer = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-    }, 4 * 60 * 1000);
-  };
+  const clicksMap = data.clicks || {};
+  const seen = stored[CLICKS_SEEN_KEY] || {};
+  const tracker = stored.jobTracker || [];
+  let seenChanged = false;
 
-  ws.onmessage = async (event) => {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
-    if (msg.type === 'pong') return;
-    if (msg.type !== 'click') return;
+  for (const [appId, clicks] of Object.entries(clicksMap)) {
+    const prevCount = seen[appId] || 0;
+    if (clicks.length <= prevCount) continue;
 
-    // Look up job details from local tracker for the toast
-    const { jobTracker } = await chrome.storage.local.get(['jobTracker']);
-    const job = (jobTracker || []).find(j => j.appId === msg.app_id);
-    const jobTitle = msg.jobTitle || job?.jobTitle || 'המשרה';
-    const company  = msg.company  || job?.company  || '';
-    const target   = msg.target === 'github' ? 'GitHub' : msg.target === 'linkedin' ? 'LinkedIn' : 'Portfolio';
+    const newClicks = clicks.slice(prevCount);
+    seen[appId] = clicks.length;
+    seenChanged = true;
 
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0]) {
-      chrome.tabs.sendMessage(tabs[0].id, {
-        action: 'showClickToast', jobTitle, company, target,
+    const job = tracker.find(j => j.appId === appId);
+    const jobTitle = job?.jobTitle || 'המשרה';
+    const company  = job?.company ? ` ב${job.company}` : '';
+    const latest = newClicks[newClicks.length - 1];
+    const target = latest.target === 'github' ? 'GitHub'
+                 : latest.target === 'linkedin' ? 'LinkedIn' : 'Portfolio';
+
+    // 1. התראת מערכת - מגיעה גם כשאין אף טאב רלוונטי פתוח
+    chrome.notifications.create(`jma-click-${appId}-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: '🎉 מגייס פתח את הקישור שלך!',
+      message: `${jobTitle}${company} — נפתח קישור ${target}`,
+      priority: 2,
+    });
+
+    // 2. טוסט בטאב הפעיל (ה-UX הקיים נשמר)
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) chrome.tabs.sendMessage(tabs[0].id, {
+        action: 'showClickToast', jobTitle, company: job?.company || '', target,
       }).catch(() => {});
-    }
+    });
+
+    // 3. Badge על סמל התוסף
     chrome.action.setBadgeText({ text: 'NEW' });
     chrome.action.setBadgeBackgroundColor({ color: '#EA580C' });
-  };
+  }
 
-  ws.onerror = () => {};
-
-  ws.onclose = (event) => {
-    clearInterval(_wsPingTimer);
-    if (_ws !== ws) return;
-
-    // Code 1008 = Policy Violation — server rejected the connection (HTTP 403 upgrade).
-    // Also stop if the server never opened at all (code 1006 = abnormal closure from a
-    // failed HTTP upgrade).  After _WS_MAX_FAILS consecutive failures we give up so we
-    // don't spam Render logs with hundreds of rejected connections.
-    _wsFailCount++;
-    const isPermanent = event.code === 1008;
-    const tooManyFails = _wsFailCount >= _WS_MAX_FAILS;
-
-    if (isPermanent || tooManyFails) {
-      console.warn(`[JMA:ws] stopping reconnect — code=${event.code} fails=${_wsFailCount}`);
-      return;
-    }
-
-    // Exponential back-off: 20 s → 40 s → 80 s (cap 2 min)
-    const delay = Math.min(20000 * Math.pow(2, _wsFailCount - 1), 120000);
-    console.log(`[JMA:ws] closed (code=${event.code}) — retry #${_wsFailCount} in ${delay / 1000} s`);
-    _wsReconnectTimer = setTimeout(_connectWs, delay);
-  };
+  if (seenChanged) await chrome.storage.local.set({ [CLICKS_SEEN_KEY]: seen });
 }
 
-// Connect on service-worker startup
-_connectWs();
-
-// Reconnect immediately when the license key is set or changed
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.licenseKey) {
-    _wsUserId = null;   // invalidate cached user id
-    _wsFailCount = 0;   // reset circuit-breaker so fresh key gets a clean slate
-    _connectWs();
-  }
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === CLICKS_ALARM) _pollClicks();
 });
 
 function friendlyError(msg) {

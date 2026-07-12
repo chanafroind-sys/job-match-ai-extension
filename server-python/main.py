@@ -428,26 +428,50 @@ async def require_license(license_key: str) -> str:
 
 # ── Claude API ────────────────────────────────────────────────────────────────
 
-async def call_claude(prompt: str, max_tokens: int = 1200) -> str:
+# async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-haiku-4-5-20251001") -> str:
+#     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
+#     last_exc: Exception | None = None
+#     for attempt in range(1, 4):
+#         try:
+#             message = await anthropic_client.messages.create(
+#                 model="claude-haiku-4-5-20251001",
+#                 max_tokens=max_tokens,
+#                 messages=[{"role": "user", "content": prompt}],
+#             )
+#             result = "".join(block.text for block in message.content if hasattr(block, "text"))
+#             print(f"[JMA:claude] attempt={attempt} response_len={len(result)} stop_reason={message.stop_reason}")
+#             return result
+#         except Exception as e:
+#             last_exc = e
+#             print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
+#             if attempt < 3:
+#                 await asyncio.sleep(3)
+#     raise last_exc
+async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-haiku-4-5-20251001",
+                       check_truncation: bool = False) -> str:
     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
     last_exc: Exception | None = None
     for attempt in range(1, 4):
         try:
             message = await anthropic_client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=model,
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
             result = "".join(block.text for block in message.content if hasattr(block, "text"))
             print(f"[JMA:claude] attempt={attempt} response_len={len(result)} stop_reason={message.stop_reason}")
+            if check_truncation and message.stop_reason == "max_tokens":
+                raise HTTPException(status_code=422,
+                    detail="התוכן שנוצר ארוך מדי וקוצץ באמצע. אנא נסי שוב או קצרי את קורות החיים המקוריים.")
             return result
+        except HTTPException:
+            raise
         except Exception as e:
             last_exc = e
             print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
             if attempt < 3:
                 await asyncio.sleep(3)
     raise last_exc
-
 
 async def call_claude_cached(
     system_blocks: list,
@@ -554,7 +578,25 @@ def parse_cv_sections_py(cv_text: str) -> dict:
         sections[current] = '\n'.join(lines).strip()
     return sections
 
+def _validate_cv_output(cv_final: str, original_cv: str) -> list[str]:
+    """Cheap heuristic checks — does NOT call the AI. Flags likely content loss."""
+    issues: list[str] = []
+    sections = parse_cv_sections_py(cv_final)
 
+    for marker in ['[NAME]', '[PROFILE]', '[EXPERIENCE]', '[EDUCATION]', '[SKILLS]']:
+        if not sections.get(marker, '').strip():
+            issues.append(f"missing_or_empty:{marker}")
+
+    exp_final = sections.get('[EXPERIENCE]', '')
+    if exp_final.strip() and exp_final.count('$ ') == 0:
+        issues.append("experience_has_no_bullets")
+
+    orig_len = len(original_cv.strip())
+    final_len = len(cv_final.strip())
+    if orig_len > 300 and final_len < orig_len * 0.25:
+        issues.append(f"drastic_shrink orig_chars={orig_len} final_chars={final_len}")
+
+    return issues
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 # ── Preflight system block builder ───────────────────────────────────────────
@@ -718,6 +760,20 @@ _CV_LANG_CHECK_HE = "1. LANGUAGE: Is the CV body written in Hebrew? Technical te
 CV_PASS1_PROMPT = """You are a senior CV writer and recruiter expert.
 Create a tailored CV in {language} based on the original CV and job requirements.
 
+MANDATORY WORD-BUDGET PLANNING — do this BEFORE writing any content:
+1. Target total length: 480-550 words (Hebrew) or 550-620 words (English) across ALL
+   sections combined. This is what fits one printed page at standard CV formatting.
+2. Allocate roughly: Profile 35-45 words | Per role: 3-5 bullets, ~12-18 words each |
+   Education 20-35 words | Skills: compact list | Languages 10-15 words.
+3. If original content exceeds budget, tighten WORDING first (remove filler adjectives,
+   merge clauses) — NOT by deleting whole bullets, unless a role has 5+ bullets and you
+   cut only the least job-relevant one.
+4. NEVER shorten or remove a bullet containing a quantified achievement (%, $, users,
+   scale, team size, time saved).
+5. If still over budget after tightening wording, prefer trimming older/less relevant
+   roles over recent/more relevant ones — never drop a role entirely unless it's clearly
+   unrelated filler.
+
 ABSOLUTE RULES — never break these:
 1. ONE PAGE MAXIMUM — the final CV must fit on a single printed page, no exceptions. Cut the least relevant bullet points or shorten descriptions to stay within one page. Never sacrifice core tech, key metrics, or the profile to save space — cut filler first.
 2. NEVER invent experience, skills, dates, or company names
@@ -796,14 +852,18 @@ Review and improve this CV against ALL of these criteria — fix every issue you
 8. HUMAN TONE: Should not sound AI-generated. Adjust phrasing if needed.
 9. CORE TECH & METRICS PRESERVATION: Are all core programming languages still present? Are high-value data points (grades, honors, achievements) visible? Restore if removed.
 10. HONESTY: Do not add anything not in the original CV. Do not present freelance work as full-time employment.
-11. URLs: Are all URLs from the draft present verbatim in [CONTACT]? GitHub, LinkedIn, portfolio, and personal site URLs must not be removed or shortened. Restore any missing URLs exactly as they appear in the draft. If the draft contains [LINK:display|url] tokens, copy them unchanged — do not unwrap or reformat them.
+11. URLs: Are all URLs from the ORIGINAL CV present verbatim in [CONTACT]? Restore any missing URLs by copying them exactly from the ORIGINAL CV. If either the original or the draft contains [LINK:display|url] tokens, copy them unchanged — do not unwrap or reformat them.
+12. CONTENT COMPLETENESS: Compare the draft's [EXPERIENCE] section against the ORIGINAL CV role by role. If a bullet, technology, or metric from the original was dropped without an equivalent replacement, restore it.
 
 Output ONLY the improved CV using the same section markers.
 CRITICAL FORMAT RULES — any violation breaks the Word document:
 - Write each marker on its own line exactly: [NAME], [HEADLINE], [CONTACT], [PROFILE], [EXPERIENCE], [EDUCATION], [SKILLS], [LANGUAGES]
 - Do NOT prefix markers with #, ##, **, or any other character
 - Do NOT add explanations, comments, or labels outside the CV content
-=== CV TO REVIEW ===
+
+=== ORIGINAL CV (ground truth — use this to verify nothing was lost or invented) ===
+{original_cv}
+=== DRAFT CV TO REVIEW ===
 {cv_draft}
 === JOB DESCRIPTION ===
 {job_text}"""
@@ -904,6 +964,7 @@ class GenerateCVRequest(BaseModel):
     enableTracking: bool = True
     jobTitle: str = ""
     company: str = ""
+    model: str = "sonnet"
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -1092,6 +1153,8 @@ async def health():
 # ~1 200-token instruction block is billed only on the first call per cache window.
 # The dynamic CV text travels in the user message, which is never cached.
 
+
+
 EXTRACT_PROFILE_SYSTEM = """\
 You are an expert tech-recruiter talent analyst. Extract a structured JSON profile \
 from the candidate CV the user will provide. Follow every instruction exactly.
@@ -1110,13 +1173,13 @@ JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
   },
   "traits": [<string>],
   "experience": {
-    "backend":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "frontend":     { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "ai_ml_llm":    { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "data_bi":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "devops_cloud": { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "mobile":       { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
-    "other_domains":{ "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} }
+    "backend":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "personal_weight": <int 0-100>, "search_tags": [<string>]} },
+    "frontend":     { ... same shape ... },
+    "ai_ml_llm":    { ... },
+    "data_bi":      { ... },
+    "devops_cloud": { ... },
+    "mobile":       { ... },
+    "other_domains":{ ... }
   },
   "tools_and_methods": { "<tool>": {"found": <bool>, "search_tags": [<string>]} },
   "languages": { "<lang>": "<level>" }
@@ -1124,34 +1187,104 @@ JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
 
 CRITICAL RULES:
 1. SEPARATION: `industry_years` = verified paid employment only. \
-`personal_years` = side projects, academia, bootcamps, online courses.
-2. DURATION INFERENCE: If a tech is listed inside a job role that has explicit dates, \
-compute its duration from those dates. If dates are missing, default to 1.0 year.
-3. TRAITS: English adjective/noun phrases only. Examples: "Analytically-Minded", \
-"Self-Directed", "Team-Player".
-4. DOMAIN YEARS in `industry_summary.domain_years` = sum of `industry_years` across all \
+`personal_years` = side projects, academia, bootcamps, online courses, open source.
+2. YEAR-TO-TECH ATTACHMENT: Attach years to a tech ONLY from roles/projects whose \
+description actually mentions that tech (or an unambiguous alias). NEVER spread total \
+career years across all listed skills. A skill that appears only in a "Skills" list \
+with no role/project context gets: industry_years 0, personal_years 0.5, personal_weight 25.
+3. PERSONAL EXPERIENCE WEIGHTING: For every tech, set `personal_weight` (0-100) = how \
+substantial the NON-industry experience is, judged from CV evidence:
+   - 90-100: production system with real users; launched startup MVP; paid freelance; \
+     open-source with real adoption
+   - 60-85:  end-to-end project that was actually deployed/live; working product built \
+     independently; meaningful contribution to a real codebase
+   - 35-55:  substantial portfolio project; final degree project; hackathon finalist work
+   - 10-30:  coursework, bootcamp exercises, tutorials, "familiar with X" claims
+   - personal_years == 0 → personal_weight = 0. No evidence either way → 40.
+   Signals of substance: "deployed", "production", "live", "users", scale numbers, \
+   links to a working product, App Store / cloud hosting mentions, depth of description. \
+   One-line mention = low. Detailed project with outcomes = high.
+4. DURATION INFERENCE: If a tech appears inside a role with explicit dates, compute its \
+duration from those dates. If dates are missing, default to 1.0 year.
+5. TRAITS: English adjective/noun phrases only, e.g. "Analytically-Minded", "Team-Player".
+6. DOMAIN YEARS in `industry_summary.domain_years` = sum of `industry_years` across all \
 techs in that domain, capped at total career years.
-5. FULLSTACK INFERENCE: If the person has ≥1 year backend AND ≥1 year frontend \
-(industry), add "fullstack" to domain_years with min(backend_years, frontend_years).
-6. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
+7. FULLSTACK INFERENCE: If ≥1 industry year in both backend AND frontend, add \
+"fullstack" with min(backend_years, frontend_years).
+8. DOMAIN PLACEMENT: Place each tech in the domain matching HOW THE CANDIDATE USED IT \
+(Python for ML pipelines → ai_ml_llm). Never duplicate a tech across domains.
+9. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
 microservices, rest, graphql, tdd, and any others found.
 
 SEARCH TAGS RULES (apply to every tech/tool entry):
-For each extracted skill, technology, framework, or qualification populate `search_tags` \
-with synonyms, aliases, and equivalents for raw text pattern-matching. \
-LIMIT: maximum 6 tags per entry — choose only the most useful ones. Include the best from:
-a. Industry-standard English synonyms and acronyms \
-   (e.g. "PostgreSQL" → ["SQL", "Postgres", "DB", "RDBMS"]).
-b. The most common Hebrew transliteration/translation used in Israeli job postings. \
-   CRITICAL: also include the most frequent prefix-attached forms because Hebrew prepends \
-   prepositions directly to words — add at least one prefixed variant for each Hebrew tag \
-   (e.g. "Python" → ["פייתון", "בפייתון"]; \
-    "Machine Learning" → ["למידת מכונה", "בלמידת מכונה"]; \
-    "Database" → ["בסיסי נתונים", "דאטהבייס"]).
-c. One related higher-level domain if highly relevant \
-   (e.g. "React" → ["Frontend"]).
-All Hebrew characters must be output as valid, clean UTF-8 strings inside the JSON \
-(do NOT escape them as \\uXXXX sequences)."""
+Populate `search_tags` with synonyms, aliases, and equivalents for raw text matching. \
+LIMIT: max 6 per entry. Every Latin-script tag MUST be at least 3 characters long \
+(never emit tags like "go", "ai", "bi", "ml" — use "golang", "genai", "power bi", \
+"machine learning" instead). Include the best from:
+a. Industry-standard English synonyms/acronyms ("PostgreSQL" → ["SQL", "Postgres", "RDBMS"]).
+b. The most common Hebrew transliteration used in Israeli job postings, including at \
+least one prefix-attached form ("Python" → ["פייתון", "בפייתון"]).
+c. One related higher-level domain if highly relevant ("React" → ["Frontend"]).
+All Hebrew must be clean UTF-8 (no \\uXXXX escapes)."""
+# You are an expert tech-recruiter talent analyst. Extract a structured JSON profile \
+# from the candidate CV the user will provide. Follow every instruction exactly.
+
+# OUTPUT: Return ONLY valid JSON — no markdown, no explanation, no extra keys.
+
+# JSON SCHEMA (fill all fields; use 0 / false / [] / {} when data is absent):
+# {
+#   "industry_summary": {
+#     "total_years_industry": <float>,
+#     "domain_years": {
+#       "<domain>": <float>
+#       // only domains actually found: backend, frontend, fullstack, mobile, devops_cloud,
+#       // ai_ml_llm, data_bi, cyber, qa, embedded, other
+#     }
+#   },
+#   "traits": [<string>],
+#   "experience": {
+#     "backend":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "frontend":     { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "ai_ml_llm":    { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "data_bi":      { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "devops_cloud": { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "mobile":       { "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} },
+#     "other_domains":{ "<tech>": {"industry_years": <float>, "personal_years": <float>, "search_tags": [<string>]} }
+#   },
+#   "tools_and_methods": { "<tool>": {"found": <bool>, "search_tags": [<string>]} },
+#   "languages": { "<lang>": "<level>" }
+# }
+
+# CRITICAL RULES:
+# 1. SEPARATION: `industry_years` = verified paid employment only. \
+# `personal_years` = side projects, academia, bootcamps, online courses.
+# 2. DURATION INFERENCE: If a tech is listed inside a job role that has explicit dates, \
+# compute its duration from those dates. If dates are missing, default to 1.0 year.
+# 3. TRAITS: English adjective/noun phrases only. Examples: "Analytically-Minded", \
+# "Self-Directed", "Team-Player".
+# 4. DOMAIN YEARS in `industry_summary.domain_years` = sum of `industry_years` across all \
+# techs in that domain, capped at total career years.
+# 5. FULLSTACK INFERENCE: If the person has ≥1 year backend AND ≥1 year frontend \
+# (industry), add "fullstack" to domain_years with min(backend_years, frontend_years).
+# 6. `tools_and_methods`: include git, cicd, agile, scrum, docker, kubernetes, \
+# microservices, rest, graphql, tdd, and any others found.
+
+# SEARCH TAGS RULES (apply to every tech/tool entry):
+# For each extracted skill, technology, framework, or qualification populate `search_tags` \
+# with synonyms, aliases, and equivalents for raw text pattern-matching. \
+# LIMIT: maximum 6 tags per entry — choose only the most useful ones. Include the best from:
+# a. Industry-standard English synonyms and acronyms \
+#    (e.g. "PostgreSQL" → ["SQL", "Postgres", "DB", "RDBMS"]).
+# b. The most common Hebrew transliteration/translation used in Israeli job postings. \
+#    CRITICAL: also include the most frequent prefix-attached forms because Hebrew prepends \
+#    prepositions directly to words — add at least one prefixed variant for each Hebrew tag \
+#    (e.g. "Python" → ["פייתון", "בפייתון"]; \
+#     "Machine Learning" → ["למידת מכונה", "בלמידת מכונה"]; \
+#     "Database" → ["בסיסי נתונים", "דאטהבייס"]).
+# c. One related higher-level domain if highly relevant \
+#    (e.g. "React" → ["Frontend"]).
+# All Hebrew characters must be output as valid, clean UTF-8 strings inside the JSON \
+# (do NOT escape them as \\uXXXX sequences)."""
 
 
 class ExtractProfileRequest(BaseModel):
@@ -1354,13 +1487,36 @@ After the last question output exactly:
 # The parser (_stream_q_parse) detects these markers and emits q_open / q_token
 # / q_close SSE events so the client can open a textarea before the sentence ends.
 
+# STREAM_QUESTIONS_LIVE_PROMPT = """\
+# You are a senior career consultant. The candidate CV is in your system prompt.
+
+# The initial match score is {base_score}% with {gap_pct} improvement points available.
+
+# Identify the {n_questions} most important skill gaps that are unclear or missing in \
+# the CV and are clearly required by the job below.
+
+# CRITICAL OUTPUT FORMAT — for EACH gap emit EXACTLY these 3 lines the MOMENT you identify it:
+# Line 1 (metadata — emit immediately): [META]{{"id":"qN","skill":"<English name>","weight":<int>}}
+# Line 2 (question   — stream freely):  <full Hebrew question text, one line>
+# Line 3 (close):                        [EXPL]<Hebrew explanation, max 15 words>[/EXPL]
+
+# Rules:
+# • Your FIRST token must be `[` — no preamble, no thinking text, no introduction.
+# • Emit gap #1 the instant you find it — do NOT read the whole job first.
+# • weights must sum to exactly {gap_pct}. Skill names in English; all text in Hebrew.
+# • Do NOT add any other lines, commentary, or JSON wrappers.
+# • After the last question output: [QUESTIONS_DONE]
+
+# === JOB DESCRIPTION ===
+# {job_text}"""
+
 STREAM_QUESTIONS_LIVE_PROMPT = """\
 You are a senior career consultant. The candidate CV is in your system prompt.
 
 The initial match score is {base_score}% with {gap_pct} improvement points available.
 
-Identify the {n_questions} most important skill gaps that are unclear or missing in \
-the CV and are clearly required by the job below.
+Identify UP TO {n_questions} of the most critical and substantial skill gaps that are unclear or missing in \
+the CV and are clearly required by the job below. Focus only on high-impact gaps; do not force minor questions just to meet a count.
 
 CRITICAL OUTPUT FORMAT — for EACH gap emit EXACTLY these 3 lines the MOMENT you identify it:
 Line 1 (metadata — emit immediately): [META]{{"id":"qN","skill":"<English name>","weight":<int>}}
@@ -1374,9 +1530,13 @@ Rules:
 • Do NOT add any other lines, commentary, or JSON wrappers.
 • After the last question output: [QUESTIONS_DONE]
 
+--- ADVANCED GAP EVALUATION RULES ---
+1. DO NOT ask novice-level questions if the CV demonstrates advanced experience in a related domain. 
+2. If the job requires AI tooling (like Copilot/Cursor) and the CV already shows hands-on AI Development (LLMs, Prompts, Agents), acknowledge their AI background in the question rather than assuming they lack AI literacy.
+3. Tailor the phrasing to match the candidate's existing professional depth (e.g., blend their Java/Python/AI background into the context of the question).
+
 === JOB DESCRIPTION ===
 {job_text}"""
-
 
 async def _stream_q_parse(token_iter):
     """
@@ -1563,15 +1723,27 @@ async def stream_questions_endpoint(
 DEEP_ANALYSIS_PROMPT = """\
 You are a senior career consultant. The candidate CV is in your system prompt.
 
-Based on the CV, job description, and the candidate's answers to gap questions below,
-produce a concise updated assessment.
+You receive: the job description, the candidate's answers to gap questions, and a
+bank of verified answers from PREVIOUS applications. Treat bank facts as reliable
+CV supplements.
 
-STRICT OUTPUT FORMAT — no preamble, no thinking:
+SCORING METHOD - score ONLY by coverage of the job's actual requirements:
+1. Identify the job's core requirements. For each: is it covered by the CV, the
+   answers, or the answer bank?
+2. Judge answer CONTENT only - NEVER style, length, or phrasing. A short answer
+   stating a fact counts as that fact. FORBIDDEN: describing any answer as vague,
+   unprofessional, or insufficient.
+3. A live MVP, deployed product, or production project counts as significant
+   experience even if not employment.
+4. Do NOT default to a "safe" 60-65. Requirements substantially covered -> 80+.
+   Core must-haves truly absent -> below 40. The score must follow the evidence.
+
+STRICT OUTPUT FORMAT - no preamble, no thinking:
 Line 1: [SCORE]<integer 0-100>[/SCORE]
-Then immediately write a flowing Hebrew analysis (~150 words):
-• 2-3 חוזקות מרכזיות מהמועמד ביחס למשרה
-• פערים ואיך תשובות המועמד השפיעו על הציון
-• המלצה סופית — האם כדאי להגיש מועמדות
+Then a flowing Hebrew analysis (~130 words):
+- חוזקות: 2-3 נקודות קונקרטיות מול דרישות המשרה
+- פערים אמיתיים בלבד: דרישות ליבה שאינן מכוסות (אם אין - כתוב שאין)
+- המלצה חד-משמעית: להגיש / להגיש עם חיזוק קו"ח / לא להגיש - ונימוק במשפט
 
 All text in Hebrew. No markdown. No JSON.
 
@@ -1579,13 +1751,17 @@ All text in Hebrew. No markdown. No JSON.
 {job_text}
 
 === CANDIDATE ANSWERS TO GAP QUESTIONS ===
-{answers_text}"""
+{answers_text}
+
+=== VERIFIED ANSWER BANK FROM PREVIOUS APPLICATIONS ===
+{answer_bank}"""
 
 
 class DeepAnalysisRequest(BaseModel):
-    cvText:   str  = ""
-    jobText:  str  = ""
-    answers:  list = []
+    cvText:     str  = ""
+    jobText:    str  = ""
+    answers:    list = []
+    answerBank: list = []
 
 
 @app.post("/api/stream-deep-analysis")
@@ -1600,8 +1776,14 @@ async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optiona
         for i, a in enumerate(body.answers or [])
     ) or "לא נענו שאלות"
 
+    answer_bank = "\n".join(
+        f"- {b.get('skill','?')}: \"{b.get('answer','')}\" (ממשרה: {b.get('jobTitle','')})"
+        for b in (body.answerBank or [])[:40]
+    ) or "אין מאגר תשובות קודמות"
+
     sys_blocks = _cv_system_blocks(cv_text)
-    prompt     = DEEP_ANALYSIS_PROMPT.format(job_text=job_text, answers_text=answers_text)
+    prompt     = DEEP_ANALYSIS_PROMPT.format(job_text=job_text, answers_text=answers_text,
+        answer_bank=answer_bank)
 
     async def generate():
         import re
@@ -1969,14 +2151,35 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         answers_text=answers_text,
         job_text=body.jobText,
     ) + url_instruction + constraints_block
-    cv_draft = await call_claude(pass1_prompt, max_tokens=2000)
+    cv_draft = await call_claude(pass1_prompt, max_tokens=4000, model="claude-haiku-4-5-20251001", check_truncation=True)
 
     pass2_prompt = CV_PASS2_PROMPT.format(
         language_check=language_check,
         cv_draft=cv_draft,
         job_text=body.jobText,
+        original_cv=body.cvText,
     ) + url_instruction + constraints_block
-    cv_final = await call_claude(pass2_prompt, max_tokens=2000)
+    cv_final = await call_claude(pass2_prompt, max_tokens=3800,
+                                  model=_resolve_model(body.model), check_truncation=True)
+
+    validation_issues = _validate_cv_output(cv_final, body.cvText)
+    if validation_issues:
+        print(f"[JMA:generate_cv] VALIDATION ISSUES: {validation_issues} — retrying Pass2 once")
+        retry_prompt = pass2_prompt + (
+            "\n\nIMPORTANT: your previous output had structural problems: "
+            f"{', '.join(validation_issues)}. Ensure every section marker is present with "
+            "real content, and do not shrink the CV drastically compared to the original."
+        )
+        try:
+            cv_final_retry = await call_claude(retry_prompt, max_tokens=3800,
+                                                 model=_resolve_model(body.model), check_truncation=True)
+            if not _validate_cv_output(cv_final_retry, body.cvText):
+                cv_final = cv_final_retry
+                print("[JMA:generate_cv] retry succeeded")
+            else:
+                print("[JMA:generate_cv] retry still has issues — using original output")
+        except Exception as e:
+            print(f"[JMA:generate_cv] retry failed: {e} — using original output")
 
     # Inject tracking links only when original CV had GitHub/LinkedIn URLs and tracking is enabled
     app_id = str(uuid.uuid4())[:8]
@@ -2002,17 +2205,17 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
                 continue
             label = SECTION_LABELS[marker]
             # Truncate very long sections to keep prompt size reasonable
-            truncated = content[:600] + ('…' if len(content) > 600 else '')
+            truncated = content[:1800] + ('…' if len(content) > 1800 else '')
             sections_block_parts.append(
                 f"Section {idx} — {marker} (label: {label}, id: {idx}):\n{truncated}"
             )
         if sections_block_parts:
             diff_prompt = CV_DIFF_PROMPT.format(
                 sections_block='\n\n'.join(sections_block_parts),
-                original_cv=body.cvText[:3000],
+                original_cv=body.cvText[:7000],
                 job_context=body.jobText[:200],
             )
-            raw_diff = await call_claude(diff_prompt, max_tokens=1800)
+            raw_diff = await call_claude(diff_prompt, max_tokens=2500)
             sections = parse_json_array(raw_diff)
             print(f"[JMA:diff] parsed {len(sections)} sections")
     except Exception as e:

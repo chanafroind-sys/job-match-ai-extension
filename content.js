@@ -4,52 +4,66 @@ async function getRecentJobsArray() {
   return res.jma_recent_jobs || [];
 }
 
-// הפונקציה נשארת עם פרמטר אחד בלבד (updates) כמו בקוד המקורי שלך!
+// 🛡️ רשימה לבנה - חייבת להיות זהה לזו שב-popup.js!
+const JOB_FIELDS = [
+  'url', 'jobUrl', 'jobText', 'jobTitle', 'jobPlatform', 'jobLanguage',
+  'wizard_step', 'baseScore', 'bullets', 'ts', 'activelyOpened',
+  'analysis', 'questions', 'answers', 'generatedCV', 'coverLetterText',
+  'cvLanguage', 'gapPct'
+];
+
+function _pickJobFields(obj) {
+  const out = {};
+  if (!obj) return out;
+  for (const k of JOB_FIELDS) {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
+}
+
 async function saveJobState(updates) {
-  // חילוץ אוטומטי של ה-URL בהתאם לסביבה שבה הקוד רץ
-  const url = (typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null);
-  
+  // ב-content script רץ בתוך עמוד המשרה - location.href הוא ה-URL הנכון
+  const url = (typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl
+            : (typeof location !== 'undefined' ? location.href : null);
+
   if (!url) return;
-  
+
   let jobs = await getRecentJobsArray();
   const existingIndex = jobs.findIndex(j => j.url === url);
-  
-  // מיזוג נתונים קודמים בתוך מערך ה-5
+
   let jobData = existingIndex !== -1 ? jobs[existingIndex] : { url, ts: Date.now() };
-  jobData = { ...jobData, ...updates, ts: Date.now() };
+  jobData = { ...jobData, ..._pickJobFields(updates), url, ts: Date.now() };
 
   if (existingIndex !== -1) {
-    jobs.splice(existingIndex, 1); // הקפצה לראש הרשימה
+    jobs.splice(existingIndex, 1);
   }
-  
+
   jobs.unshift(jobData);
-  
-  // חוק 5 המשרות - מונע סלט ועומס בסטורג'
+
   if (jobs.length > 5) {
     jobs = jobs.slice(0, 5);
   }
-  
+
   await chrome.storage.local.set({ 'jma_recent_jobs': jobs });
 }
 
-// גם כאן, אם לא נשלח URL, נחלץ אותו אוטומטית
 async function loadJobState(url) {
-  const targetUrl = url || ((typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl : (typeof location !== 'undefined' ? location.href : null));
-  
+  const targetUrl = url || ((typeof state !== 'undefined' && state.jobUrl) ? state.jobUrl
+                 : (typeof location !== 'undefined' ? location.href : null));
+
   if (!targetUrl) return null;
-  
+
   const jobs = await getRecentJobsArray();
   const job = jobs.find(j => j.url === targetUrl);
-  
+
   if (!job) return null;
-  
-  // בדיקת תוקף של 4 שעות (כמו הלוגיקה המקורית שלך ב-image_d1cb20.png)
+
   if ((Date.now() - job.ts) > 4 * 60 * 60 * 1000) {
     const filteredJobs = jobs.filter(j => j.url !== targetUrl);
     await chrome.storage.local.set({ 'jma_recent_jobs': filteredJobs });
     return null;
   }
-  
+
   return job;
 }
 (() => {
@@ -111,7 +125,12 @@ async function loadJobState(url) {
   }
 
   function cleanText(text) {
-    return text.replace(/\s+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    // קריטי: שומרים על שבירות שורה! הפרסר של matcher.js עובד לפי שורות/בולטים.
+    return text
+      .replace(/[ \t ]+/g, ' ')   // מכווצים רק רווחים אופקיים
+      .replace(/ ?\n ?/g, '\n')        // מנקים רווחים סביב שבירות שורה
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   function extractJobText() {
@@ -234,6 +253,17 @@ async function loadJobState(url) {
         ogTitle,
       });
     }
+
+    if (req.action === 'runFabPipeline') {
+      if (typeof runFabPipeline !== 'function') {
+        sendResponse({ ok: false, error: 'fab-not-initialized' });
+        return; // ה-FAB לא אותחל בעמוד הזה - הפופ-אפ ייפול ל-fallback שלו
+      }
+      runFabPipeline()
+        .then(res => sendResponse(res || { ok: true }))
+        .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }));
+      return true; // async response
+    }
     return true;
   });
 
@@ -305,7 +335,7 @@ async function loadJobState(url) {
       const win = lo.slice(Math.max(0, idx - 150), idx + 150);
       const ym = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?)/i);
       const yrs = ym ? parseFloat(ym[1]) : (totalYears > 0 ? Math.round(totalYears * 0.5 * 10) / 10 : 1.0);
-      exp[domain][tech] = { industry_years: yrs, personal_years: 0 };
+      exp[domain][tech] = { industry_years: yrs, personal_years: 0, personal_weight: 0 };
       domainYears[domain] = (domainYears[domain] || 0) + yrs;
     }
 
@@ -336,12 +366,43 @@ async function loadJobState(url) {
   let _fabProgressTimer = null;
   let _panelOpen = false;
   const FAB_CIRC = 207.3; // 2π×33
+
+  // ref ל-runFabPipeline של ה-FAB הפעיל הנוכחי, כדי שגם onMessage (מחוץ ל-scope
+  // של _createFabGauge) יוכל להפעיל אותה כשמגיעה הודעה מהפופ-אפ.
+  let runFabPipeline = null;
+
+  // שער קשיח: ה-FAB מופיע רק אם בטקסט יש סימן מובהק לסעיף דרישות/תפקיד
+  const REQUIREMENTS_SIGNALS = [
+    // עברית
+    'דרישות התפקיד', 'דרישות המשרה', 'דרישות:', 'כישורים נדרשים', 'ניסיון נדרש',
+    'תיאור המשרה', 'על התפקיד', 'תחומי אחריות', 'יתרון משמעותי', 'חובה:',
+    // אנגלית (הטקסט מנורמל לגרש ישר לפני ההשוואה)
+    'requirements', 'qualifications', "what you'll need", "what we're looking for",
+    "what you'll do", 'the role', 'about the role', 'responsibilities',
+    'must have', 'nice to have', 'we are looking for', 'bonus points', 'skills',
+  ];
+  function _hasJobRequirementsSignal(text) {
+    // נרמול גרשיים טיפוגרפיים (' ') לגרש ישר - "What We're" מגיע לרוב עם ’
+    const lo = (text || '').toLowerCase().replace(/[‘’]/g, "'");
+    return REQUIREMENTS_SIGNALS.some(sig => lo.includes(sig));
+  }
 function initJobFab() {
   if (document.getElementById('jma-float-btn')) return; 
   if (document.getElementById('jma-fab-wrap')) return;
-  if (!pageHasJobKeywords()) return; 
+  if (!pageHasJobKeywords() && !_hasJobRequirementsSignal(document.body.innerText || '')) return;
   const jobText = extractJobText();
   if (!jobText || jobText.length < 350) return;
+
+  if (!_hasJobRequirementsSignal(jobText)) return; // אין סעיף דרישות - לא עמוד משרה מלא
+
+  // עמוד משרה מאומת: מעירים את השרת + שומרים את המשרה למאגר (השרת מסנן כפילויות לפי URL)
+  chrome.runtime.sendMessage({ action: 'pingBackend' });
+  chrome.runtime.sendMessage({
+    action: 'scrapeJob',
+    url: location.href,
+    text: jobText.substring(0, 5000),
+    title: document.title || '',
+  });
 
   chrome.storage.local.get(['licenseKey', 'cvText', 'jma_recent_jobs'], (conf) => {
     if (!conf.licenseKey || !conf.cvText) return;
@@ -477,9 +538,9 @@ function _createFabGauge(jobText, cached) {
     }
   }
 
-  if (cached && cached.base_score != null) {
-    _fabSetScore(cached.base_score);
-    _activateFabButton(cached.base_score);
+  if (cached && cached.baseScore != null && cached.baseScore > 0) {
+    _fabSetScore(cached.baseScore);
+    _activateFabButton(cached.baseScore);
 } else {
     chrome.storage.local.get(['jma_user_profile', 'cvText'], async (s) => {
       if (!window.JMA_Matcher) return;
@@ -505,93 +566,101 @@ function _createFabGauge(jobText, cached) {
       }, 700); 
     });
   }
+  // הצינור המלא של ה-FAB: חילוץ → ציון מקומי → שמירה מלאה ל-storage.
+  // משמש גם את לחיצת ה-FAB וגם את כפתור "ניתוח והתאמה מעמיקה" בפופ-אפ.
+  runFabPipeline = async function () {
+    const currentUrl = window.location.href;
+    const extractedText = extractJobText();
+
+    // ── אסטרטגיית חילוץ כותרת דינמית (מתוך ה-onMessage שלך) ──────────────────
+    const getJobTitle = () => {
+      const h1 = document.querySelector('h1')?.innerText?.trim() || '';
+      const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
+    
+      const rawTitle = h1 || ogTitle || document.title || 'משרה ללא כותרת';
+    
+      // ניקוי סיומות מיותרות מהכותרת (למשל: "מפתח תוכנה - LinkedIn")
+      if (typeof _cleanPageTitle === 'function') {
+        return _cleanPageTitle(rawTitle);
+      }
+      return rawTitle.split(/[|•\-–]/)[0].trim();
+    };
+
+    // ── אסטרטגיית חילוץ פלטפורמה דינמית ──────────────────────────────────────
+    const getJobPlatform = () => {
+      if (typeof detectPlatform === 'function') {
+        return detectPlatform();
+      }
+      const metaSiteName = document.querySelector('meta[property="og:site_name"]')?.content;
+      if (metaSiteName) return metaSiteName.trim();
+
+      const host = window.location.hostname;
+      const parts = host.replace('www.', '').split('.');
+      if (parts.length >= 2) {
+        return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+      }
+      return host;
+    };
+
+    // ── זיהוי שפה ואסימילציה של הנתונים ──────────────────────────────────────
+    const jobLanguage = (typeof detectLanguage === 'function') 
+      ? detectLanguage(extractedText) 
+      : (/[\u0590-\u05FF]/.test(extractedText.substring(0, 300)) ? 'hebrew' : 'english');
+
+    // שליפת הציון והבולטים הקיים שנשמרו זמנית על ה-window בחלק הפסיבי
+    const finalScore = window.jma_current_score || (cached ? cached.baseScore : 0);
+    const finalBullets = window.jma_current_bullets || (cached ? cached.bullets : []);
+
+    // 🎯 2. בניית אובייקט ה-state המלא והמאוחד למשרה הנוכחית
+    const fullJobState = {
+      url: currentUrl,          // מפתח הזיהוי בתוך המערך המאוחד
+      jobUrl: currentUrl,
+      jobText: extractedText,
+      jobTitle: getJobTitle(),
+      jobPlatform: getJobPlatform(),
+      jobLanguage: jobLanguage,
+      wizard_step: 'questions', // מעביר את הפופ-אפ ישירות למסך השאלות
+      baseScore: finalScore,
+      bullets: finalBullets,
+      ts: Date.now(),
+      activelyOpened: true,      // דגל מסמן: נפתח אקטיבית ע"י המשתמש!
+      analysis: cached?.analysis || null,
+      questions: cached?.questions || [],
+      answers: cached?.answers || [],
+      generatedCV: cached?.generatedCV || '',
+      gapPct: cached?.gapPct || 0
+    };
+
+    try {
+      // 📦 3. שמירה אקטיבית ומרוכזת לתוך מערך 5 המשרות ב-Storage
+      if (typeof saveJobState === 'function') {
+        await saveJobState(fullJobState);
+      } else {
+        // פתרון גיבוי ישיר במידה ו-saveJobState לא נגישה באותו הסקופ
+        const storageData = await chrome.storage.local.get('jma_recent_jobs');
+        let recentJobs = storageData.jma_recent_jobs || [];
+        recentJobs = recentJobs.filter(j => j.url !== currentUrl);
+        recentJobs.unshift(fullJobState);
+        if (recentJobs.length > 5) recentJobs.pop();
+        await chrome.storage.local.set({ jma_recent_jobs: recentJobs });
+      }
+
+      // 🔄 4. עדכון משתנה הסטייט הלוקאלי המקומי (אם קיים בסקופ הקובץ)
+      if (typeof state !== 'undefined') {
+        Object.assign(state, fullJobState);
+      }
+    } catch (err) {
+      console.error("⚠️ שגיאה בשמירת נתוני המשרה בסטורג':", err);
+    }
+
+    return { ok: true, baseScore: finalScore };
+  };
+
 wrap.addEventListener('click', async () => {
   // 1. הגנה: מאפשר לחיצה רק אם הכפתור מוכן (clickable)
   if (!wrap.classList.contains('jma-fab-clickable')) return;
 
-  const currentUrl = window.location.href;
-  const extractedText = extractJobText();
-
-  // ── אסטרטגיית חילוץ כותרת דינמית (מתוך ה-onMessage שלך) ──────────────────
-  const getJobTitle = () => {
-    const h1 = document.querySelector('h1')?.innerText?.trim() || '';
-    const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
-    
-    const rawTitle = h1 || ogTitle || document.title || 'משרה ללא כותרת';
-    
-    // ניקוי סיומות מיותרות מהכותרת (למשל: "מפתח תוכנה - LinkedIn")
-    if (typeof _cleanPageTitle === 'function') {
-      return _cleanPageTitle(rawTitle);
-    }
-    return rawTitle.split(/[|•\-–]/)[0].trim();
-  };
-
-  // ── אסטרטגיית חילוץ פלטפורמה דינמית ──────────────────────────────────────
-  const getJobPlatform = () => {
-    if (typeof detectPlatform === 'function') {
-      return detectPlatform();
-    }
-    const metaSiteName = document.querySelector('meta[property="og:site_name"]')?.content;
-    if (metaSiteName) return metaSiteName.trim();
-
-    const host = window.location.hostname;
-    const parts = host.replace('www.', '').split('.');
-    if (parts.length >= 2) {
-      return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-    }
-    return host;
-  };
-
-  // ── זיהוי שפה ואסימילציה של הנתונים ──────────────────────────────────────
-  const jobLanguage = (typeof detectLanguage === 'function') 
-    ? detectLanguage(extractedText) 
-    : (/[\u0590-\u05FF]/.test(extractedText.substring(0, 300)) ? 'hebrew' : 'english');
-
-  // שליפת הציון והבולטים הקיים שנשמרו זמנית על ה-window בחלק הפסיבי
-  const finalScore = window.jma_current_score || (cached ? cached.baseScore : 0);
-  const finalBullets = window.jma_current_bullets || (cached ? cached.bullets : []);
-
-  // 🎯 2. בניית אובייקט ה-state המלא והמאוחד למשרה הנוכחית
-  const fullJobState = {
-    url: currentUrl,          // מפתח הזיהוי בתוך המערך המאוחד
-    jobUrl: currentUrl,
-    jobText: extractedText,
-    jobTitle: getJobTitle(),
-    jobPlatform: getJobPlatform(),
-    jobLanguage: jobLanguage,
-    wizard_step: 'questions', // מעביר את הפופ-אפ ישירות למסך השאלות
-    baseScore: finalScore,
-    bullets: finalBullets,
-    ts: Date.now(),
-    activelyOpened: true,      // דגל מסמן: נפתח אקטיבית ע"י המשתמש!
-    analysis: cached?.analysis || null,
-    questions: cached?.questions || [],
-    answers: cached?.answers || [],
-    generatedCV: cached?.generatedCV || '',
-    gapPct: cached?.gapPct || 0
-  };
-
-  try {
-    // 📦 3. שמירה אקטיבית ומרוכזת לתוך מערך 5 המשרות ב-Storage
-    if (typeof saveJobState === 'function') {
-      await saveJobState(fullJobState);
-    } else {
-      // פתרון גיבוי ישיר במידה ו-saveJobState לא נגישה באותו הסקופ
-      const storageData = await chrome.storage.local.get('jma_recent_jobs');
-      let recentJobs = storageData.jma_recent_jobs || [];
-      recentJobs = recentJobs.filter(j => j.url !== currentUrl);
-      recentJobs.unshift(fullJobState);
-      if (recentJobs.length > 5) recentJobs.pop();
-      await chrome.storage.local.set({ jma_recent_jobs: recentJobs });
-    }
-
-    // 🔄 4. עדכון משתנה הסטייט הלוקאלי המקומי (אם קיים בסקופ הקובץ)
-    if (typeof state !== 'undefined') {
-      Object.assign(state, fullJobState);
-    }
-  } catch (err) {
-    console.error("⚠️ שגיאה בשמירת נתוני המשרה בסטורג':", err);
-  }
+  await runFabPipeline();
 
   // 🚀 5. פתיחת הפאנל הצדדי/סידבר למשתמש
   if (typeof _togglePanel === 'function') {
@@ -770,14 +839,27 @@ wrap.addEventListener('click', async () => {
         requestAnimationFrame(() => pill.classList.add('jma-fab-reason-in'));
       }, i * 190);
     });
-    // Auto-dismiss after 8 s
-    setTimeout(() => wrap.remove(), 8000);
+    // מסתירים אחרי 8 שניות - לא מוחקים, כדי שריחוף על ה-FAB יחזיר אותם
+    setTimeout(() => wrap.classList.add('jma-fab-reasons-hidden'), 8000);
+
+    // ריחוף מעל ה-FAB מציג/מסתיר את הבלונים חזרה
+    const fabEl = document.getElementById('jma-fab-wrap');
+    if (fabEl && !fabEl._jmaReasonsHoverBound) {
+      fabEl._jmaReasonsHoverBound = true;
+      fabEl.addEventListener('mouseenter', () => {
+        document.getElementById('jma-fab-reasons')?.classList.remove('jma-fab-reasons-hidden');
+      });
+      fabEl.addEventListener('mouseleave', () => {
+        document.getElementById('jma-fab-reasons')?.classList.add('jma-fab-reasons-hidden');
+      });
+    }
   }
 
   // ── Injected sidebar panel (contains popup.html as iframe) ────────────────
 
   function _ensurePanel() {
     if (document.getElementById('jma-panel')) return;
+    injectStyles();
     const panel = document.createElement('div');
     panel.id = 'jma-panel';
 
@@ -1080,6 +1162,7 @@ wrap.addEventListener('click', async () => {
         z-index:2147483646;display:flex;flex-direction:column;gap:7px;
         max-width:210px;pointer-events:none;
       }
+      #jma-fab-reasons.jma-fab-reasons-hidden{display:none}
       .jma-fab-reason-pill{
         background:rgba(15,23,42,0.90);color:#f8fafc;
         border-radius:10px;padding:6px 11px;
@@ -1299,37 +1382,26 @@ wrap.addEventListener('click', async () => {
     }
   }
 
-  // Full page init: always inject panel, then conditionally run job logic.
+  // Full page init: LAZY - שום דבר לא מוזרק בעמוד רגיל.
+  // הפאנל (iframe) נוצר רק בלחיצה על ה-FAB או בהודעת toggleSidebar.
+  // pingBackend + scrapeJob עברו לתוך initJobFab, אחרי שער הדרישות.
   function _initPage() {
+    // עמוד רגיל: יציאה מוחלטת. סימן דרישות מובהק מספיק גם כשספירת מילות המפתח נמוכה
+    // (למשל משרה באנגלית בתוך לוח ישראלי).
+    const _bodySample = (document.body.innerText || '').slice(0, 30000);
+    if (!pageHasJobKeywords() && !_hasJobRequirementsSignal(_bodySample)) return;
+
     injectStyles();
-    _ensurePanel(); // panel present on EVERY page so user can always open it
 
-    if (pageHasJobKeywords()) {
-      chrome.runtime.sendMessage({ action: 'pingBackend' });
+    // Listing page: delayed to let SPA finish rendering cards
+    setTimeout(() => {
+      if (!document.getElementById('jma-float-btn')) initSidebar();
+    }, 1800);
 
-      // Listing page: delayed to let SPA finish rendering cards
-      setTimeout(() => {
-        if (!document.getElementById('jma-float-btn')) initSidebar();
-      }, 1800);
-
-      // Single-job FAB: slightly later so page content is fully rendered
-      setTimeout(() => {
-        if (!document.getElementById('jma-fab-wrap')) initJobFab();
-      }, 2200);
-
-      // Crowdsourced scraping — only for single-job pages
-      setTimeout(() => {
-        if (document.getElementById('jma-float-btn')) return;
-        const text = extractJobText();
-        if (!text || text.length < 400) return;
-        chrome.runtime.sendMessage({
-          action: 'scrapeJob',
-          url: location.href,
-          text: text.substring(0, 5000),
-          title: document.title || '',
-        });
-      }, 5000);
-    }
+    // Single-job FAB: slightly later so page content is fully rendered
+    setTimeout(() => {
+      if (!document.getElementById('jma-fab-wrap')) initJobFab();
+    }, 2200);
   }
 
   // Called whenever a navigation to a new URL is detected.
@@ -1339,6 +1411,11 @@ wrap.addEventListener('click', async () => {
     clearTimeout(_navDebounceTimer);
     // Debounce: SPA routers often fire multiple events in rapid succession.
     _navDebounceTimer = setTimeout(() => {
+      _rankingDone = false; _collectedJobs = null; _sidebarOpen = false;
+      _fabState = 'idle'; _panelOpen = false;
+      clearInterval(_fabProgressTimer);
+      document.getElementById('jma-float-btn')?.remove();
+      document.getElementById('jma-sidebar')?.remove();
       _teardownFab();
       _initPage();
     }, 400);
@@ -1370,23 +1447,10 @@ wrap.addEventListener('click', async () => {
   // ── Initial page load ──────────────────────────────────────────────────────
   _initPage();
 
-  // Re-init on SPA navigation
-  let _lastHref = location.href;
-  setInterval(() => {
-    if (location.href !== _lastHref) {
-      _lastHref = location.href;
-      _rankingDone = false; _collectedJobs = null; _sidebarOpen = false;
-      document.getElementById('jma-float-btn')?.remove();
-      document.getElementById('jma-sidebar')?.remove();
-      document.getElementById('jma-fab-wrap')?.remove();
-      document.getElementById('jma-panel')?.remove();
-      document.getElementById('jma-styles')?.remove();
-      _fabState = 'idle'; _panelOpen = false;
-      clearInterval(_fabProgressTimer);
-      setTimeout(initSidebar, 2000);
-      setTimeout(initJobFab, 2500);
-    }
-  }, 1200);
+  // רשת ביטחון ל-SPA: יירוט history.pushState לא רואה ניווטים של סקריפטים של
+  // האתר עצמו (עולם מבודד ב-MV3), לכן בדיקה תקופתית זולה הכרחית.
+  // _onUrlChange בודק בעצמו אם ה-URL השתנה ויוצא מיד אם לא - עלות זניחה.
+  setInterval(_onUrlChange, 1500);
 })();
 
 // ── Deep-analysis floating panel (left side of page, separate from popup) ──────
@@ -1463,6 +1527,7 @@ function _handleAnalysisEvent(evt) {
     if (scoreEl) { scoreEl.style.color = c; scoreEl.textContent = `ציון AI: ${evt.score}%`; }
     // Update FAB
     _updateFabArc(evt.score, true);
+    saveJobState({ baseScore: evt.score }); // הציון הסופי של ה-AI גובר על האלגוריתמי
     const inner  = document.getElementById('jma-fab-inner');
     const numEl  = inner?.querySelector('.jma-fab-score-num');
     if (numEl) { numEl.style.color = c; numEl.textContent = evt.score; }
