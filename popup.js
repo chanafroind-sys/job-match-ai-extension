@@ -595,6 +595,82 @@ chrome.action.getBadgeText({}, (text) => {
   }
 });
 
+// Recruiters screen
+let _recruitersReturnScreen = 'ready';
+
+function _resetRecruiterForm() {
+  document.getElementById('recruiterNameInput').value = '';
+  document.getElementById('recruiterEmailInput').value = '';
+  document.getElementById('recruiterPhoneInput').value = '';
+  document.getElementById('recruiterCompanyInput').value = '';
+  document.getElementById('recruiterError').style.display = 'none';
+  document.getElementById('recruiterSuccess').style.display = 'none';
+}
+
+document.getElementById('btnRecruiters').addEventListener('click', () => {
+  const active = document.querySelector('.screen.active');
+  _recruitersReturnScreen = active ? active.id.replace('screen-', '') : 'ready';
+  _resetRecruiterForm();
+  showScreen('recruiters');
+});
+
+document.getElementById('btnRecruitersBack').addEventListener('click', () => {
+  showScreen(_recruitersReturnScreen);
+});
+
+document.getElementById('btnSubmitRecruiter').addEventListener('click', async () => {
+  const errEl = document.getElementById('recruiterError');
+  const okEl  = document.getElementById('recruiterSuccess');
+  errEl.style.display = 'none';
+  okEl.style.display = 'none';
+
+  const fullName = document.getElementById('recruiterNameInput').value.trim();
+  const email    = document.getElementById('recruiterEmailInput').value.trim();
+  const phone    = document.getElementById('recruiterPhoneInput').value.trim();
+  const company  = document.getElementById('recruiterCompanyInput').value.trim();
+
+  if (!fullName || !email || !company) {
+    errEl.textContent = 'נא למלא שם, אימייל וחברה.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btnSubmitRecruiter');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'שולח...';
+
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({ action: 'addRecruiter', fullName, email, phone, company });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  btn.disabled = false;
+  btn.textContent = originalText;
+
+  if (resp?.error) {
+    errEl.textContent = resp.error;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const result = resp.result || {};
+  document.getElementById('recruiterNameInput').value = '';
+  document.getElementById('recruiterEmailInput').value = '';
+  document.getElementById('recruiterPhoneInput').value = '';
+  document.getElementById('recruiterCompanyInput').value = '';
+  okEl.textContent = result.message || 'המגייס/ת נשמר/ה במאגר.';
+  okEl.style.display = 'block';
+
+  if (typeof result.balance === 'number') {
+    document.getElementById('pointsBadgeValue').textContent = result.balance;
+  } else {
+    loadPointsBalance();
+  }
+});
+
 document.getElementById('btnDashboard').addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
 });
@@ -696,6 +772,24 @@ function showMainResult(analysis, doTypewriter = false) {
   // CV button
   const btnCV = document.getElementById('btnGenerateCV');
   btnCV.style.display = score >= 40 ? 'block' : 'none';
+
+  _checkRecruiterForCompany(analysis.company);
+}
+
+// Best-effort lookup of a recruiter for this job's company. Silent on failure —
+// this is a nice-to-have surfaced on the results screen, not a blocking check.
+async function _checkRecruiterForCompany(company) {
+  const row = document.getElementById('recruiterFoundRow');
+  row.style.display = 'none';
+  if (!company || !company.trim()) return;
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'searchRecruiters', company: company.trim() });
+    const results = resp?.results || [];
+    if (results.length === 0) return;
+    const r = results[0];
+    document.getElementById('recruiterFoundDetails').textContent = `${r.full_name} (${r.company})`;
+    row.style.display = 'flex';
+  } catch {}
 }
 
 // Load preflight cache into state

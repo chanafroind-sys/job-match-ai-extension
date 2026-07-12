@@ -1145,6 +1145,9 @@ app.add_middleware(_CORSMiddleware)
 from app.routes.points import router as points_router  # noqa: E402  (after app/_ws_user_id defined — deps.py imports main lazily)
 app.include_router(points_router)
 
+from app.routes.recruiters import router as recruiters_router  # noqa: E402
+app.include_router(recruiters_router)
+
 
 @app.get("/health")
 async def health():

@@ -718,6 +718,7 @@
   </div>
   <div class="header-actions">
     <span class="points-badge" id="pointsBadge" title="יתרת נקודות קהילתיות">🪙 <span id="pointsBadgeValue">–</span></span>
+    <button class="btn-icon" id="btnRecruiters" title="הוסף מגייס/ת למאגר">🧑‍💼</button>
     <button class="btn-icon" id="btnPremium" title="ייבוא משרות פרימיום">⭐</button>
     <button class="btn-icon" id="btnTracker" title="מעקב משרות" style="position:relative">📊<span id="trackerNewDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;background:#EA580C;border-radius:50%;border:1.5px solid var(--bg-primary)"></span></button>
     <button class="btn-icon" id="btnDashboard" title="דשבורד אנליטיקה">📈</button>
@@ -816,10 +817,42 @@
       <div class="tags-wrap" id="gapsTags"></div>
     </div>
 
+    <div class="ready-meta" id="recruiterFoundRow" style="display:none">
+      <div class="ready-meta-icon">🧑‍💼</div>
+      <div class="ready-meta-text">
+        <strong id="recruiterFoundLabel">נמצא מגייס במאגר</strong>
+        <span id="recruiterFoundDetails"></span>
+      </div>
+      <button class="btn-icon" id="btnSendToRecruiter" disabled title="בקרוב">📤 שלח קו״ח למגייס</button>
+    </div>
+
     <button class="btn btn-primary" id="btnGenerateCV" style="display:none">
       ✨ צור קורות חיים מותאמים
     </button>
     <button class="btn btn-secondary" id="btnReanalyze">🔄 נתח מחדש</button>
+  </div>
+</div>
+
+<!-- RECRUITERS SCREEN -->
+<div class="screen" id="screen-recruiters">
+  <div class="license-wrap">
+    <div class="license-icon">🧑‍💼</div>
+    <div class="license-title">הוספת מגייס/ת למאגר הקהילתי</div>
+    <div class="license-subtitle">
+      שיתוף פרטי מגייס/ת עוזר לכל הקהילה למצוא איש קשר ישיר בחברה.<br>
+      תקבל/י <strong>+10 נקודות</strong> על מגייס/ת חדש/ה, ו-+2 נקודות על עדכון פרטים חסרים למגייס/ת קיים/ת.
+    </div>
+
+    <input type="text" class="license-input" id="recruiterNameInput" placeholder="שם מלא" autocomplete="off">
+    <input type="email" class="license-input" id="recruiterEmailInput" placeholder="אימייל ארגוני (לא Gmail/Outlook)" autocomplete="off" style="direction:ltr;text-align:left">
+    <input type="text" class="license-input" id="recruiterPhoneInput" placeholder="טלפון (אופציונלי)" autocomplete="off" style="direction:ltr;text-align:left">
+    <input type="text" class="license-input" id="recruiterCompanyInput" placeholder="שם החברה" autocomplete="off">
+
+    <div class="license-error" id="recruiterError"></div>
+    <div class="license-success" id="recruiterSuccess"></div>
+
+    <button class="btn btn-primary" id="btnSubmitRecruiter">➕ הוסף/י מגייס/ת</button>
+    <button class="btn btn-secondary" id="btnRecruitersBack" style="margin-top:8px">← חזור</button>
   </div>
 </div>
 
