@@ -1152,6 +1152,9 @@ app.include_router(recruiters_router)
 from app.routes.emails import router as emails_router  # noqa: E402
 app.include_router(emails_router)
 
+from app.routes.referrals import router as referrals_router  # noqa: E402
+app.include_router(referrals_router)
+
 
 @app.get("/health")
 async def health():

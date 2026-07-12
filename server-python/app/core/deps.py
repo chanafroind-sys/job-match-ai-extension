@@ -20,6 +20,28 @@ def _hash_license_key(license_key: str) -> str:
     return _ws_user_id(license_key)
 
 
+async def _backfill_email(db: AsyncSession, user: User, license_key: str) -> None:
+    """users.email is never set at signup (there's no signup) — opportunistically
+    fill it in from the Gumroad license lookup, which already has it and is
+    cached, so this costs nothing extra on the common path. Needed so referral
+    accept/decline can email the candidate without the client sending its own
+    email address on every request."""
+    if user.email:
+        return
+    from main import verify_gumroad_license
+
+    try:
+        data = await verify_gumroad_license(license_key)
+    except Exception:
+        return
+    email = (data or {}).get("email") or ""
+    if not email or "@" not in email:
+        return
+    user.email = email
+    await db.commit()
+    await db.refresh(user)
+
+
 async def get_current_user(
     x_license_key: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
@@ -32,6 +54,7 @@ async def get_current_user(
     result = await db.execute(select(User).where(User.license_key_hash == key_hash))
     user = result.scalar_one_or_none()
     if user is not None:
+        await _backfill_email(db, user, license_key)
         return user
 
     user = User(license_key_hash=key_hash)
@@ -47,4 +70,5 @@ async def get_current_user(
             raise
     else:
         await db.refresh(user)
+    await _backfill_email(db, user, license_key)
     return user
