@@ -35,6 +35,19 @@ async function markJobSentToRecruiter(url) {
   }
 }
 
+// Marks the most recent tracker record for this job URL with its referral
+// status (pending/accepted/declined/expired) — same lookup shape as
+// markJobSentToRecruiter above.
+async function markJobReferralStatus(url, status) {
+  if (!url) return;
+  const jobs = await getAllJobs();
+  const idx = jobs.findIndex(j => j.url === url);
+  if (idx !== -1) {
+    jobs[idx].referralStatus = status;
+    await chrome.storage.local.set({ [TRACKER_KEY]: jobs });
+  }
+}
+
 async function deleteJob(id) {
   const jobs = await getAllJobs();
   const filtered = jobs.filter(j => j.id !== id);

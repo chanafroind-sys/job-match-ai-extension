@@ -369,6 +369,43 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  if (req.action === 'checkReferral') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ available: false }); return; }
+      try {
+        const params = new URLSearchParams({
+          company: req.company || '',
+          score: String(req.score || 0),
+          job_url_hash: req.jobUrlHash || '',
+        });
+        const data = await backendGet(`/api/referrals/check?${params.toString()}`, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ available: !!data.available, cost: data.cost ?? 5 });
+      } catch (e) {
+        sendResponse({ available: false, error: e.message });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'confirmReferral') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/referrals', {
+          job_url_hash: req.jobUrlHash || '',
+          job_title: req.jobTitle || '',
+          company: req.company || '',
+          score: req.score || 0,
+          candidate_summary: req.candidateSummary || '',
+        }, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
   if (req.action === 'pingBackend') {
     // Fire-and-forget wake-up call to prevent Render cold start delay
     fetch(`${BACKEND_URL}/health`).catch(() => {});

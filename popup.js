@@ -44,8 +44,15 @@ const JOB_FIELDS = [
   'url', 'jobUrl', 'jobText', 'jobTitle', 'jobPlatform', 'jobLanguage',
   'wizard_step', 'baseScore', 'bullets', 'ts', 'activelyOpened',
   'analysis', 'questions', 'answers', 'generatedCV', 'coverLetterText',
-  'cvLanguage', 'gapPct', 'sentToRecruiter'
+  'cvLanguage', 'gapPct', 'sentToRecruiter', 'referralStatus'
 ];
+
+const REFERRAL_STATUS_LABELS = {
+  pending: '⏳ בהמתנה',
+  accepted: '✅ אושר',
+  declined: '❌ נדחה',
+  expired: '⏱️ פג תוקף',
+};
 
 function _pickJobFields(obj) {
   const out = {};
@@ -776,6 +783,7 @@ function showMainResult(analysis, doTypewriter = false) {
   btnCV.style.display = score >= 40 ? 'block' : 'none';
 
   _checkRecruiterForCompany(analysis.company);
+  _checkReferralAvailability(analysis.company, score);
 }
 
 // Best-effort lookup of a recruiter for this job's company. Silent on failure —
@@ -797,6 +805,62 @@ async function _checkRecruiterForCompany(company) {
     row.style.display = 'flex';
   } catch {}
 }
+
+// Best-effort "an employee can refer you" check. Silent on failure — same
+// nice-to-have-not-blocking treatment as the recruiter lookup above.
+let _referralCost = 5;
+
+async function _checkReferralAvailability(company, score) {
+  const row = document.getElementById('referralFoundRow');
+  row.style.display = 'none';
+  if (!company || !company.trim() || score < 75) return;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      action: 'checkReferral',
+      company: company.trim(),
+      score,
+      jobUrlHash: _urlHash(state.jobUrl || ''),
+    });
+    if (!resp?.available) return;
+    _referralCost = resp.cost ?? 5;
+    row.style.display = 'flex';
+  } catch {}
+}
+
+document.getElementById('btnConfirmReferral').addEventListener('click', async () => {
+  const btn = document.getElementById('btnConfirmReferral');
+  btn.disabled = true;
+  btn.textContent = '⏳ שולח...';
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      action: 'confirmReferral',
+      jobUrlHash: _urlHash(state.jobUrl || ''),
+      jobTitle: _bestJobTitle(),
+      company: _bestCompany(),
+      score: state.analysis?.score || 0,
+      candidateSummary: (state.cvText || state.analysis?.summary || '').slice(0, 1500),
+    });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  if (resp?.error) {
+    btn.disabled = false;
+    btn.textContent = '🤝 בקש/י הפניה';
+    alert(resp.error);
+    return;
+  }
+
+  const result = resp.result || {};
+  if (typeof result.balance === 'number') {
+    document.getElementById('pointsBadgeValue').textContent = result.balance;
+  }
+  btn.textContent = '✅ הבקשה נשלחה';
+
+  await updateJobData({ referralStatus: 'pending' });
+  await markJobReferralStatus(state.jobUrl, 'pending');
+});
 
 // ── Send CV to recruiter: draft letter → confirm+charge → Gmail compose tab ──
 
@@ -2466,6 +2530,7 @@ async function showTrackerScreen() {
       <td class="score-cell ${scoreClass}">${score}%</td>
       <td>${j.cvGenerated ? '✅' : '❌'}</td>
       <td>${j.sentToRecruiter ? '✅' : '❌'}</td>
+      <td>${REFERRAL_STATUS_LABELS[j.referralStatus] || '<span class="no-data">-</span>'}</td>
       <td>${linkTargetCell}</td>
       <td style="text-align:center">${clickCountCell}</td>
       <td>${lastOpenedCell}</td>
@@ -2496,6 +2561,7 @@ async function showTrackerScreen() {
             <th>ציון</th>
             <th>CV</th>
             <th>נשלח למגייס</th>
+            <th>הפניה</th>
             <th>לינק נפתח</th>
             <th>לחיצות</th>
             <th>פתיחה אחרונה</th>
