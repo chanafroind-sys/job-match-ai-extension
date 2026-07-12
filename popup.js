@@ -2440,15 +2440,14 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
   document.body.removeChild(a);
 });
 
-// Points badge — best-effort only; silently stays hidden if the server is
-// old/sleeping/unreachable so it never blocks the rest of the popup UI.
+// Points badge is always visible (shows "–" as a placeholder); only the number
+// is best-effort. If the server is old/sleeping/unreachable it just stays on
+// "–" instead of blocking or hiding the rest of the popup UI.
 async function loadPointsBalance() {
   try {
     const resp = await chrome.runtime.sendMessage({ action: 'getPointsBalance' });
     if (resp && typeof resp.balance === 'number') {
-      const badge = document.getElementById('pointsBadge');
       document.getElementById('pointsBadgeValue').textContent = resp.balance;
-      badge.classList.add('visible');
     }
   } catch {}
 }
