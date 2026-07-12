@@ -1,5 +1,88 @@
 // Pure JS DOCX builder — no external libraries, works in browser/extension context
 
+// ── Shared layout profiles ──────────────────────────────────────────────────────
+// Single source of truth for font size / margins / line spacing, consumed by BOTH the DOCX
+// path in this file and the PDF/print path in popup.js (buildCvPrintHtml), so the two export
+// formats can't silently disagree about what "fits one page" means. `normal` is byte-identical
+// to the values this file used before profiles existed. `tight`/`compact` are the adaptive
+// fallback tiers estimateCvOverflow()/pickFittingProfile() step down into when content doesn't
+// fit at `normal` — real code doing the shrinking, instead of relying on the LLM word budget
+// alone.
+const LAYOUT_PROFILES = {
+  normal:  { name: 'normal',  bodySize: 21, fontPt: 10.5, marginTwips: 720, marginCm: 1.27, lineSpacing: 252, bulletLineSpacing: 240 },
+  tight:   { name: 'tight',   bodySize: 20, fontPt: 10,   marginTwips: 620, marginCm: 1.09, lineSpacing: 236, bulletLineSpacing: 224 },
+  compact: { name: 'compact', bodySize: 19, fontPt: 9.5,  marginTwips: 560, marginCm: 0.99, lineSpacing: 220, bulletLineSpacing: 210 },
+};
+
+// Set by buildDocx()/buildCvPrintHtml() right before rendering; read as the default body font
+// size/line-spacing by the low-level paragraph builders below so the whole document renders
+// under one consistent profile without threading a parameter through every function.
+let _activeProfile = LAYOUT_PROFILES.normal;
+
+// ── Page-fit estimation (pure, DOM-free — no Blob/document dependency, so it's testable in
+// plain Node in addition to the extension) ──────────────────────────────────────────────────
+const _A4_HEIGHT_PT = 841.89; // 29.7cm
+const _A4_WIDTH_PT  = 595.28; // 21cm
+
+function _estimateLinesForText(text, charsPerLine, indentChars = 0) {
+  const usable = Math.max(10, charsPerLine - indentChars);
+  return text.split('\n').filter(l => l.trim()).reduce(
+    (sum, line) => sum + Math.max(1, Math.ceil(line.trim().length / usable)), 0);
+}
+
+function estimateCvOverflow(sections, isRtl, profile = _activeProfile) {
+  const marginPt    = profile.marginTwips / 20; // 1 twip = 1/20 pt
+  const lineHeightPt = profile.fontPt * 1.25;    // rough single-line height incl. leading
+  const maxLines     = Math.floor((_A4_HEIGHT_PT - marginPt * 2) / lineHeightPt);
+
+  const usableWidthPt = _A4_WIDTH_PT - marginPt * 2;
+  const avgGlyphWidthPt = profile.fontPt * 0.5;  // Calibri average glyph width ≈ 0.5em
+  const charsPerLine = Math.max(20, Math.floor(usableWidthPt / avgGlyphWidthPt));
+
+  let lines = 0;
+  if (sections['[NAME]']) lines += 1;
+  if (sections['[HEADLINE]']) lines += 1;
+  if (sections['[CONTACT]']) {
+    const ctLines = (sections['[CONTACT]'].split('\n').filter(l => l.trim()) || []).length;
+    lines += ctLines > 2 ? 2 : 1;
+  }
+  lines += 1; // spacing buffer below header block
+
+  const addSection = (marker, isExperience) => {
+    const content = sections[marker];
+    if (!content) return;
+    lines += 1; // section heading line
+    for (const raw of content.split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      const isBullet = isExperience && !line.startsWith('**') &&
+        (line.startsWith('$ ') || /^[•\-–—]\s/.test(line) || line.startsWith('* '));
+      lines += _estimateLinesForText(line, charsPerLine, isBullet ? 4 : 0);
+    }
+  };
+  addSection('[PROFILE]', false);
+  addSection('[EXPERIENCE]', true);
+  addSection('[EDUCATION]', true);
+  addSection('[SKILLS]', false);
+  addSection('[LANGUAGES]', false);
+
+  return { estimatedLines: lines, maxLines, overflow: lines > maxLines, ratio: lines / maxLines };
+}
+
+// Tries normal → tight → compact, returns the first tier that fits; falls back to compact
+// (the readable floor) if even that overflows — never silently renders unmeasured.
+function pickFittingProfile(sections, isRtl) {
+  const order = ['normal', 'tight', 'compact'];
+  let last = null;
+  for (const key of order) {
+    const profile = LAYOUT_PROFILES[key];
+    const estimate = estimateCvOverflow(sections, isRtl, profile);
+    last = { profile, estimate };
+    if (!estimate.overflow) return last;
+  }
+  return last; // compact, even if still over — smallest readable tier is the floor
+}
+
 function parseCVSections(cvText) {
   const markers = ['[NAME]', '[HEADLINE]', '[CONTACT]', '[PROFILE]', '[EXPERIENCE]', '[EDUCATION]', '[SKILLS]', '[LANGUAGES]'];
   const sections = {};
@@ -48,13 +131,13 @@ function escapeXml(str) {
 }
 
 function makeRun(text, opts = {}) {
-  const { bold = false, size = 21, color = '1f2937', italic = false } = opts;
+  const { bold = false, size = _activeProfile.bodySize, color = '1f2937', italic = false } = opts;
   const rPr = `<w:rPr>${bold ? '<w:b/>' : ''}${italic ? '<w:i/>' : ''}<w:sz w:val="${size}"/><w:szCs w:val="${size}"/><w:color w:val="${color}"/><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/></w:rPr>`;
   return `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>`;
 }
 
 function makeParagraph(runs, opts = {}) {
-  const { align = 'left', isRtl = false, spacingAfter = 60, spacingLine = 252 } = opts;
+  const { align = 'left', isRtl = false, spacingAfter = 60, spacingLine = _activeProfile.lineSpacing } = opts;
   const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}<w:spacing w:after="${spacingAfter}" w:line="${spacingLine}" w:lineRule="auto"/></w:pPr>`;
   return `<w:p>${pPr}${runs}</w:p>`;
 }
@@ -121,9 +204,9 @@ function makeBulletParagraph(text, isRtl) {
   const indent = isRtl
     ? `<w:ind w:right="360" w:hanging="180"/>`
     : `<w:ind w:left="360" w:hanging="180"/>`;
-  const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}${indent}<w:spacing w:after="30" w:line="240" w:lineRule="auto"/></w:pPr>`;
-  const bulletRun = makeRun('• ', { size: 21, color: '1f2937' });
-  const contentRuns = makeRichRuns(text, { size: 21, color: '1f2937' });
+  const pPr = `<w:pPr><w:jc w:val="${align}"/>${isRtl ? '<w:bidi/>' : ''}${indent}<w:spacing w:after="30" w:line="${_activeProfile.bulletLineSpacing}" w:lineRule="auto"/></w:pPr>`;
+  const bulletRun = makeRun('• ', { color: '1f2937' });
+  const contentRuns = makeRichRuns(text, { color: '1f2937' });
   // In RTL paragraphs Word renders runs right-to-left, so bullet run (first in XML)
   // appears on the right side — correct for Hebrew layout.
   return `<w:p>${pPr}${bulletRun}${contentRuns}</w:p>`;
@@ -142,7 +225,7 @@ function textToDocxParagraphs(text, isRtl, isBullet = false) {
       return makeBulletParagraph(clean, isRtl);
     }
     const align = isRtl ? 'right' : 'left';
-    const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
+    const runs = makeRichRuns(line, { color: '1f2937' });
     return makeParagraph(runs, { align, isRtl, spacingAfter: 60 });
   }).join('');
 }
@@ -183,14 +266,14 @@ function buildExperienceXml(text, isRtl) {
       const spacingBefore = firstEntry ? 0 : 160;
       firstEntry = false;
       inEntry = true;
-      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
-      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
+      const runs = makeRichRuns(line, { color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="20" w:line="${_activeProfile.bulletLineSpacing}" w:lineRule="auto"/></w:pPr>`;
       xml += `<w:p>${pPr}${runs}</w:p>`;
     } else {
       // Description text directly under a job header — indented
       const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360"/>`;
-      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
-      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}${indent}<w:spacing w:before="0" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
+      const runs = makeRichRuns(line, { color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}${indent}<w:spacing w:before="0" w:after="20" w:line="${_activeProfile.bulletLineSpacing}" w:lineRule="auto"/></w:pPr>`;
       xml += `<w:p>${pPr}${runs}</w:p>`;
     }
   }
@@ -228,14 +311,14 @@ function buildEducationXml(text, isRtl) {
       const spacingBefore = firstEntry ? 0 : 120;
       firstEntry = false;
       inEntry = true;
-      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
-      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
+      const runs = makeRichRuns(line, { color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}<w:spacing w:before="${spacingBefore}" w:after="20" w:line="${_activeProfile.bulletLineSpacing}" w:lineRule="auto"/></w:pPr>`;
       xml += `<w:p>${pPr}${runs}</w:p>`;
     } else {
       // Description under institution header — indented
       const indent = isRtl ? `<w:ind w:right="360"/>` : `<w:ind w:left="360"/>`;
-      const runs = makeRichRuns(line, { size: 21, color: '1f2937' });
-      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}${indent}<w:spacing w:before="0" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>`;
+      const runs = makeRichRuns(line, { color: '1f2937' });
+      const pPr = `<w:pPr><w:jc w:val="${align}"/>${bidi}${indent}<w:spacing w:before="0" w:after="20" w:line="${_activeProfile.bulletLineSpacing}" w:lineRule="auto"/></w:pPr>`;
       xml += `<w:p>${pPr}${runs}</w:p>`;
     }
   }
@@ -302,8 +385,9 @@ function buildDocumentXml(sections, isRtl) {
     body += textToDocxParagraphs(sections['[LANGUAGES]'], isRtl);
   }
 
-  // Page size A4, margins ~1.25cm = 720 twips (Narrow margins to fit one page)
-  const sectPr = `<w:sectPr>${bidi}<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr>`;
+  // Page size A4, margins from the active layout profile (narrow, to help fit one page).
+  const m = _activeProfile.marginTwips;
+  const sectPr = `<w:sectPr>${bidi}<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="${m}" w:right="${m}" w:bottom="${m}" w:left="${m}" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr>`;
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
@@ -494,9 +578,13 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </w:style>
 </w:styles>`;
 
-function buildDocx(cvText, isRtl = false) {
+function buildDocx(cvText, isRtl = false, profile = null) {
   _resetRels(); // clear hyperlink registry for this build
   const sections = parseCVSections(cvText);
+  // Adaptive layout: measure first, only step down to a tighter profile if the normal one
+  // would actually overflow one page — never shrinks content that already fits.
+  const chosen = profile || pickFittingProfile(sections, isRtl).profile;
+  _activeProfile = chosen;
   const documentXml = buildDocumentXml(sections, isRtl);
 
   // Build dynamic rels with any hyperlinks found during document construction
@@ -531,4 +619,10 @@ function downloadDocx(cvText, filename, isRtl = false) {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// Inert in the extension (no `module` global in a browser content/popup script) — lets the
+// pure, DOM-free layout functions be exercised from plain Node for testing without a browser.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { parseCVSections, LAYOUT_PROFILES, estimateCvOverflow, pickFittingProfile };
 }

@@ -1,0 +1,42 @@
+Dana Cohen
+dana.cohen.dev@gmail.com | 054-1234567 | Tel Aviv, Israel
+github.com/danacohen | linkedin.com/in/danacohen
+
+PROFILE
+Backend developer with 4 years of experience building and scaling REST APIs and data
+pipelines for consumer-facing products. Comfortable owning a service end to end, from
+schema design through production monitoring.
+
+EXPERIENCE
+
+Backend Developer | Tomato Labs | Tel Aviv | Mar 2022 - Present
+- Designed and built a REST API in Python/FastAPI serving 60K+ daily active users
+- Migrated the legacy monolith's billing module to a standalone microservice, cutting
+  average billing-related incident response time by 40%
+- Introduced Redis caching for the product catalog endpoint, reducing p95 latency from
+  480ms to 90ms
+- Wrote integration tests with pytest, raising backend test coverage from 35% to 82%
+- Mentored two junior engineers and ran the team's weekly code review sessions
+
+Software Engineer | Northwind Systems | Herzliya | Jul 2019 - Feb 2022
+- Built internal tooling in Django for the operations team to track shipment SLAs
+- Implemented a nightly ETL job in Python and Airflow that consolidated data from five
+  external partner APIs into a single PostgreSQL warehouse
+- Optimized slow PostgreSQL queries on the orders table, cutting report generation time
+  from 12 minutes to 90 seconds
+- Participated in on-call rotation and authored the team's incident postmortem template
+
+Freelance Web Developer | Self-employed | 2018 - 2019
+- Delivered five small business websites using Django and vanilla JavaScript
+- Set up CI/CD pipelines with GitHub Actions for two recurring freelance clients
+
+EDUCATION
+B.Sc. Computer Science | Tel Aviv University | 2015 - 2019
+Graduated with honors, GPA 93/100
+Relevant coursework: Algorithms, Databases, Distributed Systems
+
+SKILLS
+Python, FastAPI, Django, PostgreSQL, Redis, Docker, AWS, Airflow, pytest, Git, C++, Java
+
+LANGUAGES
+Hebrew (native), English (fluent)

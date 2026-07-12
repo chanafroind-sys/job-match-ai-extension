@@ -1,0 +1,25 @@
+Backend Engineer (Python) — Orbit Payments
+
+Orbit Payments is a fast-growing fintech building payment infrastructure for online
+marketplaces. We're looking for a Backend Engineer to join our Core Platform team.
+
+What you'll do:
+- Design, build, and own REST and internal RPC APIs in Python (FastAPI) that process
+  millions of transactions per day
+- Improve the performance and reliability of our PostgreSQL-backed transaction ledger
+- Build and maintain data pipelines that feed our fraud-detection and reporting systems
+- Work closely with product and data teams to ship features end-to-end
+- Participate in on-call rotation and drive incident postmortems
+
+What we're looking for:
+- 3+ years of backend engineering experience, ideally with Python
+- Strong experience with relational databases (PostgreSQL preferred) and query
+  optimization
+- Experience with caching layers (Redis or similar) in production
+- Familiarity with data pipeline / ETL tooling (Airflow or similar) is a strong plus
+- Comfortable writing tests and working in a CI/CD environment
+- Good communication skills and experience mentoring or reviewing other engineers' code
+
+Nice to have:
+- Experience with fintech, payments, or another regulated domain
+- Experience with distributed systems or microservices migrations

@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import hashlib
 import json
 import os
@@ -509,6 +510,39 @@ async def call_claude_cached(
     raise last_exc
 
 
+async def _call_with_cached_prefix(
+    rendered_prompt: str,
+    max_tokens: int,
+    model: str,
+    check_truncation: bool = False,
+    extra_note: str = "",
+) -> str:
+    """Send an already-fully-rendered prompt (unchanged text) to Claude as a cached system
+    block, with a short trigger — or, for a same-request retry, a short delta note — as the
+    user turn. Does not alter a single character of the prompt text itself, only which API
+    field carries it.
+
+    Earlier version split the prompt at a marker and cached only the instructional prefix
+    (excluding CV/job/draft content) — measured empirically (see
+    tests/manual_cv_pipeline_eval.py) to sit below Anthropic's minimum cacheable prompt length
+    (~1024-2048 tokens depending on model), so it never actually cached anything. Caching the
+    *entire* rendered prompt clears that minimum comfortably, and — since a same-request retry
+    reuses the identical base prompt — reliably hits cache on the retry (validated empirically
+    after this fix)."""
+    user_content = extra_note.strip() if extra_note.strip() else \
+        "Produce the output now, following every instruction above exactly."
+    text, stop = await call_claude_cached(
+        system_blocks=[{"type": "text", "text": rendered_prompt, "cache_control": {"type": "ephemeral"}}],
+        user_content=user_content,
+        max_tokens=max_tokens,
+        model=model,
+    )
+    if check_truncation and stop == "max_tokens":
+        raise HTTPException(status_code=422,
+            detail="התוכן שנוצר ארוך מדי וקוצץ באמצע. אנא נסי שוב או קצרי את קורות החיים המקוריים.")
+    return text
+
+
 def _extract_raw(text: str, opening: str = "{", closing: str = "}") -> str:
     """Pull the first JSON object/array out of LLM text, stripping fences."""
     # Strip markdown code fences first
@@ -552,13 +586,6 @@ def parse_json_response(text: str) -> dict:
     return result
 
 
-def parse_json_array(text: str) -> list:
-    """Parse Claude's response as a JSON array, stripping any markdown fences."""
-    raw = _extract_raw(text, "[", "]")
-    result = _safe_json_loads(raw)
-    return result if isinstance(result, list) else []
-
-
 def parse_cv_sections_py(cv_text: str) -> dict:
     """Parse a structured CV (with [SECTION] markers) into {marker: content}."""
     markers = {'[NAME]', '[HEADLINE]', '[CONTACT]', '[PROFILE]',
@@ -597,6 +624,183 @@ def _validate_cv_output(cv_final: str, original_cv: str) -> list[str]:
         issues.append(f"drastic_shrink orig_chars={orig_len} final_chars={final_len}")
 
     return issues
+
+
+def estimate_page_fit(cv_final: str, is_hebrew: bool) -> dict:
+    """Heuristic one-page check — does NOT call the AI. Measures the same word budget Pass1 is
+    already instructed to target (see CV_PASS1_PROMPT's word-budget-planning rule) plus a small
+    per-role overhead, since role headers cost vertical space beyond their own word count."""
+    sections = parse_cv_sections_py(cv_final)
+    total_words = sum(len(sections.get(m, '').split()) for m in
+                       ['[PROFILE]', '[EXPERIENCE]', '[EDUCATION]', '[SKILLS]', '[LANGUAGES]'])
+
+    exp_lines = [l.strip() for l in sections.get('[EXPERIENCE]', '').splitlines() if l.strip()]
+    role_count = sum(1 for l in exp_lines if _is_role_header_line(l))
+    # Each role header eats ~2 "virtual words" of vertical space (spacing above the block +
+    # the hard line break of the header itself) that plain word-count doesn't capture.
+    effective_words = total_words + role_count * 2
+
+    budget_max = 550 if is_hebrew else 620
+    over_ratio = max(0.0, (effective_words - budget_max) / budget_max)
+    return {
+        "word_count": total_words,
+        "role_count": role_count,
+        "effective_words": effective_words,
+        "budget_max": budget_max,
+        "over_ratio": round(over_ratio, 3),
+        "overflow": over_ratio > 0.15,
+    }
+
+
+# ── Deterministic diff splitting (replaces the old CV_DIFF_PROMPT LLM call) ───────────────────
+# Matches adapted CV content back to the real original CV via local text similarity — no
+# network call, and `original_text` is always a byte-exact substring of the actual original
+# CV, never an LLM's re-typed approximation of it.
+
+def _is_bullet_line(stripped: str) -> bool:
+    """Mirrors docx-builder.js's buildExperienceXml isBullet heuristic. CV_PASS1_PROMPT asks
+    the model to always use '$ ' as the bullet marker, but that isn't reliably followed in
+    practice (observed empirically via tests/manual_cv_pipeline_eval.py: Pass2 sometimes emits
+    plain '- ' bullets instead) — so detection has to be at least as lenient as the DOCX
+    renderer already is, not just check for '$ '."""
+    if stripped.startswith('**'):
+        return False
+    return bool(stripped.startswith('$ ') or re.match(r'^[•\-–—]\s', stripped) or stripped.startswith('* '))
+
+
+def _strip_bullet_marker(stripped: str) -> str:
+    return re.sub(r'^\$\s+|^[•\-–—]\s+|^\*\s+', '', stripped)
+
+
+def _is_role_header_line(stripped: str) -> bool:
+    """Mirrors docx-builder.js's buildExperienceXml isJobHeader heuristic: a non-bullet line
+    containing ' | ' or a 4-digit year is treated as a new role/education entry header."""
+    if _is_bullet_line(stripped):
+        return False
+    return bool(re.search(r'\s\|\s', stripped) or re.search(r'\b(19|20)\d{2}\b', stripped))
+
+
+def _split_adapted_experience(text: str) -> list[dict]:
+    """Split a structured [EXPERIENCE] section into role-header / bullet units. Bullet
+    detection is intentionally lenient (see _is_bullet_line) rather than assuming the model
+    always emits CV_PASS1_PROMPT's '$ ' marker."""
+    units: list[dict] = []
+    role_index = -1
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _is_bullet_line(line):
+            if role_index == -1:
+                role_index = 0
+            units.append({"type": "bullet", "role_index": role_index, "text": _strip_bullet_marker(line)})
+        elif _is_role_header_line(line):
+            role_index += 1
+            units.append({"type": "role_header", "role_index": role_index, "text": line})
+        elif units and units[-1]["role_index"] == role_index and units[-1]["type"] == "role_header":
+            # Free description line directly under a header (no bullet) — fold into the header
+            # unit rather than inventing a new unit type the frontend doesn't know how to place.
+            units[-1]["text"] += " " + line
+        else:
+            role_index += 1
+            units.append({"type": "role_header", "role_index": role_index, "text": line})
+    return units
+
+
+def _split_original_lines(original_cv: str) -> list[str]:
+    """Individual lines of the original CV — match pool for bullet-level Experience content."""
+    lines = []
+    for raw in original_cv.splitlines():
+        line = raw.strip().lstrip('•-*–—').strip()
+        if len(line) > 3:
+            lines.append(line)
+    return lines
+
+
+def _split_original_blocks(original_cv: str) -> list[str]:
+    """Blank-line-separated blocks of the original CV — match pool for whole-section (Profile,
+    Education, Skills, Languages) content, which is typically prose rather than bullet lines."""
+    return [b.strip() for b in re.split(r'\n\s*\n', original_cv) if len(b.strip()) > 3]
+
+
+def _best_match(query: str, candidates: list[str], floor: float = 0.35) -> tuple[str, float]:
+    best_text, best_ratio = "", 0.0
+    q = query.lower()
+    for cand in candidates:
+        ratio = difflib.SequenceMatcher(None, q, cand.lower()).ratio()
+        if ratio > best_ratio:
+            best_text, best_ratio = cand, ratio
+    return (best_text, best_ratio) if best_ratio >= floor else ("", best_ratio)
+
+
+def _heuristic_explanation(original_text: str, updated_text: str) -> str:
+    """Cheap local heuristic for a short Hebrew hint about what changed — no LLM call."""
+    if not original_text:
+        return "תוכן חדש שנוסף בהתאמה למשרה"
+    if updated_text.count('**') > original_text.count('**'):
+        return "הודגשו מונחים רלוונטיים למשרה"
+    if re.search(r'\d', updated_text) and not re.search(r'\d', original_text):
+        return "נוספה מדידה כמותית"
+    if len(updated_text) < len(original_text) * 0.8:
+        return "הניסוח קוצר לתמצות"
+    return "הניסוח הותאם למשרה"
+
+
+def split_experience_units(cv_final: str, original_cv: str) -> list[dict]:
+    """Deterministic replacement for the old CV_DIFF_PROMPT LLM call: splits the adapted CV
+    into per-role/per-bullet units for [EXPERIENCE] (whole-section for the other sections) and
+    matches each against the real original CV via difflib. Never calls the AI."""
+    adapted_secs = parse_cv_sections_py(cv_final)
+    result: list[dict] = []
+    next_id = 1
+
+    exp_text = adapted_secs.get('[EXPERIENCE]', '').strip()
+    if exp_text:
+        units = _split_adapted_experience(exp_text)
+        line_candidates = _split_original_lines(original_cv)
+        if units:
+            for order, unit in enumerate(units):
+                orig_text, ratio = _best_match(unit["text"], line_candidates)
+                changed = ratio < 0.97
+                result.append({
+                    "id": next_id,
+                    "section_name": "[EXPERIENCE]",
+                    "label": SECTION_LABELS["[EXPERIENCE]"],
+                    "unit_type": unit["type"],
+                    "order": order,
+                    "original_text": orig_text,
+                    "updated_text": unit["text"],
+                    "changed": changed,
+                    "explanation_hebrew": _heuristic_explanation(orig_text, unit["text"]) if changed else "",
+                })
+                next_id += 1
+        else:
+            # Graceful degradation — whole-section compare, still deterministic, still no LLM.
+            orig_text, ratio = _best_match(exp_text, _split_original_blocks(original_cv))
+            result.append({
+                "id": next_id, "section_name": "[EXPERIENCE]", "label": SECTION_LABELS["[EXPERIENCE]"],
+                "unit_type": "section", "order": 0,
+                "original_text": orig_text, "updated_text": exp_text,
+                "changed": ratio < 0.97, "explanation_hebrew": "",
+            })
+            next_id += 1
+
+    block_candidates = _split_original_blocks(original_cv)
+    for marker in ['[PROFILE]', '[EDUCATION]', '[SKILLS]', '[LANGUAGES]']:
+        content = adapted_secs.get(marker, '').strip()
+        if not content:
+            continue
+        orig_text, ratio = _best_match(content, block_candidates)
+        changed = ratio < 0.97
+        result.append({
+            "id": next_id, "section_name": marker, "label": SECTION_LABELS[marker],
+            "unit_type": "section", "order": 0,
+            "original_text": orig_text, "updated_text": content,
+            "changed": changed, "explanation_hebrew": _heuristic_explanation(orig_text, content) if changed else "",
+        })
+        next_id += 1
+
+    return result
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 # ── Preflight system block builder ───────────────────────────────────────────
@@ -869,9 +1073,9 @@ CRITICAL FORMAT RULES — any violation breaks the Word document:
 {job_text}"""
 
 
-# ── Diff-screen constants & prompt ────────────────────────────────────────────
+# ── Diff-screen constants ──────────────────────────────────────────────────────
+# (the diff itself is now computed deterministically by split_experience_units — no LLM call)
 
-DIFF_SECTIONS = ['[PROFILE]', '[EXPERIENCE]', '[EDUCATION]', '[SKILLS]', '[LANGUAGES]']
 SECTION_LABELS = {
     '[PROFILE]':    'פרופיל',
     '[EXPERIENCE]': 'ניסיון תעסוקתי',
@@ -903,32 +1107,6 @@ Output ONLY the cover letter text — no explanations, no labels, no markdown.
 
 === JOB DESCRIPTION ===
 {job_text}"""
-
-
-CV_DIFF_PROMPT = """You are a CV comparison assistant.
-
-I provide you with 5 sections from an AI-ADAPTED CV and the full text of the ORIGINAL CV.
-For each section: find the matching content in the ORIGINAL CV, then compare it to the adapted version.
-
-Return ONLY a valid JSON array — no markdown fences, no extra text, just the raw JSON array.
-
-Each element must have exactly these fields:
-{{"id":<integer>,"section_name":"<marker>","label":"<Hebrew label>","original_text":"<matched text from ORIGINAL CV — copy verbatim>","updated_text":"<the adapted text provided below>","changed":<true|false>,"explanation_hebrew":"<≤12-word Hebrew sentence — why this helps for the job; empty string if not changed>"}}
-
-Sections from the ADAPTED CV:
-{sections_block}
-
-Rules:
-- original_text: find the relevant paragraph(s) in the ORIGINAL CV by meaning — copy verbatim from it
-- changed: true only when there is a meaningful semantic difference (ignore punctuation/whitespace)
-- explanation_hebrew: mention specific keywords or technologies added; empty string if changed is false
-- If a section exists in ADAPTED but has no equivalent in ORIGINAL, set original_text to ""
-
-=== ORIGINAL CV ===
-{original_cv}
-
-=== JOB CONTEXT (first 200 chars) ===
-{job_context}"""
 
 
 def _resolve_model(model_alias: str) -> str:
@@ -2164,7 +2342,10 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         answers_text=answers_text,
         job_text=body.jobText,
     ) + url_instruction + constraints_block
-    cv_draft = await call_claude(pass1_prompt, max_tokens=4000, model="claude-haiku-4-5-20251001", check_truncation=True)
+    cv_draft = await _call_with_cached_prefix(
+        pass1_prompt, max_tokens=4000,
+        model="claude-haiku-4-5-20251001", check_truncation=True,
+    )
 
     pass2_prompt = CV_PASS2_PROMPT.format(
         language_check=language_check,
@@ -2172,20 +2353,26 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         job_text=body.jobText,
         original_cv=body.cvText,
     ) + url_instruction + constraints_block
-    cv_final = await call_claude(pass2_prompt, max_tokens=3800,
-                                  model=_resolve_model(body.model), check_truncation=True)
+    cv_final = await _call_with_cached_prefix(
+        pass2_prompt, max_tokens=3800,
+        model=_resolve_model(body.model), check_truncation=True,
+    )
 
     validation_issues = _validate_cv_output(cv_final, body.cvText)
     if validation_issues:
         print(f"[JMA:generate_cv] VALIDATION ISSUES: {validation_issues} — retrying Pass2 once")
-        retry_prompt = pass2_prompt + (
-            "\n\nIMPORTANT: your previous output had structural problems: "
+        # pass2_prompt itself is unchanged (identical system block ⇒ cache hit) — only the
+        # short delta note travels as the (uncached) user turn.
+        retry_note = (
+            "IMPORTANT: your previous output had structural problems: "
             f"{', '.join(validation_issues)}. Ensure every section marker is present with "
             "real content, and do not shrink the CV drastically compared to the original."
         )
         try:
-            cv_final_retry = await call_claude(retry_prompt, max_tokens=3800,
-                                                 model=_resolve_model(body.model), check_truncation=True)
+            cv_final_retry = await _call_with_cached_prefix(
+                pass2_prompt, max_tokens=3800,
+                model=_resolve_model(body.model), check_truncation=True, extra_note=retry_note,
+            )
             if not _validate_cv_output(cv_final_retry, body.cvText):
                 cv_final = cv_final_retry
                 print("[JMA:generate_cv] retry succeeded")
@@ -2193,6 +2380,53 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
                 print("[JMA:generate_cv] retry still has issues — using original output")
         except Exception as e:
             print(f"[JMA:generate_cv] retry failed: {e} — using original output")
+
+    # ── Page-fit guard: measure, don't just hope. One bounded retry that asks Pass2 to
+    # tighten wording (not cut content) by the specific measured overflow amount. ──────────
+    fit = estimate_page_fit(cv_final, is_hebrew)
+    print(f"[JMA:generate_cv] page-fit {fit}")
+    if fit["overflow"]:
+        print(f"[JMA:generate_cv] PAGE-FIT OVERFLOW ({fit['over_ratio']*100:.0f}%) — retrying Pass2 once")
+        overflow_note = (
+            f"IMPORTANT: the current draft is about {fit['over_ratio']*100:.0f}% over the "
+            f"one-page word budget ({fit['effective_words']} effective words vs a "
+            f"{fit['budget_max']}-word target). Tighten wording only — remove filler adjectives, "
+            "merge clauses — do NOT cut whole bullets or drop any factual content, unless a role "
+            "already has 5+ bullets and you cut only the least job-relevant one."
+        )
+        try:
+            cv_final_tight = await _call_with_cached_prefix(
+                pass2_prompt, max_tokens=3800,
+                model=_resolve_model(body.model), check_truncation=True, extra_note=overflow_note,
+            )
+            still_overflowing = estimate_page_fit(cv_final_tight, is_hebrew)["overflow"]
+            if not still_overflowing and not _validate_cv_output(cv_final_tight, body.cvText):
+                cv_final = cv_final_tight
+                print("[JMA:generate_cv] page-fit retry succeeded")
+            else:
+                print("[JMA:generate_cv] page-fit retry still overflowing/invalid — using previous output")
+        except Exception as e:
+            print(f"[JMA:generate_cv] page-fit retry failed: {e} — using previous output")
+
+    # ── Cover letter (optional) — depends only on body.cvText/body.jobText, not on cv_final,
+    # so it's kicked off now and awaited at the very end, running concurrently with the
+    # (local, non-network) tracking injection and diff split below. ───────────────────────
+    async def _generate_cover_letter() -> str:
+        try:
+            cl_language = "Hebrew" if body.jobLanguage == "hebrew" else "English"
+            cl_prompt = COVER_LETTER_PROMPT.format(
+                language=cl_language,
+                cv_text=body.cvText[:2000],
+                job_text=body.jobText[:1500],
+            )
+            text = (await call_claude(cl_prompt, max_tokens=600)).strip()
+            print(f"[JMA:cover_letter] generated {len(text)} chars")
+            return text
+        except Exception as e:
+            print(f"[JMA:cover_letter] failed — {type(e).__name__}: {e}")
+            return ""
+
+    cover_letter_task = asyncio.create_task(_generate_cover_letter()) if body.generateCoverLetter else None
 
     # Inject tracking links only when original CV had GitHub/LinkedIn URLs and tracking is enabled
     app_id = str(uuid.uuid4())[:8]
@@ -2207,50 +2441,15 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     else:
         app_id = ""  # no tracking — return empty appId so client skips analytics
 
-    # ── Diff pass: compare original CV to adapted CV, generate Hebrew explanations ──
-    sections: list = []
+    # ── Diff: deterministic, local, no LLM call — see split_experience_units. ─────────────
     try:
-        adapted_secs = parse_cv_sections_py(cv_final)
-        sections_block_parts = []
-        for idx, marker in enumerate(DIFF_SECTIONS, start=1):
-            content = adapted_secs.get(marker, '').strip()
-            if not content:
-                continue
-            label = SECTION_LABELS[marker]
-            # Truncate very long sections to keep prompt size reasonable
-            truncated = content[:1800] + ('…' if len(content) > 1800 else '')
-            sections_block_parts.append(
-                f"Section {idx} — {marker} (label: {label}, id: {idx}):\n{truncated}"
-            )
-        if sections_block_parts:
-            diff_prompt = CV_DIFF_PROMPT.format(
-                sections_block='\n\n'.join(sections_block_parts),
-                original_cv=body.cvText[:7000],
-                job_context=body.jobText[:200],
-            )
-            raw_diff = await call_claude(diff_prompt, max_tokens=2500)
-            sections = parse_json_array(raw_diff)
-            print(f"[JMA:diff] parsed {len(sections)} sections")
+        sections = split_experience_units(cv_final, body.cvText)
+        print(f"[JMA:diff] {len(sections)} units")
     except Exception as e:
-        print(f"[JMA:diff] diff pass failed — {type(e).__name__}: {e}")
+        print(f"[JMA:diff] diff split failed — {type(e).__name__}: {e}")
         sections = []
 
-    # ── Cover letter pass (optional) ──────────────────────────────────────────
-    cover_letter_text = ""
-    if body.generateCoverLetter:
-        try:
-            cl_language = "Hebrew" if body.jobLanguage == "hebrew" else "English"
-            cl_prompt = COVER_LETTER_PROMPT.format(
-                language=cl_language,
-                cv_text=body.cvText[:2000],
-                job_text=body.jobText[:1500],
-            )
-            cover_letter_text = await call_claude(cl_prompt, max_tokens=600)
-            cover_letter_text = cover_letter_text.strip()
-            print(f"[JMA:cover_letter] generated {len(cover_letter_text)} chars")
-        except Exception as e:
-            print(f"[JMA:cover_letter] failed — {type(e).__name__}: {e}")
-            cover_letter_text = ""
+    cover_letter_text = await cover_letter_task if cover_letter_task else ""
 
     increment_usage(license_key)
     return {"cvText": cv_final, "appId": app_id, "sections": sections, "coverLetterText": cover_letter_text}

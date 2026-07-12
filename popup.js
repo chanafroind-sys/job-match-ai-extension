@@ -2149,10 +2149,46 @@ function assembleCVText(secs) {
   return ORDER.filter(m => secs[m]).map(m => `${m}\n${secs[m]}`).join('\n\n');
 }
 
+// Rebuilds [EXPERIENCE] from per-role/per-bullet diff units (see backend split_experience_units)
+// using the same convention Pass1 itself writes: '$ ' bullets, a blank line between roles.
+// Only called when at least one Experience unit was rejected — otherwise the section is left
+// untouched, byte-identical to today's behavior.
+function _reassembleExperienceUnits(units, choices) {
+  const sorted = [...units].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const lines = [];
+  let firstHeader = true;
+  for (const unit of sorted) {
+    const approved = choices[unit.id] !== false;
+    const text = (!approved && unit.changed && unit.original_text && unit.original_text.trim().length > 2)
+      ? unit.original_text.trim()
+      : (unit.updated_text || '').trim();
+    if (!text) continue;
+    if (unit.unit_type === 'role_header') {
+      if (!firstHeader) lines.push('');
+      firstHeader = false;
+      lines.push(text);
+    } else if (unit.unit_type === 'bullet') {
+      lines.push(`$ ${text}`);
+    } else {
+      // 'section' — graceful-degradation whole-block unit (no role/bullet split available).
+      lines.push(text);
+    }
+  }
+  return lines.join('\n');
+}
+
 function applyDiffChoices(cvText, sections, choices) {
   if (!sections || sections.length === 0) return cvText;
   const secs = parseCVSections(cvText);
+
+  const expUnits = sections.filter(s => s.section_name === '[EXPERIENCE]');
+  const expHasRejection = expUnits.some(u => choices[u.id] === false && u.changed && u.original_text);
+  if (expUnits.length > 0 && expHasRejection) {
+    secs['[EXPERIENCE]'] = _reassembleExperienceUnits(expUnits, choices);
+  }
+
   for (const sec of sections) {
+    if (sec.section_name === '[EXPERIENCE]') continue; // handled above (or left as-is)
     const approved = choices[sec.id] !== false;
     if (!approved && sec.changed && sec.original_text && sec.original_text.trim().length > 5) {
       secs[sec.section_name] = sec.original_text;
@@ -2247,13 +2283,27 @@ function buildDiffHtml(oldText, newText, hasOriginal) {
 
 function renderDiffScreen(sections) {
   state.diffSections = sections || [];
+
+  // [EXPERIENCE] now arrives as many small per-role/per-bullet units sharing one label
+  // ("ניסיון תעסוקתי") — walk them in document order and remember the most recent role_header
+  // text so each bullet's card can show which role it belongs to.
+  const roleLabelById = {};
+  let currentRole = '';
+  [...state.diffSections]
+    .filter(s => s.section_name === '[EXPERIENCE]')
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .forEach(u => {
+      if (u.unit_type === 'role_header') currentRole = (u.updated_text || u.original_text || '').trim();
+      roleLabelById[u.id] = currentRole;
+    });
+
   const changed = state.diffSections.filter(s => s.changed);
   const container = document.getElementById('diffCardsContainer');
   container.innerHTML = '';
 
   document.getElementById('diffCount').textContent =
     changed.length > 0
-      ? `ה-AI שינה ${changed.length} סעיף${changed.length > 1 ? 'ים' : ''} — בדוק ואשר:`
+      ? `ה-AI שינה ${changed.length} פריט${changed.length > 1 ? 'ים' : ''} — בדוק ואשר:`
       : '';
 
   if (changed.length === 0) {
@@ -2266,6 +2316,11 @@ function renderDiffScreen(sections) {
       // Skip card if no meaningful content to show
       if (!updTrimmed) return;
 
+      const roleLabel = roleLabelById[sec.id];
+      const title = roleLabel && sec.unit_type === 'bullet'
+        ? `${escHtml(sec.label || sec.section_name)} · ${escHtml(roleLabel.slice(0, 40))}`
+        : escHtml(sec.label || sec.section_name);
+
       const card = document.createElement('div');
       card.className = 'diff-card';
       card.innerHTML = `
@@ -2273,7 +2328,7 @@ function renderDiffScreen(sections) {
           ? `<div class="diff-explanation-banner">💡 ${escHtml(sec.explanation_hebrew)}</div>`
           : ''}
         <div class="diff-card-header">
-          <span class="diff-card-title">${escHtml(sec.label || sec.section_name)}</span>
+          <span class="diff-card-title">${title}</span>
           <label class="diff-approve-label">
             <input type="checkbox" class="diff-approve-check" data-id="${sec.id}"
               ${hasOriginal ? 'checked' : 'checked disabled'}>
@@ -2324,10 +2379,14 @@ document.getElementById('btnDownloadDocx').addEventListener('click', async () =>
   downloadDocx(state.generatedCV, filename, isRtl);
 });
 
-function buildCvPrintHtml(cvText, isRtl) {
+function buildCvPrintHtml(cvText, isRtl, profile) {
   const dir = isRtl ? 'rtl' : 'ltr';
   const ta  = isRtl ? 'right' : 'left';
   const secs = parseCVSections(cvText);
+  // Same adaptive layout profile the DOCX export uses (docx-builder.js) — computed by the
+  // caller (downloadAsPdf) via pickFittingProfile so both export formats agree on what "fits
+  // one page" means for this specific CV, instead of each hardcoding its own numbers.
+  const lp = profile || LAYOUT_PROFILES.normal;
 
   // Wrap English technical terms/sequences in <bdi> so the browser bidi algorithm
   // keeps them inline-level LTR without disrupting the surrounding RTL flow.
@@ -2382,14 +2441,14 @@ function buildCvPrintHtml(cvText, isRtl) {
 
   return `<!DOCTYPE html><html lang="${isRtl ? 'he' : 'en'}" dir="${dir}"><head><meta charset="UTF-8"><title>CV</title>
 <style>
-  @media print { @page { margin: 1.5cm; } body { margin: 0; } }
+  @media print { @page { margin: ${lp.marginCm}cm; } body { margin: 0; } }
   body {
     font-family: 'Arial', 'Calibri', sans-serif;
-    font-size: 11pt; color: #1f2937;
+    font-size: ${lp.fontPt}pt; color: #1f2937;
     direction: ${dir} !important;
     text-align: ${ta} !important;
     unicode-bidi: plaintext;
-    margin: 1.5cm;
+    margin: ${lp.marginCm}cm;
   }
   h1 { text-align: center; font-size: 18pt; margin: 0 0 4px; }
   .hl { text-align: center; color: #7c3aed; font-size: 12pt; margin: 0 0 3px; }
@@ -2426,7 +2485,9 @@ ${secHtml}
 }
 
 function downloadAsPdf(cvText, isRtl) {
-  const html = buildCvPrintHtml(cvText, isRtl || false);
+  const sections = parseCVSections(cvText);
+  const { profile } = pickFittingProfile(sections, isRtl || false);
+  const html = buildCvPrintHtml(cvText, isRtl || false, profile);
   const encoded = encodeURIComponent(html);
   chrome.tabs.create({ url: `data:text/html;charset=utf-8,${encoded}` });
 }
