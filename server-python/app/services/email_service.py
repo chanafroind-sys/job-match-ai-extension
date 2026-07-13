@@ -69,6 +69,29 @@ async def send_referral_notification(
     await _send(employee_email, subject, body)
 
 
+async def send_employee_optin_invitation(
+    employee_email: str,
+    employee_name: str,
+    company: str,
+    accept_url: str,
+    decline_url: str,
+) -> None:
+    """Sent once, when a community member adds a new employee row. The
+    employee's consent (opt_in_status) stays 'pending' until they click one
+    of these links — never re-sent on a later re-add of the same employee."""
+    subject = f"נוספת למאגר חבר-מביא-חבר עבור {company or ''}"
+    body = (
+        f"שלום {employee_name or ''},\n\n"
+        f"מישהו מהקהילה שלך ב-Job Match AI ציין/ה אותך כאיש/אשת קשר אפשרי/ת "
+        f"למועמדים המחפשים עבודה ב-{company or ''}.\n"
+        f"אם תאשר/י, מועמדים מתאימים (עם ציון התאמה גבוה) יוכלו לבקש ממך הפניה — "
+        f"פרטי הקשר שלך יישלחו רק לאחר שתאשר/י בקשה ספציפית.\n\n"
+        f"לאישור ההצטרפות: {accept_url}\n"
+        f"לדחיית ההצטרפות: {decline_url}\n"
+    )
+    await _send(employee_email, subject, body)
+
+
 async def send_mutual_exposure_emails(
     employee_email: str,
     employee_name: str,

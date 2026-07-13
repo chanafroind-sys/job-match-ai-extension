@@ -8,6 +8,7 @@ row's consent state, so that decision is made by each caller instead.
 """
 
 import re
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -19,10 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import points_config
 from app.core.db import get_db
 from app.core.deps import get_current_user
-from app.core.html_pages import CARD_STYLE
+from app.core.html_pages import CARD_STYLE, render_landing_page
 from app.core.models import ActionType, Employee, EmployeeSource, OptInStatus, User
 from app.core.rate_limit import check_and_record
-from app.services import points_service
+from app.services import email_service, points_service
 from app.services.sync_service import _parse_domains
 
 router = APIRouter()
@@ -127,6 +128,15 @@ def _serialize_employee(e: Employee) -> dict:
     }
 
 
+def _backend_url() -> str:
+    # Deferred import — same reason as app/routes/referrals.py: main.py
+    # imports this router at module load time, so a top-level
+    # "from main import BACKEND_URL" would be circular.
+    from main import BACKEND_URL
+
+    return BACKEND_URL
+
+
 @router.post("/api/employees")
 async def add_employee(
     body: EmployeeIn,
@@ -146,6 +156,7 @@ async def add_employee(
 
     if created:
         employee.opt_in_status = OptInStatus.PENDING
+        employee.opt_in_token = uuid.uuid4().hex
         points_awarded, message = await points_service.award_directory_points(
             db, user, str(employee.id), ActionType.EMPLOYEE_ADDED_NEW, points_config.NEW_EMPLOYEE,
             f"נוסף/ה למאגר! קיבלת {points_config.NEW_EMPLOYEE} נקודות.",
@@ -153,6 +164,21 @@ async def add_employee(
         )
         await db.commit()
         await db.refresh(employee)
+
+        base = _backend_url()
+        try:
+            await email_service.send_employee_optin_invitation(
+                employee_email=employee.email,
+                employee_name=employee.full_name,
+                company=employee.company,
+                accept_url=f"{base}/employee-optin/{employee.opt_in_token}/accept",
+                decline_url=f"{base}/employee-optin/{employee.opt_in_token}/decline",
+            )
+        except Exception as e:
+            # Best-effort, matching referrals.py's notification pattern — no
+            # retry queue exists here either.
+            print(f"[employees] optin invite failed for employee {employee.id}: {e}")
+
         balance = await points_service.get_balance(db, user.id)
         return {
             "employee": _serialize_employee(employee),
@@ -331,3 +357,41 @@ document.getElementById('joinForm').addEventListener('submit', async (e) => {{
 @router.get("/join-referrers")
 async def join_referrers_page():
     return HTMLResponse(content=_JOIN_FORM_HTML)
+
+
+async def _load_employee_by_token(db: AsyncSession, token: str) -> Employee | None:
+    result = await db.execute(select(Employee).where(Employee.opt_in_token == token))
+    return result.scalar_one_or_none()
+
+
+@router.get("/employee-optin/{token}/accept", response_class=HTMLResponse)
+async def accept_optin(token: str, db: AsyncSession = Depends(get_db)):
+    employee = await _load_employee_by_token(db, token)
+    if employee is None:
+        return render_landing_page("קישור לא תקין", "לא נמצא רישום מתאים.")
+    if employee.opt_in_status != OptInStatus.PENDING:
+        return render_landing_page("הבקשה כבר טופלה", "כבר טופל")
+
+    employee.opt_in_status = OptInStatus.ACCEPTED
+    await db.commit()
+
+    return render_landing_page("תודה!", "הצטרפת בהצלחה למאגר חבר-מביא-חבר.")
+
+
+@router.get("/employee-optin/{token}/decline", response_class=HTMLResponse)
+async def decline_optin(token: str, db: AsyncSession = Depends(get_db)):
+    employee = await _load_employee_by_token(db, token)
+    if employee is None:
+        return render_landing_page("קישור לא תקין", "לא נמצא רישום מתאים.")
+    if employee.opt_in_status != OptInStatus.PENDING:
+        return render_landing_page("הבקשה כבר טופלה", "כבר טופל")
+
+    # No points refund/clawback here — the community member who added this
+    # employee already earned their points at add-time, regardless of the
+    # employee's decision. That's a different concept from the referral
+    # flow's decline-triggers-refund (there, the *candidate* is the one who
+    # paid points for a specific request; here, points were for the add).
+    employee.opt_in_status = OptInStatus.DECLINED
+    await db.commit()
+
+    return render_landing_page("הבקשה נדחתה", "תודה על התגובה. לא תישלח אליך שוב בקשה כזו.")

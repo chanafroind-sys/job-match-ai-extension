@@ -35,6 +35,14 @@ async def test_unavailable_when_not_opted_in(db, user, employee):
     assert resp["available"] is False
 
 
+async def test_unavailable_when_declined(db, user, employee):
+    employee.opt_in_status = OptInStatus.DECLINED
+    await db.commit()
+
+    resp = await referrals.check_referral(company="Acme Corp", score=90, job_url_hash="job1", user=user, db=db)
+    assert resp["available"] is False
+
+
 async def test_unavailable_when_company_mismatch(db, user, employee):
     resp = await referrals.check_referral(company="Other Inc", score=90, job_url_hash="job1", user=user, db=db)
     assert resp["available"] is False
