@@ -7,20 +7,19 @@ Anti-abuse rules live here rather than in points_service, since they are about
 """
 
 import re
-from datetime import datetime, timezone
 from io import BytesIO
 
 import openpyxl
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import points_config
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_admin
-from app.core.models import ActionType, PointsLedger, Recruiter, User
+from app.core.models import ActionType, Recruiter, User
 from app.services import points_service
 
 router = APIRouter()
@@ -158,52 +157,6 @@ async def upsert_recruiter(
     return existing, False, updated
 
 
-async def _daily_recruiter_credits_today(db: AsyncSession, user_id: int) -> int:
-    # Naive UTC, matching how SQLite stores DateTime(timezone=True) values under
-    # the server_default CURRENT_TIMESTAMP (no offset suffix).
-    since = datetime.now(timezone.utc).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
-    result = await db.execute(
-        select(func.count(PointsLedger.id)).where(
-            PointsLedger.user_id == user_id,
-            PointsLedger.action_type.in_([ActionType.RECRUITER_ADDED_NEW, ActionType.RECRUITER_ENRICHED]),
-            PointsLedger.created_at >= since,
-        )
-    )
-    return int(result.scalar_one())
-
-
-async def _award_points(
-    db: AsyncSession,
-    user: User,
-    recruiter: Recruiter,
-    action_type: ActionType,
-    amount: int,
-    success_message: str,
-    cap_message: str,
-) -> tuple[int, str]:
-    """Credits `amount` points for `action_type` on `recruiter`, unless the user
-    already earned points for this exact recruiter+action (no double-dipping) or
-    has hit today's recruiter-credit cap. Either way the recruiter record itself
-    is still saved/updated by the caller — only the points are withheld."""
-    ref_id = str(recruiter.id)
-
-    dup = await db.execute(
-        select(PointsLedger.id).where(
-            PointsLedger.user_id == user.id,
-            PointsLedger.ref_id == ref_id,
-            PointsLedger.action_type == action_type,
-        )
-    )
-    if dup.scalar_one_or_none() is not None:
-        return 0, "כבר קיבלת נקודות על המגייס הזה."
-
-    if await _daily_recruiter_credits_today(db, user.id) >= points_config.DAILY_RECRUITER_CAP:
-        return 0, cap_message
-
-    await points_service.credit(db, user.id, action_type, amount, ref_id=ref_id)
-    return amount, success_message
-
-
 @router.post("/api/recruiters")
 async def add_recruiter(
     body: RecruiterIn,
@@ -220,8 +173,8 @@ async def add_recruiter(
     )
 
     if created:
-        points_awarded, message = await _award_points(
-            db, user, recruiter, ActionType.RECRUITER_ADDED_NEW, points_config.NEW_RECRUITER,
+        points_awarded, message = await points_service.award_directory_points(
+            db, user, str(recruiter.id), ActionType.RECRUITER_ADDED_NEW, points_config.NEW_RECRUITER,
             f"נוסף למאגר! קיבלת {points_config.NEW_RECRUITER} נקודות.",
             "המגייס נוסף למאגר. הגעת למכסה היומית של נקודות — נסי שוב מחר.",
         )
@@ -246,8 +199,8 @@ async def add_recruiter(
             "message": "המגייס כבר קיים במאגר.",
         }
 
-    points_awarded, message = await _award_points(
-        db, user, recruiter, ActionType.RECRUITER_ENRICHED, points_config.ENRICH_RECRUITER,
+    points_awarded, message = await points_service.award_directory_points(
+        db, user, str(recruiter.id), ActionType.RECRUITER_ENRICHED, points_config.ENRICH_RECRUITER,
         f"עדכנת פרטי מגייס קיים! קיבלת {points_config.ENRICH_RECRUITER} נקודות.",
         "פרטי המגייס עודכנו. הגעת למכסה היומית של נקודות — נסי שוב מחר.",
     )

@@ -1,5 +1,5 @@
-"""Employee directory entry points: public self-registration, community add
-(Task 3), and the opt-in consent flow (Task 4).
+"""Employee directory entry points: public self-registration, community add,
+and the opt-in consent flow.
 
 Unlike recruiters.upsert_recruiter, upsert_employee never touches
 opt_in_status on the existing-row branch — self-registration, community-add,
@@ -16,10 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import points_config
 from app.core.db import get_db
+from app.core.deps import get_current_user
 from app.core.html_pages import CARD_STYLE
-from app.core.models import Employee, EmployeeSource, OptInStatus
+from app.core.models import ActionType, Employee, EmployeeSource, OptInStatus, User
 from app.core.rate_limit import check_and_record
+from app.services import points_service
 from app.services.sync_service import _parse_domains
 
 router = APIRouter()
@@ -104,6 +107,89 @@ async def upsert_employee(
         updated = True
 
     return existing, False, updated
+
+
+class EmployeeIn(BaseModel):
+    full_name: str
+    company: str
+    email: str
+    domains: str = ""
+    min_match_threshold: int = 75
+
+
+def _serialize_employee(e: Employee) -> dict:
+    return {
+        "id": e.id,
+        "full_name": e.full_name,
+        "company": e.company,
+        "email": e.email,
+        "opt_in_status": e.opt_in_status.value,
+    }
+
+
+@router.post("/api/employees")
+async def add_employee(
+    body: EmployeeIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    employee, created, updated = await upsert_employee(
+        db,
+        full_name=body.full_name,
+        company=body.company,
+        email=body.email,
+        domains=body.domains,
+        min_match_threshold=body.min_match_threshold,
+        added_by_user_id=user.id,
+        source=EmployeeSource.COMMUNITY,
+    )
+
+    if created:
+        employee.opt_in_status = OptInStatus.PENDING
+        points_awarded, message = await points_service.award_directory_points(
+            db, user, str(employee.id), ActionType.EMPLOYEE_ADDED_NEW, points_config.NEW_EMPLOYEE,
+            f"נוסף/ה למאגר! קיבלת {points_config.NEW_EMPLOYEE} נקודות.",
+            "העובד/ת נוסף/ה למאגר. הגעת למכסה היומית של נקודות — נסי שוב מחר.",
+        )
+        await db.commit()
+        await db.refresh(employee)
+        balance = await points_service.get_balance(db, user.id)
+        return {
+            "employee": _serialize_employee(employee),
+            "duplicate": False,
+            "points_awarded": points_awarded,
+            "balance": balance,
+            "message": message,
+        }
+
+    if not updated:
+        balance = await points_service.get_balance(db, user.id)
+        return {
+            "employee": _serialize_employee(employee),
+            "duplicate": True,
+            "points_awarded": 0,
+            "balance": balance,
+            "message": "העובד/ת כבר קיימ/ת במאגר.",
+        }
+
+    # A re-add of an employee who already declined must not re-trigger
+    # anything opt-in related (upsert_employee never touches opt_in_status),
+    # but field enrichment — and its points — still applies normally.
+    points_awarded, message = await points_service.award_directory_points(
+        db, user, str(employee.id), ActionType.EMPLOYEE_ENRICHED, points_config.ENRICH_EMPLOYEE,
+        f"עדכנת פרטי עובד/ת קיימ/ת! קיבלת {points_config.ENRICH_EMPLOYEE} נקודות.",
+        "פרטי העובד/ת עודכנו. הגעת למכסה היומית של נקודות — נסי שוב מחר.",
+    )
+    await db.commit()
+    await db.refresh(employee)
+    balance = await points_service.get_balance(db, user.id)
+    return {
+        "employee": _serialize_employee(employee),
+        "duplicate": True,
+        "points_awarded": points_awarded,
+        "balance": balance,
+        "message": message,
+    }
 
 
 class EmployeeRegisterIn(BaseModel):
