@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.core.models import ActionType, Employee, PointsLedger, ReferralRequest, ReferralStatus
+from app.core.models import ActionType, Employee, OptInStatus, PointsLedger, ReferralRequest, ReferralStatus
 from app.routes import referrals
 from app.services import points_service, referral_service
 
@@ -19,7 +19,7 @@ async def employee(db):
         email="dana@acme.com",
         domains=None,
         min_match_threshold=75,
-        is_opted_in=True,
+        opt_in_status=OptInStatus.ACCEPTED,
         source_row_id="dana@acme.com",
     )
     db.add(e)

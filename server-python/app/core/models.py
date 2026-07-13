@@ -30,6 +30,22 @@ class ActionType(str, enum.Enum):
     REFERRAL_REQUESTED = "referral_requested"
     REFERRAL_REFUND = "referral_refund"
     ADMIN_ADJUSTMENT = "admin_adjustment"
+    EMPLOYEE_ADDED_NEW = "employee_added_new"
+    EMPLOYEE_ENRICHED = "employee_enriched"
+
+
+class EmployeeSource(str, enum.Enum):
+    SHEET = "sheet"
+    COMMUNITY = "community"
+    SELF = "self"
+    # IMPORT is added in Task 6b (admin bulk import) — no migration needed,
+    # these enums are plain VARCHAR (native_enum=False).
+
+
+class OptInStatus(str, enum.Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
 
 
 class SendStatus(str, enum.Enum):
@@ -116,6 +132,9 @@ class SendLog(Base):
 
 class Employee(Base):
     __tablename__ = "employees"
+    __table_args__ = (
+        Index("ix_employees_email_unique", "email", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -124,8 +143,21 @@ class Employee(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     domains: Mapped[list | None] = mapped_column(JSON, nullable=True)
     min_match_threshold: Mapped[int] = mapped_column(Integer, default=75, server_default=text("75"), nullable=False)
-    is_opted_in: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
-    source_row_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    added_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    source: Mapped[EmployeeSource] = mapped_column(
+        SAEnum(EmployeeSource, native_enum=False, length=16),
+        default=EmployeeSource.SHEET,
+        server_default=EmployeeSource.SHEET.value,
+        nullable=False,
+    )
+    opt_in_status: Mapped[OptInStatus] = mapped_column(
+        SAEnum(OptInStatus, native_enum=False, length=16),
+        default=OptInStatus.PENDING,
+        server_default=OptInStatus.PENDING.value,
+        nullable=False,
+    )
+    opt_in_token: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    source_row_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=_utcnow

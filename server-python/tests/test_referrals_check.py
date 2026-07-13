@@ -1,6 +1,6 @@
 import pytest
 
-from app.core.models import Employee, ReferralRequest, ReferralStatus
+from app.core.models import Employee, OptInStatus, ReferralRequest, ReferralStatus
 from app.routes import referrals
 
 
@@ -13,7 +13,7 @@ async def employee(db):
         email="dana@acme.com",
         domains=None,
         min_match_threshold=75,
-        is_opted_in=True,
+        opt_in_status=OptInStatus.ACCEPTED,
         source_row_id="dana@acme.com",
     )
     db.add(e)
@@ -28,7 +28,7 @@ async def test_available_true_when_opted_in_and_score_meets_threshold(db, user, 
 
 
 async def test_unavailable_when_not_opted_in(db, user, employee):
-    employee.is_opted_in = False
+    employee.opt_in_status = OptInStatus.PENDING
     await db.commit()
 
     resp = await referrals.check_referral(company="Acme Corp", score=90, job_url_hash="job1", user=user, db=db)

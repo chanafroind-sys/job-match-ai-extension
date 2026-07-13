@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import select
 
-from app.core.models import Employee, SyncMeta
+from app.core.models import Employee, EmployeeSource, OptInStatus, SyncMeta
 from app.services import sync_service
 
 CSV_TEXT = (
@@ -78,7 +78,8 @@ async def test_sync_upserts_new_employee_from_csv(db, monkeypatch):
     assert emp.company_normalized == "acme corp"
     assert emp.email == "dana@acme.com"
     assert emp.min_match_threshold == 75
-    assert emp.is_opted_in is True
+    assert emp.opt_in_status == OptInStatus.ACCEPTED
+    assert emp.source == EmployeeSource.SHEET
     assert emp.domains == ["Backend"]
     assert emp.source_row_id == "dana@acme.com"
 

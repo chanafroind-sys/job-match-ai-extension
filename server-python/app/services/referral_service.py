@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.models import Employee, ReferralRequest, ReferralStatus
+from app.core.models import Employee, OptInStatus, ReferralRequest, ReferralStatus
 from app.services import points_service
 
 MIN_SCORE = 75
@@ -27,7 +27,7 @@ async def find_eligible_employee(db: AsyncSession, company_normalized: str, scor
         select(Employee)
         .where(
             Employee.company_normalized == company_normalized,
-            Employee.is_opted_in.is_(True),
+            Employee.opt_in_status == OptInStatus.ACCEPTED,
             Employee.min_match_threshold <= score,
         )
         .order_by(Employee.id)

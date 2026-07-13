@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
 
-from app.core.models import Employee, Recruiter, ReferralRequest, SendLog, SendStatus
+from app.core.models import Employee, OptInStatus, Recruiter, ReferralRequest, SendLog, SendStatus
 from app.routes import emails, recruiters, referrals
 from app.services import points_service
 
@@ -43,7 +43,7 @@ async def test_full_referral_journey_ends_at_nine_points(db, user):
         company_normalized="acme corp",
         email="yossi@acme.com",
         min_match_threshold=75,
-        is_opted_in=True,
+        opt_in_status=OptInStatus.ACCEPTED,
         source_row_id="yossi@acme.com",
     )
     db.add(employee)

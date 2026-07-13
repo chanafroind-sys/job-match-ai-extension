@@ -17,7 +17,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.models import Employee, SyncMeta
+from app.core.models import Employee, EmployeeSource, OptInStatus, SyncMeta
 
 SYNC_KEY = "employees_sheet"
 SYNC_INTERVAL = timedelta(hours=1)
@@ -126,6 +126,8 @@ async def _upsert_rows(db: AsyncSession, rows: list[dict]) -> None:
         )
         is_opted_in = _parse_opt_in(_get_field(row, "Opt-in Checkbox", "Opt-in", "Opt In"))
 
+        opt_in_status = OptInStatus.ACCEPTED if is_opted_in else OptInStatus.PENDING
+
         result = await db.execute(select(Employee).where(Employee.source_row_id == source_row_id))
         employee = result.scalar_one_or_none()
         if employee is None:
@@ -136,7 +138,8 @@ async def _upsert_rows(db: AsyncSession, rows: list[dict]) -> None:
                 email=email,
                 domains=domains,
                 min_match_threshold=min_match_threshold,
-                is_opted_in=is_opted_in,
+                source=EmployeeSource.SHEET,
+                opt_in_status=opt_in_status,
                 source_row_id=source_row_id,
             ))
         else:
@@ -145,5 +148,5 @@ async def _upsert_rows(db: AsyncSession, rows: list[dict]) -> None:
             employee.company_normalized = company_normalized or employee.company_normalized
             employee.domains = domains
             employee.min_match_threshold = min_match_threshold
-            employee.is_opted_in = is_opted_in
+            employee.opt_in_status = opt_in_status
     await db.flush()
