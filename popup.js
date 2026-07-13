@@ -422,6 +422,7 @@ async function loadSettings() {
   const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints', 'shareJobsConsent', 'jma_is_admin']);
   document.getElementById('chkShareJobsData').checked = !!data.shareJobsConsent;
   document.getElementById('adminImportSection').style.display = data.jma_is_admin ? 'block' : 'none';
+  if (data.jma_is_admin) loadAdminStatsSummary();
   if (data.cvName) {
     document.getElementById('uploadText').textContent = `✅ ${data.cvName}`;
     document.getElementById('uploadArea').classList.add('has-file');
@@ -2905,58 +2906,30 @@ async function loadPointsBalance() {
   } catch {}
 }
 
-// Admin-only bulk recruiter import (visibility gated by jma_is_admin — see loadSettings).
-// Files can't be sent through chrome.runtime.sendMessage reliably, so the popup base64-encodes
-// the file and background.js rebuilds it into a real multipart FormData upload.
-function _fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
-    reader.onerror = () => reject(reader.error || new Error('קריאת הקובץ נכשלה.'));
-    reader.readAsDataURL(file);
-  });
+// Admin-only stats summary + link to the full web console (visibility gated
+// by jma_is_admin — see loadSettings). The console itself (bulk import,
+// export) runs as a plain web page outside the extension sandbox.
+async function loadAdminStatsSummary() {
+  const summaryEl = document.getElementById('adminStatsSummary');
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'getAdminStats' });
+    if (resp?.error) {
+      summaryEl.textContent = 'לא ניתן לטעון סטטיסטיקות כרגע.';
+      return;
+    }
+    const s = resp.result || {};
+    summaryEl.textContent =
+      `מגייסים: ${s.recruiters?.total ?? '–'} | ` +
+      `משתמשים: ${s.users?.total ?? '–'} | ` +
+      `נקודות שהונפקו: ${s.points?.issued ?? '–'}`;
+  } catch (e) {
+    summaryEl.textContent = 'לא ניתן לטעון סטטיסטיקות כרגע.';
+  }
 }
 
-document.getElementById('btnAdminImport').addEventListener('click', async () => {
-  const fileInput = document.getElementById('adminImportFileInput');
-  const statusEl = document.getElementById('adminImportStatus');
-  const file = fileInput.files[0];
-  if (!file) {
-    statusEl.textContent = 'נא לבחור קובץ Excel (.xlsx) לייבוא.';
-    return;
-  }
-
-  const btn = document.getElementById('btnAdminImport');
-  const originalText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '⏳ מייבא...';
-  statusEl.textContent = '';
-
-  try {
-    const fileBase64 = await _fileToBase64(file);
-    const resp = await chrome.runtime.sendMessage({
-      action: 'importRecruitersXlsx',
-      fileBase64,
-      fileName: file.name,
-      fileType: file.type,
-    });
-
-    if (resp?.error) {
-      statusEl.textContent = '❌ ' + resp.error;
-    } else {
-      const r = resp.result || {};
-      const errors = r.errors || [];
-      const errorsText = errors.length
-        ? `, ${errors.length} שגיאות: ` + errors.map(e => `שורה ${e.row} — ${e.reason}`).join('; ')
-        : '';
-      statusEl.textContent = `נוצרו ${r.created ?? 0}, הועשרו ${r.enriched ?? 0}, דולגו ${r.skipped_duplicates ?? 0} כפולים${errorsText}`;
-    }
-  } catch (e) {
-    statusEl.textContent = '❌ ' + (e.message || 'משהו השתבש. נסי שוב בעוד רגע.');
-  }
-
-  btn.disabled = false;
-  btn.textContent = originalText;
+document.getElementById('btnOpenAdminConsole').addEventListener('click', () => {
+  const BACKEND = 'https://job-match-ai-extension.onrender.com';
+  chrome.tabs.create({ url: `${BACKEND}/admin` });
 });
 
 (async () => {
