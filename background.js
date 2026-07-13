@@ -109,7 +109,7 @@ function friendlyError(msg) {
   if (lo.includes('מתעורר') || lo.includes('waking') || msg.includes('502') || msg.includes('503')) {
     return 'האפליקציה מתעוררת — זה יכול לקחת עד דקה. נסי שוב בעוד רגע.';
   }
-  if (lo.includes('לא הצלחנו') || lo.includes('מגבלה') || lo.includes('רישיון') || lo.includes('אימייל') || lo.includes('מגייס')) return msg;
+  if (lo.includes('לא הצלחנו') || lo.includes('מגבלה') || lo.includes('רישיון') || lo.includes('אימייל') || lo.includes('מגייס') || lo.includes('עובד')) return msg;
   return 'משהו השתבש. נסי שוב בעוד רגע.';
 }
 
@@ -334,6 +334,23 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           full_name: req.fullName || '',
           email: req.email || '',
           phone: req.phone || null,
+          company: req.company || '',
+        }, stored.licenseKey);
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'addEmployee') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const data = await backendPost('/api/employees', {
+          full_name: req.fullName || '',
+          email: req.email || '',
           company: req.company || '',
         }, stored.licenseKey);
         sendResponse({ result: data });

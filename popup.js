@@ -620,8 +620,21 @@ function _resetRecruiterForm() {
 document.getElementById('btnRecruiters').addEventListener('click', () => {
   const active = document.querySelector('.screen.active');
   _recruitersReturnScreen = active ? active.id.replace('screen-', '') : 'ready';
+  showScreen('add-role');
+});
+
+document.getElementById('btnAddRoleBack').addEventListener('click', () => {
+  showScreen(_recruitersReturnScreen);
+});
+
+document.getElementById('btnSelectRecruiter').addEventListener('click', () => {
   _resetRecruiterForm();
   showScreen('recruiters');
+});
+
+document.getElementById('btnSelectEmployee').addEventListener('click', () => {
+  _resetEmployeeForm();
+  showScreen('employees');
 });
 
 document.getElementById('btnRecruitersBack').addEventListener('click', () => {
@@ -672,6 +685,68 @@ document.getElementById('btnSubmitRecruiter').addEventListener('click', async ()
   document.getElementById('recruiterPhoneInput').value = '';
   document.getElementById('recruiterCompanyInput').value = '';
   okEl.textContent = result.message || 'המגייס/ת נשמר/ה במאגר.';
+  okEl.style.display = 'block';
+
+  if (typeof result.balance === 'number') {
+    document.getElementById('pointsBadgeValue').textContent = result.balance;
+  } else {
+    loadPointsBalance();
+  }
+});
+
+// Employees (referral) screen
+function _resetEmployeeForm() {
+  document.getElementById('employeeNameInput').value = '';
+  document.getElementById('employeeEmailInput').value = '';
+  document.getElementById('employeeCompanyInput').value = '';
+  document.getElementById('employeeError').style.display = 'none';
+  document.getElementById('employeeSuccess').style.display = 'none';
+}
+
+document.getElementById('btnEmployeesBack').addEventListener('click', () => {
+  showScreen(_recruitersReturnScreen);
+});
+
+document.getElementById('btnSubmitEmployee').addEventListener('click', async () => {
+  const errEl = document.getElementById('employeeError');
+  const okEl  = document.getElementById('employeeSuccess');
+  errEl.style.display = 'none';
+  okEl.style.display = 'none';
+
+  const fullName = document.getElementById('employeeNameInput').value.trim();
+  const email    = document.getElementById('employeeEmailInput').value.trim();
+  const company  = document.getElementById('employeeCompanyInput').value.trim();
+
+  if (!fullName || !email || !company) {
+    errEl.textContent = 'נא למלא שם, אימייל וחברה.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btnSubmitEmployee');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'שולח...';
+
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({ action: 'addEmployee', fullName, email, company });
+  } catch (e) {
+    resp = { error: 'משהו השתבש. נסי שוב בעוד רגע.' };
+  }
+
+  btn.disabled = false;
+  btn.textContent = originalText;
+
+  if (resp?.error) {
+    errEl.textContent = resp.error;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const result = resp.result || {};
+  _resetEmployeeForm();
+  okEl.textContent = result.message || 'העובד/ת נשמר/ה במאגר.';
   okEl.style.display = 'block';
 
   if (typeof result.balance === 'number') {
