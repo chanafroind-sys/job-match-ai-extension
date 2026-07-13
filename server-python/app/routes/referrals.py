@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import points_config
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.core.html_pages import render_landing_page
 from app.core.models import ActionType, Employee, ReferralRequest, ReferralStatus, User
 from app.services import email_service, points_service, referral_service, sync_service
 
@@ -136,22 +137,6 @@ async def create_referral(
     return {"success": True, "referral_id": referral.id, "status": referral.status.value, "balance": balance}
 
 
-def _landing_page(title: str, message: str) -> HTMLResponse:
-    html = f"""<!DOCTYPE html>
-<html lang="he" dir="rtl">
-<head><meta charset="utf-8"><title>{title}</title>
-<style>
-body {{ font-family: Arial, sans-serif; background: #f7f7f8; display: flex; align-items: center;
-  justify-content: center; height: 100vh; margin: 0; }}
-.card {{ background: #fff; padding: 32px 40px; border-radius: 12px;
-  box-shadow: 0 2px 12px rgba(0,0,0,.08); text-align: center; max-width: 420px; }}
-h1 {{ font-size: 20px; margin: 0 0 12px; }}
-p {{ color: #555; margin: 0; }}
-</style></head>
-<body><div class="card"><h1>{title}</h1><p>{message}</p></div></body></html>"""
-    return HTMLResponse(content=html)
-
-
 async def _load_referral(db: AsyncSession, token: str) -> ReferralRequest | None:
     result = await db.execute(select(ReferralRequest).where(ReferralRequest.token == token))
     return result.scalar_one_or_none()
@@ -162,9 +147,9 @@ async def accept_referral(token: str, db: AsyncSession = Depends(get_db)):
     await referral_service.expire_stale_referrals(db)
     referral = await _load_referral(db, token)
     if referral is None:
-        return _landing_page("קישור לא תקין", "לא נמצאה בקשת הפניה מתאימה.")
+        return render_landing_page("קישור לא תקין", "לא נמצאה בקשת הפניה מתאימה.")
     if referral.status != ReferralStatus.PENDING:
-        return _landing_page("הבקשה כבר טופלה", "הבקשה כבר טופלה")
+        return render_landing_page("הבקשה כבר טופלה", "הבקשה כבר טופלה")
 
     referral.status = ReferralStatus.ACCEPTED
     referral.resolved_at = datetime.now(timezone.utc)
@@ -184,7 +169,7 @@ async def accept_referral(token: str, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         print(f"[referrals] mutual exposure email failed for referral {referral.id}: {e}")
 
-    return _landing_page("הבקשה אושרה!", "פרטי הקשר נשלחו לשני הצדדים במייל. תודה שעזרת!")
+    return render_landing_page("הבקשה אושרה!", "פרטי הקשר נשלחו לשני הצדדים במייל. תודה שעזרת!")
 
 
 @router.get("/referral/{token}/decline", response_class=HTMLResponse)
@@ -192,13 +177,13 @@ async def decline_referral(token: str, db: AsyncSession = Depends(get_db)):
     await referral_service.expire_stale_referrals(db)
     referral = await _load_referral(db, token)
     if referral is None:
-        return _landing_page("קישור לא תקין", "לא נמצאה בקשת הפניה מתאימה.")
+        return render_landing_page("קישור לא תקין", "לא נמצאה בקשת הפניה מתאימה.")
     if referral.status != ReferralStatus.PENDING:
-        return _landing_page("הבקשה כבר טופלה", "הבקשה כבר טופלה")
+        return render_landing_page("הבקשה כבר טופלה", "הבקשה כבר טופלה")
 
     referral.status = ReferralStatus.DECLINED
     referral.resolved_at = datetime.now(timezone.utc)
     await points_service.refund(db, ref_id=str(referral.id))
     await db.commit()
 
-    return _landing_page("הבקשה נדחתה", "תודה על התגובה. הנקודות הוחזרו למועמד/ת.")
+    return render_landing_page("הבקשה נדחתה", "תודה על התגובה. הנקודות הוחזרו למועמד/ת.")

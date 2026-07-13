@@ -112,6 +112,7 @@ Every row below is implemented and traced to concrete code in this repository (f
 | 31 | Admin key authorization (reuses license header) | `app/core/deps.py` `require_admin` |
 | 32 | Recruiter link-click tracking + 302 redirect | `GET /api/v1/track`, `clicks.json` |
 | 33 | Real-time click push (WebSocket) | `WS /ws/clicks` |
+| 34 | Public employee self-registration for the referral pool | `GET /join-referrers`, `POST /api/public/employees/register` |
 | 34 | Click polling fallback + system notification + badge | `background.js` `chrome.alarms` poller (`_pollClicks`) |
 | 35 | In-popup tracker screen + CSV export | `tracker.js`, `popup.js` `showTrackerScreen` |
 | 36 | Full-tab analytics dashboard (Canvas charts) | `dashboard.js`, `dashboard.html` |
@@ -389,6 +390,7 @@ A privacy-preserving "warm intro" system layered on top of the same points econo
 - `POST /api/referrals` charges 5 points (rolled back with a 402 on insufficient balance), creates a `ReferralRequest` row with a random unguessable `token`, and emails the employee a notification — with the *candidate's* identity withheld at this stage too, mirroring the same privacy stance in the other direction.
 - `GET /referral/{token}/accept` and `/decline` are public, unauthenticated HTML landing pages — the token itself is the security boundary. Acceptance is the **only** point at which contact details are exchanged, and they're exchanged both ways simultaneously (`send_mutual_exposure_emails`). Decline (or 7-day inaction, auto-expired lazily on the next referral-endpoint hit rather than via cron) triggers an automatic point refund.
 - The `employees` table backing all of this is synced from a **published Google Sheet** (`sync_service.py`), parsed tolerantly against varying Google-Forms column headers, upserted by normalized email as a natural key, and re-synced at most once per hour, lazily triggered from the next `/api/referrals/check` request rather than a scheduled job.
+- Employees can also join directly at **`/join-referrers`** — a public, unauthenticated Hebrew signup page (`app/routes/employees.py`) with an honeypot field and a per-IP rate limit for anti-abuse. Self-registration counts as inherent consent, so these rows are immediately `opt_in_status=accepted` and referral-eligible. Each `Employee` row now also tracks its `source` (`sheet` / `community` / `self`) and `opt_in_status` (`pending` / `accepted` / `declined`), replacing the old single opt-in boolean.
 
 ### I. Licensing & Access Control
 
