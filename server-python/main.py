@@ -79,6 +79,11 @@ async def _ws_push(user_id: str, payload: dict) -> None:
 _PREMIUM_KEYS_ENV = os.getenv("PREMIUM_KEYS", "")
 STATIC_PREMIUM_KEYS: set = {k.strip() for k in _PREMIUM_KEYS_ENV.split(",") if k.strip()}
 
+# Comma-separated list of license keys with admin access (community-directory
+# import tooling etc.) — mirrors STATIC_PREMIUM_KEYS exactly.
+_ADMIN_KEYS_ENV = os.getenv("ADMIN_KEYS", "")
+STATIC_ADMIN_KEYS: set = {k.strip() for k in _ADMIN_KEYS_ENV.split(",") if k.strip()}
+
 RAW_JOBS_FILE = Path(__file__).parent / "raw_jobs.json"
 MAX_RAW_JOBS = 10_000
 

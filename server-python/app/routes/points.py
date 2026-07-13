@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, is_admin
 from app.core.models import User
 from app.services import points_service
 
@@ -15,4 +15,4 @@ async def get_points_balance(
     db: AsyncSession = Depends(get_db),
 ):
     balance = await points_service.get_balance(db, user.id)
-    return {"balance": balance}
+    return {"balance": balance, "isAdmin": is_admin(user)}

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,4 +71,20 @@ async def get_current_user(
     else:
         await db.refresh(user)
     await _backfill_email(db, user, license_key)
+    return user
+
+
+def _admin_key_hashes() -> set[str]:
+    from main import STATIC_ADMIN_KEYS
+
+    return {_hash_license_key(k) for k in STATIC_ADMIN_KEYS}
+
+
+def is_admin(user: User) -> bool:
+    return user.license_key_hash in _admin_key_hashes()
+
+
+async def require_admin(user: User = Depends(get_current_user)) -> User:
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="גישה זו מוגבלת למנהלי המערכת בלבד.")
     return user
