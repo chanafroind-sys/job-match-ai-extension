@@ -181,6 +181,18 @@ async function backendGet(endpoint, licenseKey, opts = {}) {
   }, opts.maxAttempts || 6, opts.delayMs || 12000);
 }
 
+// No 'Content-Type' header here on purpose — the browser sets
+// multipart/form-data with the correct boundary when the body is a FormData.
+async function backendPostForm(endpoint, formData, licenseKey, opts = {}) {
+  return fetchWithRetry(endpoint, {
+    method: 'POST',
+    headers: {
+      'x-license-key': licenseKey || '',
+    },
+    body: formData,
+  }, opts.maxAttempts || 6, opts.delayMs || 12000);
+}
+
 function _urlHash(url) {
   let h = 0;
   for (let i = 0; i < (url || '').length; i++) h = (Math.imul(31, h) + url.charCodeAt(i)) | 0;
@@ -289,9 +301,26 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       if (!stored.licenseKey) { sendResponse({ error: 'no license key' }); return; }
       try {
         const data = await backendGet('/api/points/balance', stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
-        sendResponse({ balance: data.balance ?? 0 });
+        sendResponse({ balance: data.balance ?? 0, isAdmin: !!data.isAdmin });
       } catch (e) {
         sendResponse({ error: e.message });
+      }
+    });
+    return true;
+  }
+
+  if (req.action === 'importRecruitersXlsx') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      try {
+        const bytes = Uint8Array.from(atob(req.fileBase64 || ''), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: req.fileType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const formData = new FormData();
+        formData.append('file', blob, req.fileName || 'import.xlsx');
+        const data = await backendPostForm('/api/admin/recruiters/import', formData, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        sendResponse({ result: data });
+      } catch (e) {
+        sendResponse({ error: friendlyError(e.message) });
       }
     });
     return true;

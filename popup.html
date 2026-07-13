@@ -1086,6 +1086,13 @@
     <div style="font-size:11px;color:var(--text-dim);margin-top:4px">כללים אישיים שה-AI חייב לעמוד בהם בעת יצירת קורות החיים</div>
   </div>
 
+  <div class="settings-section" id="adminImportSection" style="margin-top:14px;display:none">
+    <div class="settings-label">🔧 אזור ניהול</div>
+    <input type="file" id="adminImportFileInput" accept=".xlsx">
+    <button class="btn btn-secondary" id="btnAdminImport" style="width:100%;margin-top:8px">📥 ייבוא מגייסים מקובץ Excel</button>
+    <div id="adminImportStatus" style="font-size:11px;color:var(--text-muted);margin-top:8px;white-space:pre-wrap;line-height:1.6"></div>
+  </div>
+
   <div id="settingsError" class="error-box" style="display:none"></div>
   <button class="btn btn-primary" id="btnSaveSettings">💾 שמור הגדרות</button>
   <button class="btn btn-secondary" id="btnSettingsBack">← חזור</button>

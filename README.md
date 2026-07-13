@@ -85,6 +85,27 @@ The tracker dashboard polls `/api/v1/clicks?app_ids=…` on load and surfaces:
 
 This gives the candidate a passive signal that their application was reviewed, without any action from the recruiter's side.
 
+### Admin Recruiter Bulk Import
+
+License keys listed in the `ADMIN_KEYS` env var (comma-separated, same format as `PREMIUM_KEYS`) can bulk-import recruiters from an Excel file via `POST /api/admin/recruiters/import`. `GET /api/points/balance` returns `isAdmin: true` for those keys, which the popup's settings screen uses to conditionally show the "🔧 אזור ניהול" import block — this is a display-only flag; the server enforces the real authorization check.
+
+**File format** — first row is a header; columns are matched by name (case-insensitive), not position:
+
+| Column | Required |
+|---|---|
+| `full_name` | yes |
+| `email` | yes |
+| `company` | yes |
+| `phone` | no |
+
+**Limits:** 2 MB max file size (`413` if exceeded), 2,000 data rows max (`422` if exceeded), `.xlsx` only.
+
+Each row runs through the same validation/dedup logic as the regular single-add endpoint (blocked personal-email domains, email format, dedup by email), with three differences: no points are credited, `added_by` is the importing admin, and the recruiter is marked `is_verified = true`. A single bad row (invalid email, blocked domain, missing required field) is recorded in the response's `errors` list without failing the rest of the batch; duplicate emails within the same file are only created once. Response shape:
+
+```json
+{ "created": 45, "enriched": 3, "skipped_duplicates": 12, "errors": [{ "row": 7, "reason": "כתובת האימייל אינה תקינה." }] }
+```
+
 ---
 
 ## Tech Stack
