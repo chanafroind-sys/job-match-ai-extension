@@ -112,7 +112,6 @@ Every row below is implemented and traced to concrete code in this repository (f
 | 31 | Admin key authorization (reuses license header) | `app/core/deps.py` `require_admin` |
 | 32 | Recruiter link-click tracking + 302 redirect | `GET /api/v1/track`, `clicks.json` |
 | 33 | Real-time click push (WebSocket) | `WS /ws/clicks` |
-| 34 | Public employee self-registration for the referral pool | `GET /join-referrers`, `POST /api/public/employees/register` |
 | 34 | Click polling fallback + system notification + badge | `background.js` `chrome.alarms` poller (`_pollClicks`) |
 | 35 | In-popup tracker screen + CSV export | `tracker.js`, `popup.js` `showTrackerScreen` |
 | 36 | Full-tab analytics dashboard (Canvas charts) | `dashboard.js`, `dashboard.html` |
@@ -120,6 +119,11 @@ Every row below is implemented and traced to concrete code in this repository (f
 | 38 | Cold-start-aware retry/backoff | `background.js` `fetchWithRetry` |
 | 39 | Custom raw ASGI CORS middleware | `main.py` `_CORSMiddleware` |
 | 40 | Mixed persistence architecture | Postgres (`app/core/db.py`) vs. flat JSON (`clicks.json`/`usage.json`) vs. `chrome.storage.local` |
+| 41 | Public employee self-registration for the referral pool | `GET /join-referrers`, `POST /api/public/employees/register` |
+| 42 | Community "add employee" flow with shared points cap | `POST /api/employees`, role-selection screen (`screen-add-role`) |
+| 43 | Employee opt-in consent email + accept/decline pages | `GET /employee-optin/{token}/accept|decline`, `email_service.send_employee_optin_invitation` |
+| 44 | Web admin console (stats, drag-and-drop import, CSV export) | `GET /admin`, `GET /api/admin/stats`, `GET /api/admin/recruiters/export` |
+| 45 | Admin bulk employee import with consent toggle | `POST /api/admin/employees/import` |
 | 41 | Automated test suite | `server-python/tests/*` (pytest, 7 files) |
 | 42 | *(superseded)* Legacy Node/Express proxy | `server/server.js` |
 | 43 | 13-screen popup UI state machine with resume-on-reopen | `popup.js` `showScreen`, `routeToCorrectScreen`, `wizard_step` |
@@ -390,7 +394,9 @@ A privacy-preserving "warm intro" system layered on top of the same points econo
 - `POST /api/referrals` charges 5 points (rolled back with a 402 on insufficient balance), creates a `ReferralRequest` row with a random unguessable `token`, and emails the employee a notification — with the *candidate's* identity withheld at this stage too, mirroring the same privacy stance in the other direction.
 - `GET /referral/{token}/accept` and `/decline` are public, unauthenticated HTML landing pages — the token itself is the security boundary. Acceptance is the **only** point at which contact details are exchanged, and they're exchanged both ways simultaneously (`send_mutual_exposure_emails`). Decline (or 7-day inaction, auto-expired lazily on the next referral-endpoint hit rather than via cron) triggers an automatic point refund.
 - The `employees` table backing all of this is synced from a **published Google Sheet** (`sync_service.py`), parsed tolerantly against varying Google-Forms column headers, upserted by normalized email as a natural key, and re-synced at most once per hour, lazily triggered from the next `/api/referrals/check` request rather than a scheduled job.
-- Employees can also join directly at **`/join-referrers`** — a public, unauthenticated Hebrew signup page (`app/routes/employees.py`) with an honeypot field and a per-IP rate limit for anti-abuse. Self-registration counts as inherent consent, so these rows are immediately `opt_in_status=accepted` and referral-eligible. Each `Employee` row now also tracks its `source` (`sheet` / `community` / `self`) and `opt_in_status` (`pending` / `accepted` / `declined`), replacing the old single opt-in boolean.
+- Employees can also join directly at **`/join-referrers`** — a public, unauthenticated Hebrew signup page (`app/routes/employees.py`) with an honeypot field and a per-IP rate limit for anti-abuse. Self-registration counts as inherent consent, so these rows are immediately `opt_in_status=accepted` and referral-eligible. Each `Employee` row now also tracks its `source` (`sheet` / `community` / `self` / `import`) and `opt_in_status` (`pending` / `accepted` / `declined`), replacing the old single opt-in boolean.
+- From inside the extension, `POST /api/employees` mirrors the recruiter add flow (+10 for a new employee, +2 for enriching an existing one) but with **no personal-email-domain blocklist** and a **shared daily points cap** with recruiters (`points_service.daily_directory_credits_today`/`award_directory_points` — one `DAILY_RECRUITER_CAP` covers both kinds of adds by the same user). New employees get `opt_in_status=pending` and a one-time consent email (`email_service.send_employee_optin_invitation`) with `GET /employee-optin/{token}/accept|decline` links — the same token-single-use pattern as the referral flow. A declined employee is never re-invited on a later re-add, and points already earned for adding them are never clawed back (unlike the referral flow's decline-triggers-refund, which is about a *different* charge).
+- The **`/admin` web console** is a self-contained HTML/JS page (no build step) served at `GET /admin` with no embedded data — it does its own license-key handshake client-side (key kept only in `sessionStorage`) and calls `GET /api/admin/stats` (directory counts, points issued/spent, emails opened, referral status breakdown), a drag-and-drop `.xlsx` importer for either recruiters or employees (`POST /api/admin/employees/import` adds a `consented` toggle controlling `opt_in_status` — bulk imports never send invitation emails, regardless of that flag), and `GET /api/admin/recruiters/export` for a CSV dump. The extension's own admin-gated settings block now just shows a stats summary and a button that opens `/admin` in a new tab.
 
 ### I. Licensing & Access Control
 
