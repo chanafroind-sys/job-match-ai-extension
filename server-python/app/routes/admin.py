@@ -12,8 +12,10 @@ happens server-side, per call, via require_admin.
 
 import csv
 import io
+from io import BytesIO
 
-from fastapi import APIRouter, Depends
+import openpyxl
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,8 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.deps import require_admin
 from app.core.html_pages import CARD_STYLE
+from app.core.import_limits import MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS, import_row_cell
 from app.core.models import (
     Employee,
+    EmployeeSource,
+    OptInStatus,
     PointsLedger,
     Recruiter,
     ReferralRequest,
@@ -30,8 +35,11 @@ from app.core.models import (
     SendStatus,
     User,
 )
+from app.routes.employees import upsert_employee
 
 router = APIRouter()
+
+EMPLOYEE_IMPORT_REQUIRED_COLUMNS = {"full_name", "email", "company"}
 
 
 @router.get("/api/admin/stats")
@@ -98,6 +106,89 @@ async def export_recruiters(user: User = Depends(require_admin), db: AsyncSessio
     return Response(content=buf.getvalue(), media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=recruiters.csv",
     })
+
+
+@router.post("/api/admin/employees/import")
+async def import_employees(
+    file: UploadFile = File(...),
+    consented: bool = Form(...),
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Same limits/parsing/per-row-error-report/upsert semantics as
+    recruiters.import_recruiters. `consented` is an explicit admin-set flag
+    ("these contacts registered/consented") — it controls the resulting
+    opt_in_status, but this path never sends an invitation email regardless
+    of its value: consented=True rows are immediately referral-eligible,
+    consented=False rows stay dormant (pending) until someone else re-adds
+    them through the community flow, which does email.
+    """
+    content = await file.read()
+    if len(content) > MAX_IMPORT_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="הקובץ גדול מדי (מקסימום 2MB).")
+
+    try:
+        workbook = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)
+        sheet = workbook.active
+        rows = sheet.iter_rows(values_only=True)
+        header = next(rows)
+    except StopIteration:
+        raise HTTPException(status_code=422, detail="הקובץ ריק.")
+    except Exception:
+        raise HTTPException(status_code=422, detail="לא ניתן לקרוא את הקובץ. יש להעלות קובץ Excel (.xlsx) תקין.")
+
+    header_map = {
+        str(name or "").strip().lower(): idx
+        for idx, name in enumerate(header or [])
+        if str(name or "").strip()
+    }
+    missing_columns = EMPLOYEE_IMPORT_REQUIRED_COLUMNS - header_map.keys()
+    if missing_columns:
+        raise HTTPException(
+            status_code=422,
+            detail=f"עמודות חסרות בקובץ: {', '.join(sorted(missing_columns))}",
+        )
+
+    data_rows = [row for row in rows if row is not None and any(cell is not None for cell in row)]
+    if len(data_rows) > MAX_IMPORT_ROWS:
+        raise HTTPException(status_code=422, detail=f"יותר מדי שורות בקובץ (מקסימום {MAX_IMPORT_ROWS}).")
+
+    opt_in_status = OptInStatus.ACCEPTED if consented else OptInStatus.PENDING
+    report: dict = {"created": 0, "enriched": 0, "skipped_duplicates": 0, "errors": []}
+
+    for row_num, row in enumerate(data_rows, start=2):  # row 1 is the header
+        try:
+            raw_threshold = import_row_cell(row, header_map, "min_match_threshold")
+            try:
+                threshold = int(float(raw_threshold)) if raw_threshold else 75
+            except ValueError:
+                threshold = 75
+
+            employee, created, updated = await upsert_employee(
+                db,
+                full_name=import_row_cell(row, header_map, "full_name") or "",
+                company=import_row_cell(row, header_map, "company") or "",
+                email=import_row_cell(row, header_map, "email") or "",
+                domains=import_row_cell(row, header_map, "domains") or "",
+                min_match_threshold=threshold,
+                added_by_user_id=user.id,
+                source=EmployeeSource.IMPORT,
+            )
+            if created:
+                employee.opt_in_status = opt_in_status
+            await db.commit()
+        except HTTPException as exc:
+            report["errors"].append({"row": row_num, "reason": exc.detail})
+            continue
+
+        if created:
+            report["created"] += 1
+        elif updated:
+            report["enriched"] += 1
+        else:
+            report["skipped_duplicates"] += 1
+
+    return report
 
 
 _ADMIN_PAGE_HTML = f"""<!DOCTYPE html>

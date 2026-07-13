@@ -19,13 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import points_config
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_admin
+from app.core.import_limits import MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS, import_row_cell
 from app.core.models import ActionType, Recruiter, User
 from app.services import points_service
 
 router = APIRouter()
 
-MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024
-MAX_IMPORT_ROWS = 2000
 IMPORT_REQUIRED_COLUMNS = {"full_name", "email", "company"}
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -240,14 +239,6 @@ async def search_recruiters(
     return {"results": [_serialize_public(r) for r in result.scalars().all()]}
 
 
-def _import_row_cell(row: tuple, header_map: dict[str, int], key: str) -> str | None:
-    idx = header_map.get(key)
-    if idx is None or idx >= len(row):
-        return None
-    value = row[idx]
-    return str(value).strip() if value is not None else None
-
-
 @router.post("/api/admin/recruiters/import")
 async def import_recruiters(
     file: UploadFile = File(...),
@@ -290,10 +281,10 @@ async def import_recruiters(
         try:
             _, created, updated = await upsert_recruiter(
                 db,
-                full_name=_import_row_cell(row, header_map, "full_name") or "",
-                email=_import_row_cell(row, header_map, "email") or "",
-                company=_import_row_cell(row, header_map, "company") or "",
-                phone=_import_row_cell(row, header_map, "phone"),
+                full_name=import_row_cell(row, header_map, "full_name") or "",
+                email=import_row_cell(row, header_map, "email") or "",
+                company=import_row_cell(row, header_map, "company") or "",
+                phone=import_row_cell(row, header_map, "phone"),
                 added_by_user_id=user.id,
                 is_verified=True,
             )

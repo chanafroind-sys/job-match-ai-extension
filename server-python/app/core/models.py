@@ -38,8 +38,7 @@ class EmployeeSource(str, enum.Enum):
     SHEET = "sheet"
     COMMUNITY = "community"
     SELF = "self"
-    # IMPORT is added in Task 6b (admin bulk import) — no migration needed,
-    # these enums are plain VARCHAR (native_enum=False).
+    IMPORT = "import"
 
 
 class OptInStatus(str, enum.Enum):
