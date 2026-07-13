@@ -69,7 +69,7 @@ class Recruiter(Base):
     company: Mapped[str] = mapped_column(String(255), nullable=False)
     company_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
     added_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), nullable=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=_utcnow
@@ -124,7 +124,7 @@ class Employee(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     domains: Mapped[list | None] = mapped_column(JSON, nullable=True)
     min_match_threshold: Mapped[int] = mapped_column(Integer, default=75, server_default=text("75"), nullable=False)
-    is_opted_in: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), nullable=False)
+    is_opted_in: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
     source_row_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
