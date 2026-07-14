@@ -24,7 +24,20 @@ _engine_kwargs: dict = {}
 if DATABASE_URL.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
 
-engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
+
+# Neon (and other serverless Postgres) suspends idle connections and closes
+# them server-side, which asyncpg doesn't detect until the next checkout —
+# surfacing as InterfaceError: connection is closed on a pooled connection
+# that's actually dead. pool_pre_ping validates a connection with a cheap
+# round-trip before handing it out (transparently discarding and replacing it
+# if the ping fails); pool_recycle proactively retires connections older than
+# 5 minutes so they're refreshed well before Neon's own idle suspend kicks in.
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    **_engine_kwargs,
+)
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
