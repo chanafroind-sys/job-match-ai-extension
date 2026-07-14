@@ -1,0 +1,19 @@
+Python ETL Data Pipeline Specialist
+
+We need a Python ETL Data Pipeline Specialist to own our third-party data
+ingestion pipelines.
+
+Responsibilities:
+- Write Python scripts to extract data from third-party APIs on a schedule
+- Transform and load extracted data into our reporting database
+- Monitor Python ETL jobs for failures and data quality issues
+- Optimize Python scripts for large third-party API data volumes
+- Document Python data pipelines for the analytics team
+
+Requirements:
+- Strong Python scripting experience, especially for data extraction/ETL
+- Hands-on experience calling and parsing third-party APIs in Python
+- Experience loading data into a reporting database
+- Python, Python, Python — this role is 90% writing and maintaining Python
+  ETL scripts, not general backend/API development
+- No requirement for web frameworks, REST API design, or service architecture

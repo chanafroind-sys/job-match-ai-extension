@@ -1,0 +1,20 @@
+Data Visualization Engineer
+
+We're hiring a Data Visualization Engineer to build interactive analytics
+dashboards for our internal product teams.
+
+Responsibilities:
+- Design and build interactive dashboards and charts using D3.js
+- Build lightweight backend endpoints (Flask or similar) to serve aggregated
+  usage/analytics data to the dashboards
+- Work closely with product managers to translate data needs into clear,
+  interactive visualizations
+- Optimize dashboard rendering performance for large datasets
+
+Requirements:
+- Strong hands-on experience with D3.js and building custom interactive
+  visualizations
+- Experience building simple backend APIs (Flask, Express, or similar) to
+  serve visualization data
+- Eye for data storytelling and dashboard UX
+- Familiarity with analytics/usage data pipelines is a plus

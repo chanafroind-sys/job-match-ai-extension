@@ -1,0 +1,19 @@
+Backend Engineer — Payments Platform
+
+We're looking for a Backend Engineer to join our payments infrastructure team.
+You'll design and build REST APIs and microservices that process millions of
+transactions per day.
+
+Responsibilities:
+- Design, build, and maintain microservices using Python (FastAPI or similar)
+- Own PostgreSQL schema design and query performance for high-throughput services
+- Deploy and operate services in Docker containers on AWS
+- Collaborate with a small team of engineers on system architecture
+- Improve reliability and latency of critical payment-processing endpoints
+
+Requirements:
+- 4+ years of backend development experience
+- Strong Python skills, experience with FastAPI, Django, or Flask
+- Solid understanding of relational databases (PostgreSQL or MySQL)
+- Experience with Docker and cloud deployment (AWS preferred)
+- Comfortable working in a small, fast-moving engineering team

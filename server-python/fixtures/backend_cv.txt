@@ -1,0 +1,36 @@
+John Doe
+Backend Developer
+
+CONTACT
+john.doe@example.com | github.com/johndoe | linkedin.com/in/johndoe
+
+PROFILE
+Backend developer with 5 years of experience building scalable REST APIs and
+microservices. Strong background in Python, FastAPI, PostgreSQL, and Docker.
+Experienced in designing distributed systems, optimizing database performance,
+and leading small engineering teams.
+
+EXPERIENCE
+Senior Backend Developer — Acme Tech (2021–Present)
+$ Designed and built a microservices architecture serving 2M+ daily requests using FastAPI and PostgreSQL
+$ Reduced API latency by 40% through query optimization and Redis caching
+$ Led a team of 3 engineers on the payments infrastructure rewrite
+$ Implemented CI/CD pipelines with Docker and GitHub Actions
+
+Backend Developer — Widget Corp (2018–2021)
+$ Built internal admin tools and reporting APIs using Django and MySQL
+$ Migrated legacy monolith to containerized services on AWS ECS
+$ Wrote integration tests achieving 90% coverage on core billing modules
+
+Junior Developer — StartUp Inc (2017–2018)
+$ Built a small internal data-visualization dashboard using D3.js and a Flask backend, aggregating usage analytics for the product team
+$ Wrote Python ETL scripts to pull data from third-party APIs into a reporting database
+
+EDUCATION
+B.Sc. Computer Science, State University (2013–2017), GPA 3.8/4.0
+
+SKILLS
+Python, FastAPI, Django, PostgreSQL, MySQL, Redis, Docker, AWS, Git, REST APIs, D3.js, Flask
+
+LANGUAGES
+English (native), Spanish (conversational)

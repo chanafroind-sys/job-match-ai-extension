@@ -1957,7 +1957,7 @@ async function runStreamingAnalysis(answers) {
 
   const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'userConstraints']);
   const licenseKey = stored.licenseKey || state.licenseKey || '';
-  const BACKEND = 'https://job-match-ai.onrender.com';
+  const BACKEND = 'https://job-match-ai-extension.onrender.com';
 
   const streamQuestions = document.getElementById('streamQuestions');
   const streamBody = document.getElementById('streamBody');

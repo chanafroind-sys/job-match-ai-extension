@@ -1,0 +1,18 @@
+Platform Engineer — Core Services
+
+Join our platform team to build and operate the server-side services that
+power our product.
+
+Responsibilities:
+- Build and maintain server-side services that handle high request volumes
+- Own the design of our relational data store schemas and query efficiency
+- Package and deploy services using container orchestration tooling
+- Partner with a small, senior engineering group on system design decisions
+- Drive down latency and improve reliability of core service endpoints
+
+Requirements:
+- 4+ years building server-side services in a modern scripting language
+- Strong grasp of relational data stores and how to keep them performant at scale
+- Experience packaging and running workloads in containers
+- Comfortable owning architecture decisions within a small engineering pod
+- Track record of improving the reliability and speed of production services
