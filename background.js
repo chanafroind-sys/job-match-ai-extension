@@ -254,6 +254,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       jobTitle: req.jobTitle || '',
       company: req.company || '',
       model: req.model || 'sonnet',
+      strategyChoices: req.strategyChoices || [],
     }, req.licenseKey)
       .then(data => sendResponse({ cvText: data.cvText, appId: data.appId, sections: data.sections || [], coverLetterText: data.coverLetterText || '' }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));

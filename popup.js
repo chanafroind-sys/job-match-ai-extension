@@ -1730,18 +1730,130 @@ function collectAnswers() {
   });
 }
 
-// ── Deep analysis panel — rendered in the PAGE (left side) via content script ──
-// popup.js fetches the SSE stream and relays events to content.js via messaging.
+// ── Single-flow fit-strategy panel ──────────────────────────────────────────
+// popup.js fetches the SSE stream from /api/stream-deep-analysis, renders the
+// live prose + (if niche_fit) structural questions inline in the cv-options
+// screen, and mirrors prose tokens to the page-side panel via content script
+// for visual continuity. The moment a strategy is known (or on error/timeout)
+// CV generation auto-triggers — no confirmation click, ever.
+
+function _renderFitStrategyBlock() {
+  const screen = document.getElementById('screen-cv-options');
+  screen.querySelectorAll('.jma-fit-block').forEach(el => el.remove());
+
+  const block = document.createElement('div');
+  block.className = 'jma-fit-block cv-extra-opts';
+  block.style.cssText = 'margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:10px;background:rgba(99,102,241,.05);font-size:12.5px;line-height:1.7;';
+  block.innerHTML = `
+    <div class="jma-fit-header" style="display:flex;align-items:center;gap:6px;font-weight:700;margin-bottom:6px">
+      <span>🔍 ניתוח התאמה</span>
+    </div>
+    <div class="jma-fit-prose" id="jmaFitProse" dir="auto" style="white-space:pre-wrap;color:var(--text)"></div>
+    <div class="jma-fit-questions" id="jmaFitQuestions" style="margin-top:10px;display:none"></div>
+    <div class="jma-fit-status" id="jmaFitStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);display:none"></div>
+  `;
+
+  const btnStart = screen.querySelector('#btnStartCvGen');
+  screen.insertBefore(block, btnStart);
+  btnStart.style.display = 'none'; // bypassed in this flow — generation auto-triggers
+
+  const proseEl  = block.querySelector('#jmaFitProse');
+  const qEl      = block.querySelector('#jmaFitQuestions');
+  const statusEl = block.querySelector('#jmaFitStatus');
+
+  return {
+    appendProse(tok) { proseEl.textContent += tok; },
+    showGeneratingStatus() {
+      statusEl.style.display = '';
+      statusEl.textContent = '⏳ מכין קורות חיים מותאמים…';
+      qEl.querySelectorAll('.jma-q-chip, .jma-q-confirm').forEach(c => c.disabled = true);
+    },
+    renderQuestions(questions, onReady) {
+      qEl.style.display = '';
+      qEl.innerHTML = '';
+      const selections = {};
+      let interacted = false;
+
+      const maybeTrigger = () => {
+        if (!interacted) return;
+        if (!questions.every(q => selections[q.id])) return;
+        const choices = questions.map(q => ({
+          question: q.question,
+          chosen: (q.options || []).find(o => o.id === selections[q.id])?.label || selections[q.id],
+        }));
+        onReady(choices);
+      };
+
+      questions.forEach(q => {
+        selections[q.id] = q.recommended; // pre-select the recommendation
+
+        const qWrap = document.createElement('div');
+        qWrap.className = 'jma-q-wrap';
+        qWrap.style.cssText = 'margin-bottom:10px';
+        qWrap.innerHTML = `
+          <div class="jma-q-text" style="font-weight:600;margin-bottom:2px">${escHtml(q.question || '')}</div>
+          ${q.context ? `<div class="jma-q-context" style="font-size:11px;color:var(--text-dim);margin-bottom:6px">${escHtml(q.context)}</div>` : ''}
+          <div class="jma-q-opts" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        `;
+        const optsWrap = qWrap.querySelector('.jma-q-opts');
+        (q.options || []).forEach(opt => {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'jma-q-chip';
+          chip.dataset.oid = opt.id;
+          const isRecommended = opt.id === q.recommended;
+          chip.style.cssText = `padding:5px 10px;border-radius:14px;cursor:pointer;font-size:11.5px;` +
+            `border:1px solid ${isRecommended ? 'var(--primary,#6366f1)' : 'var(--border)'};` +
+            `background:${isRecommended ? 'rgba(99,102,241,.12)' : 'transparent'};`;
+          chip.textContent = opt.label + (isRecommended ? ' · מומלץ' : '');
+          chip.addEventListener('click', () => {
+            interacted = true;
+            selections[q.id] = opt.id;
+            optsWrap.querySelectorAll('.jma-q-chip').forEach(c => {
+              const active = c.dataset.oid === selections[q.id];
+              c.style.borderColor = active ? 'var(--primary,#6366f1)' : 'var(--border)';
+              c.style.background  = active ? 'rgba(99,102,241,.12)' : 'transparent';
+            });
+            maybeTrigger();
+          });
+          optsWrap.appendChild(chip);
+        });
+        qEl.appendChild(qWrap);
+      });
+
+      const confirmChip = document.createElement('button');
+      confirmChip.type = 'button';
+      confirmChip.className = 'jma-q-confirm';
+      confirmChip.style.cssText = 'margin-top:4px;padding:6px 12px;border-radius:14px;border:1px solid var(--primary,#6366f1);background:rgba(99,102,241,.12);cursor:pointer;font-size:12px;font-weight:600';
+      confirmChip.textContent = 'המשך עם ההמלצות ✓';
+      confirmChip.addEventListener('click', () => { interacted = true; maybeTrigger(); });
+      qEl.appendChild(confirmChip);
+    },
+  };
+}
+
 async function startDeepAnalysisOverlay(answers) {
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
+  state._cvGenTriggered = false; // guard: generation fires exactly once per flow
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+  const sendToPage = evt => { if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'analysisEvent', evt }).catch(() => {}); };
 
-  const send = evt => chrome.tabs.sendMessage(tab.id, { action: 'analysisEvent', evt }).catch(() => {});
+  // Tell content script to create the panel on the left side of the page (bonus visual mirror)
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'openAnalysisPanel' }).catch(() => {});
 
-  // Tell content script to create the panel on the left side of the page
-  chrome.tabs.sendMessage(tab.id, { action: 'openAnalysisPanel' }).catch(() => {});
+  const ui = _renderFitStrategyBlock();
+
+  const triggerGeneration = (strategyChoices) => {
+    if (state._cvGenTriggered) return; // double-trigger guard
+    state._cvGenTriggered = true;
+    clearTimeout(failOpenTimer);
+    ui.showGeneratingStatus();
+    startCVGeneration(state.answers, cvOptions.language, cvOptions.format, cvOptions.coverLetter, strategyChoices);
+  };
+
+  // FAIL-OPEN: no ###STRATEGY### within 20s → generate with no questions
+  const failOpenTimer = setTimeout(() => triggerGeneration([]), 20000);
 
   try {
     const stored = await chrome.storage.local.get(['licenseKey', 'cvText', ANSWER_BANK_KEY]);
@@ -1760,6 +1872,7 @@ async function startDeepAnalysisOverlay(answers) {
     const reader  = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
+    let strategy = null;
 
     outer: while (true) {
       const { done, value } = await reader.read();
@@ -1770,13 +1883,30 @@ async function startDeepAnalysisOverlay(answers) {
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
         const raw = line.slice(5).trim();
-        if (raw === '[DONE]') { send({ done: true }); break outer; }
-        try { send(JSON.parse(raw)); } catch { /* skip malformed */ }
+        if (raw === '[DONE]') { sendToPage({ done: true }); break outer; }
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; /* skip malformed */ }
+
+        if (evt.token) {
+          ui.appendProse(evt.token);
+          sendToPage({ token: evt.token }); // mirror into page-side panel
+        }
+        if (evt.strategy) strategy = evt.strategy;
       }
+    }
+
+    // Detect and use the ###STRATEGY### result parsed server-side into evt.strategy
+    state.tailoringStrategy = strategy || { fit_type: 'high_fit', questions: [] };
+
+    if (state.tailoringStrategy.fit_type === 'niche_fit' && state.tailoringStrategy.questions?.length) {
+      ui.renderQuestions(state.tailoringStrategy.questions, (choices) => triggerGeneration(choices));
+    } else {
+      triggerGeneration([]); // high_fit — no structural decisions needed
     }
   } catch (err) {
     console.error('[JMA:deep-analysis]', err);
-    send({ error: true });
+    sendToPage({ error: true });
+    triggerGeneration([]); // fail-open — never block CV generation on analysis
   }
 }
 
@@ -1795,7 +1925,7 @@ document.getElementById('btnContinueToCV').addEventListener('click', async () =>
   }
 
   showCVOptionsScreen();             // show settings (language / format / cover letter)
-  startDeepAnalysisOverlay(answers); // stream analysis in floating overlay — fire-and-forget
+  startDeepAnalysisOverlay(answers); // stream → (questions) → auto-trigger CV generation
 });
 
 async function runStreamingAnalysis(answers) {
@@ -2115,7 +2245,7 @@ document.getElementById('btnCvOptsBack').addEventListener('click', () => {
 
 
 // CV Generation
-async function startCVGeneration(answers, language, format, coverLetter) {
+async function startCVGeneration(answers, language, format, coverLetter, strategyChoices) {
   language = language || state.analysis?.jobLanguage || state.jobLanguage || 'english';
   format = format || 'docx';
   state.cvIsRtl = language === 'hebrew';
@@ -2151,6 +2281,7 @@ async function startCVGeneration(answers, language, format, coverLetter) {
     jobTitle: _bestJobTitle(),
     company: _bestCompany(),
     model: cvOptions.model || 'sonnet',
+    strategyChoices: strategyChoices || [],
   });
 
   clearInterval(_progressInterval);

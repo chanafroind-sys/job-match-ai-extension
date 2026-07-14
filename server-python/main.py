@@ -1148,6 +1148,7 @@ class GenerateCVRequest(BaseModel):
     jobTitle: str = ""
     company: str = ""
     model: str = "sonnet"
+    strategyChoices: list[dict] = []
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -1922,37 +1923,70 @@ async def stream_questions_endpoint(
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-DEEP_ANALYSIS_PROMPT = """\
+STREAM_FIT_STRATEGY_PROMPT = """\
 You are a senior career consultant. The candidate CV is in your system prompt.
 
-You receive: the job description, the candidate's answers to gap questions, and a
-bank of verified answers from PREVIOUS applications. Treat bank facts as reliable
-CV supplements.
+You also receive the candidate's answers to gap questions and a bank of verified \
+answers from PREVIOUS applications. Treat bank facts as reliable CV supplements: judge \
+answer CONTENT only — never style, length, or phrasing — and count a live MVP, deployed \
+product, or production project as significant experience even if not employment.
 
-SCORING METHOD - score ONLY by coverage of the job's actual requirements:
-1. Identify the job's core requirements. For each: is it covered by the CV, the
-   answers, or the answer bank?
-2. Judge answer CONTENT only - NEVER style, length, or phrasing. A short answer
-   stating a fact counts as that fact. FORBIDDEN: describing any answer as vague,
-   unprofessional, or insufficient.
-3. A live MVP, deployed product, or production project counts as significant
-   experience even if not employment.
-4. Do NOT default to a "safe" 60-65. Requirements substantially covered -> 80+.
-   Core must-haves truly absent -> below 40. The score must follow the evidence.
+Analyze how well the candidate's CV fits this job, thinking about overall professional \
+fit — not keyword matching. Write in the same language as the job description (Hebrew \
+if the job/CV are in Hebrew, otherwise English).
 
-STRICT OUTPUT FORMAT - no preamble, no thinking:
-Line 1: [SCORE]<integer 0-100>[/SCORE]
-Then a flowing Hebrew analysis (~130 words):
-- חוזקות: 2-3 נקודות קונקרטיות מול דרישות המשרה
-- פערים אמיתיים בלבד: דרישות ליבה שאינן מכוסות (אם אין - כתוב שאין)
-- המלצה חד-משמעית: להגיש / להגיש עם חיזוק קו"ח / לא להגיש - ונימוק במשפט
+STRICT OUTPUT — no preamble, no headers, no markdown:
+1. First, stream free-flowing prose in two parts:
+   - 2-4 concrete sentences on WHY the CV fits: name actual overlapping skills, \
+     experience, or domains that genuinely match the job.
+   - 2-4 sentences on WHERE tailoring is needed to best present the candidate for \
+     this specific role.
+2. Then, on its own final line, output machine-readable JSON prefixed by the exact \
+   marker below (nothing after it):
+###STRATEGY###{{"fit_type":"high_fit|niche_fit","questions":[...]}}
 
-All text in Hebrew. No markdown. No JSON.
+FIT CLASSIFICATION — this is a conceptual judgment, NOT keyword counting:
+Classify the fit by asking: does this job align with the CANDIDATE'S OVERALL \
+PROFESSIONAL TRAJECTORY, or does it target a NARROW SUBSET of their background?
+
+HIGH_FIT (global fit): the job is a natural next step in the candidate's trajectory — \
+the core professional identity, seniority arc, and primary skill domains of the CV all \
+point toward this role, even if some specific tools differ. Tool-level mismatches \
+(e.g. knows PostgreSQL, job says MySQL) do NOT make a job niche. In this case the \
+streamed prose MUST explicitly reassure the user: their experience is highly \
+compatible, and only minor polishing will be performed — bolding, rephrasing, keyword \
+optimization — to make the CV stand out. questions MUST be [].
+
+NICHE_FIT: the job centers on a narrow slice of the CV (e.g. one project, one skill \
+area, a secondary specialty), such that presenting the CV generically would bury the \
+relevant signal. Only here are structural questions allowed. The prose must explain \
+WHICH part of the background the job targets and WHY a generic presentation would \
+undersell it.
+
+Distrust surface keyword overlap in both directions: high keyword overlap can still be \
+niche (job repeats one skill the CV mentions once), and low overlap can still be \
+high_fit (same discipline, different vocabulary). Judge the professional story, not \
+the words.
+
+QUESTION RULES (only relevant when fit_type is niche_fit):
+- Only ask about STRUCTURAL decisions: (a) shrinking a role/section by more than 50% or \
+  dropping it, (b) reordering out of reverse-chronological order, (c) reframing the \
+  professional identity in the profile, (d) choosing between two competing positioning \
+  angles.
+- NEVER ask about wording, bolding, keywords, or sentence-level edits — decide those \
+  silently yourself.
+- Usually 1 question, hard max 3. Each question has a "recommended" option id.
+- Options must be concrete degrees, not yes/no (e.g. "reduce to minimal detail" / \
+  "medium detail" / "keep full, emphasize relevant parts").
+
+Schema per question:
+{{"id":"q1","question":"...","context":"one sentence: what you noticed",
+ "options":[{{"id":"opt1","label":"..."}},...],"recommended":"opt2"}}
 
 === JOB DESCRIPTION ===
 {job_text}
 
-=== CANDIDATE ANSWERS TO GAP QUESTIONS ===
+=== CANDIDATE ANSWERS TO GAP QUESTIONS (if any) ===
 {answers_text}
 
 === VERIFIED ANSWER BANK FROM PREVIOUS APPLICATIONS ===
@@ -1964,6 +1998,30 @@ class DeepAnalysisRequest(BaseModel):
     jobText:    str  = ""
     answers:    list = []
     answerBank: list = []
+
+
+def _split_strategy_stream(full_text: str) -> tuple[str, dict]:
+    """Split accumulated stream text into (prose, strategy dict).
+
+    Fails open to {"fit_type": "high_fit", "questions": []} on a missing marker or
+    malformed JSON, so CV generation is never blocked on the analysis stream.
+    """
+    marker = "###STRATEGY###"
+    if marker not in full_text:
+        return full_text, {"fit_type": "high_fit", "questions": []}
+
+    prose, _, rest = full_text.partition(marker)
+    try:
+        parsed = json.loads(rest.strip())
+        fit_type = parsed.get("fit_type") if isinstance(parsed, dict) else None
+        if fit_type not in ("high_fit", "niche_fit"):
+            fit_type = "high_fit"
+        questions = parsed.get("questions") if isinstance(parsed, dict) else []
+        if not isinstance(questions, list):
+            questions = []
+        return prose, {"fit_type": fit_type, "questions": questions}
+    except Exception:
+        return prose, {"fit_type": "high_fit", "questions": []}
 
 
 @app.post("/api/stream-deep-analysis")
@@ -1984,38 +2042,39 @@ async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optiona
     ) or "אין מאגר תשובות קודמות"
 
     sys_blocks = _cv_system_blocks(cv_text)
-    prompt     = DEEP_ANALYSIS_PROMPT.format(job_text=job_text, answers_text=answers_text,
+    prompt     = STREAM_FIT_STRATEGY_PROMPT.format(job_text=job_text, answers_text=answers_text,
         answer_bank=answer_bank)
 
     async def generate():
-        import re
-        buf        = ""
-        score_sent = False
+        marker   = "###STRATEGY###"
+        buf      = ""
+        strategy = {"fit_type": "high_fit", "questions": []}
 
-        async with anthropic_client.messages.stream(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            system=sys_blocks,
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            async for token in stream.text_stream:
-                if not score_sent:
+        try:
+            async with anthropic_client.messages.stream(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=900,
+                system=sys_blocks,
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                async for token in stream.text_stream:
                     buf += token
-                    if "[/SCORE]" in buf:
-                        m = re.search(r'\[SCORE\](\d+)\[/SCORE\]', buf)
-                        score = max(0, min(100, int(m.group(1)))) if m else 50
-                        yield f"data: {json.dumps({'score': score})}\n\n"
-                        rest = buf.split("[/SCORE]", 1)[1]
-                        if rest.strip():
-                            yield f"data: {json.dumps({'token': rest})}\n\n"
-                        score_sent = True
-                        buf = ""
-                else:
-                    yield f"data: {json.dumps({'token': token})}\n\n"
+                    if marker in buf:
+                        break
+                    # Only flush text that cannot possibly be part of the marker yet,
+                    # so the marker is never split across two SSE token events.
+                    safe_len = len(buf) - len(marker)
+                    if safe_len > 0:
+                        yield f"data: {json.dumps({'token': buf[:safe_len]})}\n\n"
+                        buf = buf[safe_len:]
 
-        if not score_sent:
-            yield f"data: {json.dumps({'score': 50})}\n\n"
+            prose_tail, strategy = _split_strategy_stream(buf)
+            if prose_tail:
+                yield f"data: {json.dumps({'token': prose_tail})}\n\n"
+        except Exception as e:
+            print(f"[JMA:stream_fit_strategy] {e}")
 
+        yield f"data: {json.dumps({'strategy': strategy})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream",
@@ -2346,13 +2405,26 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
             f"</user_constraints>"
         )
 
+    strategy_block = ""
+    strategy_checklist_line = ""
+    if body.strategyChoices:
+        decision_lines = "\n".join(
+            f"- {c.get('question', '')} → user chose: {c.get('chosen', '')}"
+            for c in body.strategyChoices
+        )
+        strategy_block = (
+            f"\n\nUSER STRATEGY DECISIONS — these override default tailoring behavior, follow exactly:\n"
+            f"{decision_lines}"
+        )
+        strategy_checklist_line = "\n\nVerify the USER STRATEGY DECISIONS were followed exactly."
+
     pass1_prompt = CV_PASS1_PROMPT.format(
         language=language,
         language_rule=language_rule,
         cv_text=body.cvText,
         answers_text=answers_text,
         job_text=body.jobText,
-    ) + url_instruction + constraints_block
+    ) + url_instruction + constraints_block + strategy_block
     cv_draft = await _call_with_cached_prefix(
         pass1_prompt, max_tokens=4000,
         model="claude-haiku-4-5-20251001", check_truncation=True,
@@ -2363,7 +2435,7 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         cv_draft=cv_draft,
         job_text=body.jobText,
         original_cv=body.cvText,
-    ) + url_instruction + constraints_block
+    ) + url_instruction + constraints_block + strategy_checklist_line
     cv_final = await _call_with_cached_prefix(
         pass2_prompt, max_tokens=3800,
         model=_resolve_model(body.model), check_truncation=True,
