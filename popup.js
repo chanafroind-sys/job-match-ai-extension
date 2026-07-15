@@ -1777,10 +1777,16 @@ function _renderFitStrategyBlock() {
       const maybeTrigger = () => {
         if (!interacted) return;
         if (!questions.every(q => selections[q.id])) return;
-        const choices = questions.map(q => ({
-          question: q.question,
-          chosen: (q.options || []).find(o => o.id === selections[q.id])?.label || selections[q.id],
-        }));
+        const choices = questions.map(q => {
+          const opt = (q.options || []).find(o => o.id === selections[q.id]);
+          return {
+            question: q.question,
+            chosen: opt?.label || selections[q.id],
+            // impact drives backend model routing: all-keep/light choices → cheap Haiku
+            // polish. Missing tag is treated as structural (conservative) server-side.
+            impact: opt?.impact || 'structural',
+          };
+        });
         onReady(choices);
       };
 
@@ -1834,7 +1840,8 @@ function _renderFitStrategyBlock() {
 
 async function startDeepAnalysisOverlay(answers) {
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
-  state._cvGenTriggered = false; // guard: generation fires exactly once per flow
+  state._cvGenTriggered = false;  // guard: generation fires exactly once per flow
+  state.tailoringStrategy = null; // reset so a stale fit from a previous job can't leak into routing
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const sendToPage = evt => { if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'analysisEvent', evt }).catch(() => {}); };
@@ -2282,6 +2289,7 @@ async function startCVGeneration(answers, language, format, coverLetter, strateg
     company: _bestCompany(),
     model: cvOptions.model || 'sonnet',
     strategyChoices: strategyChoices || [],
+    fitType: state.tailoringStrategy?.fit_type || '',
   });
 
   clearInterval(_progressInterval);

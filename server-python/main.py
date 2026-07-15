@@ -1149,6 +1149,7 @@ class GenerateCVRequest(BaseModel):
     company: str = ""
     model: str = "sonnet"
     strategyChoices: list[dict] = []
+    fitType: str = ""  # "high_fit" | "niche_fit" | "" (unknown) — from the fit-analysis stream
 
 class RankJobsRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -1952,16 +1953,36 @@ PROFESSIONAL TRAJECTORY, or does it target a NARROW SUBSET of their background?
 HIGH_FIT (global fit): the job is a natural next step in the candidate's trajectory — \
 the core professional identity, seniority arc, and primary skill domains of the CV all \
 point toward this role, even if some specific tools differ. Tool-level mismatches \
-(e.g. knows PostgreSQL, job says MySQL) do NOT make a job niche. In this case the \
-streamed prose MUST explicitly reassure the user: their experience is highly \
-compatible, and only minor polishing will be performed — bolding, rephrasing, keyword \
-optimization — to make the CV stand out. questions MUST be [].
+(e.g. knows PostgreSQL, job says MySQL) do NOT make a job niche. high_fit also holds \
+when the CV contains minor off-target material (side projects, early-career detours, \
+secondary skills): if the CV's PRIMARY identity already points at the job's core \
+domain, condensing that minor material is routine tailoring — done silently, no \
+questions. In this case the streamed prose MUST explicitly reassure the user: their \
+experience is highly compatible, and only minor polishing will be performed — bolding, \
+rephrasing, keyword optimization — to make the CV stand out. questions MUST be [].
 
-NICHE_FIT: the job centers on a narrow slice of the CV (e.g. one project, one skill \
-area, a secondary specialty), such that presenting the CV generically would bury the \
-relevant signal. Only here are structural questions allowed. The prose must explain \
-WHICH part of the background the job targets and WHY a generic presentation would \
-undersell it.
+NICHE_FIT: the job emphasizes a SUBSET of the candidate's background — and this is \
+common, not an edge case. The typical pattern is a MULTI-DOMAIN (hybrid) profile: the \
+candidate's background spans two or more domains — ANY combination, in any field — and \
+the job targets only one of them. Detect this dynamically from the actual CV and job in \
+front of you (illustrative examples only: AI + Backend applying to a strictly Backend \
+role; BI + Backend applying to a strictly BI role; Embedded + Fullstack applying to an \
+Embedded role — the same logic applies to every domain pairing, technical or not). The \
+right response is a SHIFT OF EMPHASIS, not deletion: condense the off-target domain \
+(its skills stay — they are valuable differentiators), expand and lead with the \
+on-target domain, and rebalance bullets toward the job's focus. Also niche: jobs \
+centered on one project, one skill area, or a secondary specialty. In all these cases, \
+presenting the CV with its current balance would bury the relevant signal — the prose \
+must explain WHICH part of the background the job targets and WHY the current emphasis \
+would undersell it.
+
+THE DECIDING TEST — primary vs secondary: a profile counts as multi-domain only when \
+each domain carries SUBSTANTIAL weight in the CV (a dedicated role, a major section, or \
+a large share of the bullets). Scattered side projects or early-career detours do NOT \
+make a profile hybrid. Ask: is the job's core domain the CV's CURRENT PRIMARY identity? \
+If yes → high_fit (trimming minor off-target content silently is normal tailoring). If \
+the job targets a SECONDARY or co-equal domain of the CV → niche_fit (the emphasis \
+balance must genuinely shift, which is a structural decision).
 
 Distrust surface keyword overlap in both directions: high keyword overlap can still be \
 niche (job repeats one skill the CV mentions once), and low overlap can still be \
@@ -1972,16 +1993,26 @@ QUESTION RULES (only relevant when fit_type is niche_fit):
 - Only ask about STRUCTURAL decisions: (a) shrinking a role/section by more than 50% or \
   dropping it, (b) reordering out of reverse-chronological order, (c) reframing the \
   professional identity in the profile, (d) choosing between two competing positioning \
-  angles.
+  angles, (e) how far to shift emphasis between the candidate's domains.
 - NEVER ask about wording, bolding, keywords, or sentence-level edits — decide those \
   silently yourself.
 - Usually 1 question, hard max 3. Each question has a "recommended" option id.
 - Options must be concrete degrees, not yes/no (e.g. "reduce to minimal detail" / \
   "medium detail" / "keep full, emphasize relevant parts").
+- NEVER offer a "leave everything unchanged" option. The user is running this tool to \
+adapt their CV — every option must improve the tailoring. Options range from light \
+polish to deep restructuring.
+- Each option carries an "impact" field describing how much it would change the CV:
+  "light" = minor phrasing, keyword optimization, bolding, or bullet order WITHIN a \
+role only — every section keeps its current size and prominence;
+  "structural" = ANY shift of emphasis between domains, roles, or sections: expanding \
+or condensing a section, reframing the profile identity, reordering sections, or \
+dropping content. When in doubt between light and structural, choose structural.
 
 Schema per question:
 {{"id":"q1","question":"...","context":"one sentence: what you noticed",
- "options":[{{"id":"opt1","label":"..."}},...],"recommended":"opt2"}}
+ "options":[{{"id":"opt1","label":"...","impact":"light|structural"}},...],
+ "recommended":"opt2"}}
 
 === JOB DESCRIPTION ===
 {job_text}
@@ -2375,6 +2406,46 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     license_key = x_license_key or body.licenseKey or ""
     await require_license(license_key)
 
+    # ── Cover letter (optional) — depends only on body.cvText/body.jobText, so it is
+    # kicked off FIRST and awaited at the very end, running fully in parallel with the
+    # entire CV pipeline. Never raises (returns "" on any failure). ────────────────────────
+    async def _generate_cover_letter() -> str:
+        try:
+            cl_language = "Hebrew" if body.jobLanguage == "hebrew" else "English"
+            cl_prompt = COVER_LETTER_PROMPT.format(
+                language=cl_language,
+                cv_text=body.cvText[:2000],
+                job_text=body.jobText[:1500],
+            )
+            text = (await call_claude(cl_prompt, max_tokens=600)).strip()
+            print(f"[JMA:cover_letter] generated {len(text)} chars")
+            return text
+        except Exception as e:
+            print(f"[JMA:cover_letter] failed — {type(e).__name__}: {e}")
+            return ""
+
+    cover_letter_task = asyncio.create_task(_generate_cover_letter()) if body.generateCoverLetter else None
+
+    # ── Fit-based routing ────────────────────────────────────────────────────────────────
+    # Light polish (Haiku) when either:
+    #   (a) confirmed high_fit with no structural decisions — the classifier already said
+    #       only minor polish is needed; or
+    #   (b) niche_fit where every option the user chose has "light" impact — the user
+    #       explicitly opted out of deep changes, so this is practically high_fit.
+    # Any structural choice, unknown fit (fail-open, old clients), or missing impact tag
+    # (conservative default) keeps the full-quality model. A stray legacy "keep" tag is
+    # tolerated as light (it means even less change than light).
+    choices_opt_out = bool(body.strategyChoices) and all(
+        (c.get("impact") or "structural") in ("keep", "light") for c in body.strategyChoices
+    )
+    light_polish = (
+        (body.fitType == "high_fit" and not body.strategyChoices)
+        or (body.fitType == "niche_fit" and choices_opt_out)
+    )
+    pass2_model = "claude-haiku-4-5-20251001" if light_polish else _resolve_model(body.model)
+    print(f"[JMA:generate_cv] fitType={body.fitType!r} strategy_choices={len(body.strategyChoices)} "
+          f"opt_out={choices_opt_out} route={'light-polish/haiku' if light_polish else f'full/{pass2_model}'}")
+
     is_hebrew = body.jobLanguage == "hebrew"
     language = "Hebrew" if is_hebrew else "English"
     language_rule = _CV_LANG_RULE_HE if is_hebrew else _CV_LANG_RULE_EN
@@ -2418,13 +2489,30 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         )
         strategy_checklist_line = "\n\nVerify the USER STRATEGY DECISIONS were followed exactly."
 
+    light_note = ""
+    light_check_line = ""
+    if light_polish:
+        light_note = (
+            "\n\nLIGHT-POLISH MODE — this job is a strong global fit for the candidate "
+            "(or the candidate explicitly chose to keep the CV's current structure). "
+            "Preserve the original CV's structure and content wholesale: same sections, "
+            "same roles, same bullets. Perform ONLY minor polish — reorder bullets within "
+            "a role for relevance, bold role-critical terms, sharpen phrasing, optimize "
+            "keywords for this job. Do NOT drop content, condense or merge sections, or "
+            "reframe the profile identity."
+        )
+        light_check_line = (
+            "\n\nThis is a LIGHT-POLISH run: verify the CV's structure and content match "
+            "the original — only phrasing, bolding, bullet order, and keyword emphasis may differ."
+        )
+
     pass1_prompt = CV_PASS1_PROMPT.format(
         language=language,
         language_rule=language_rule,
         cv_text=body.cvText,
         answers_text=answers_text,
         job_text=body.jobText,
-    ) + url_instruction + constraints_block + strategy_block
+    ) + url_instruction + constraints_block + strategy_block + light_note
     cv_draft = await _call_with_cached_prefix(
         pass1_prompt, max_tokens=4000,
         model="claude-haiku-4-5-20251001", check_truncation=True,
@@ -2435,14 +2523,19 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         cv_draft=cv_draft,
         job_text=body.jobText,
         original_cv=body.cvText,
-    ) + url_instruction + constraints_block + strategy_checklist_line
+    ) + url_instruction + constraints_block + strategy_checklist_line + light_check_line
     cv_final = await _call_with_cached_prefix(
         pass2_prompt, max_tokens=3800,
-        model=_resolve_model(body.model), check_truncation=True,
+        model=pass2_model, check_truncation=True,
     )
 
+    # ── Correction passes share ONE retry budget: validation gets first claim; the page-fit
+    # guard only spends the budget if validation didn't. Keeps worst case at 3 LLM calls. ──
+    retry_budget = 1
+
     validation_issues = _validate_cv_output(cv_final, body.cvText)
-    if validation_issues:
+    if validation_issues and retry_budget > 0:
+        retry_budget -= 1
         print(f"[JMA:generate_cv] VALIDATION ISSUES: {validation_issues} — retrying Pass2 once")
         # pass2_prompt itself is unchanged (identical system block ⇒ cache hit) — only the
         # short delta note travels as the (uncached) user turn.
@@ -2454,7 +2547,7 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         try:
             cv_final_retry = await _call_with_cached_prefix(
                 pass2_prompt, max_tokens=3800,
-                model=_resolve_model(body.model), check_truncation=True, extra_note=retry_note,
+                model=pass2_model, check_truncation=True, extra_note=retry_note,
             )
             if not _validate_cv_output(cv_final_retry, body.cvText):
                 cv_final = cv_final_retry
@@ -2468,7 +2561,8 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
     # tighten wording (not cut content) by the specific measured overflow amount. ──────────
     fit = estimate_page_fit(cv_final, is_hebrew)
     print(f"[JMA:generate_cv] page-fit {fit}")
-    if fit["overflow"]:
+    if fit["overflow"] and retry_budget > 0:
+        retry_budget -= 1
         print(f"[JMA:generate_cv] PAGE-FIT OVERFLOW ({fit['over_ratio']*100:.0f}%) — retrying Pass2 once")
         overflow_note = (
             f"IMPORTANT: the current draft is about {fit['over_ratio']*100:.0f}% over the "
@@ -2480,7 +2574,7 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
         try:
             cv_final_tight = await _call_with_cached_prefix(
                 pass2_prompt, max_tokens=3800,
-                model=_resolve_model(body.model), check_truncation=True, extra_note=overflow_note,
+                model=pass2_model, check_truncation=True, extra_note=overflow_note,
             )
             still_overflowing = estimate_page_fit(cv_final_tight, is_hebrew)["overflow"]
             if not still_overflowing and not _validate_cv_output(cv_final_tight, body.cvText):
@@ -2490,26 +2584,8 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
                 print("[JMA:generate_cv] page-fit retry still overflowing/invalid — using previous output")
         except Exception as e:
             print(f"[JMA:generate_cv] page-fit retry failed: {e} — using previous output")
-
-    # ── Cover letter (optional) — depends only on body.cvText/body.jobText, not on cv_final,
-    # so it's kicked off now and awaited at the very end, running concurrently with the
-    # (local, non-network) tracking injection and diff split below. ───────────────────────
-    async def _generate_cover_letter() -> str:
-        try:
-            cl_language = "Hebrew" if body.jobLanguage == "hebrew" else "English"
-            cl_prompt = COVER_LETTER_PROMPT.format(
-                language=cl_language,
-                cv_text=body.cvText[:2000],
-                job_text=body.jobText[:1500],
-            )
-            text = (await call_claude(cl_prompt, max_tokens=600)).strip()
-            print(f"[JMA:cover_letter] generated {len(text)} chars")
-            return text
-        except Exception as e:
-            print(f"[JMA:cover_letter] failed — {type(e).__name__}: {e}")
-            return ""
-
-    cover_letter_task = asyncio.create_task(_generate_cover_letter()) if body.generateCoverLetter else None
+    elif fit["overflow"]:
+        print(f"[JMA:generate_cv] PAGE-FIT OVERFLOW ({fit['over_ratio']*100:.0f}%) — retry budget spent, keeping output")
 
     # Inject tracking links only when original CV had GitHub/LinkedIn URLs and tracking is enabled
     app_id = str(uuid.uuid4())[:8]

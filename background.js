@@ -113,7 +113,7 @@ function friendlyError(msg) {
   return 'משהו השתבש. נסי שוב בעוד רגע.';
 }
 
-async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 12000) {
+async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 12000, timeoutMs = 90000) {
   // Render free-tier servers return 502 immediately when sleeping and take ~60s to wake.
   // We use a longer delay (25 s) specifically for sleeping-server responses so that
   // across 5 retries (5 × 25 = 125 s) the server has enough time to come online.
@@ -124,7 +124,7 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 1200
     console.log(`[JMA:fetch] ${endpoint} attempt ${attempt}/${maxAttempts}`);
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 90000);
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
       res = await fetch(`${BACKEND_URL}${endpoint}`, { ...options, signal: controller.signal });
       clearTimeout(timeout);
       text = await res.text();
@@ -169,7 +169,7 @@ async function backendPost(endpoint, body, licenseKey, opts = {}) {
       'x-license-key': licenseKey || '',
     },
     body: JSON.stringify(body),
-  }, opts.maxAttempts || 6, opts.delayMs || 12000);
+  }, opts.maxAttempts || 6, opts.delayMs || 12000, opts.timeoutMs || 90000);
 }
 
 async function backendGet(endpoint, licenseKey, opts = {}) {
@@ -255,7 +255,14 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       company: req.company || '',
       model: req.model || 'sonnet',
       strategyChoices: req.strategyChoices || [],
-    }, req.licenseKey)
+      fitType: req.fitType || '',
+    }, req.licenseKey, {
+      // The CV pipeline runs 2-4 LLM calls and can legitimately take minutes — the default
+      // 90s abort was killing healthy requests while the server kept working (and billing).
+      // Retrying a multi-minute pipeline is expensive, so cap attempts at 2; the server is
+      // reliably awake by this point (analysis stream + points calls precede generation).
+      timeoutMs: 300000, maxAttempts: 2,
+    })
       .then(data => sendResponse({ cvText: data.cvText, appId: data.appId, sections: data.sections || [], coverLetterText: data.coverLetterText || '' }))
       .catch(err => sendResponse({ error: friendlyError(err.message) }));
     return true;
