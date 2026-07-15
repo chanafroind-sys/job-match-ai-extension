@@ -2987,5 +2987,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
 # חיבור נתיבי V2 לשרת הקיים - מאפשר עבודה במקביל
-from v2.router import v2_router
+# חיבור נתיבי V2 לשרת הקיים - גרסה מתוקנת
+from v2.router import router as v2_router
 app.include_router(v2_router)
