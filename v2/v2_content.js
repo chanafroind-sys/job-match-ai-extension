@@ -356,10 +356,103 @@
         ? `תשובה פעילה (${_v2ActiveAnswer.skill || 'שאלה ' + (d.idx + 1)}): "${_v2ActiveAnswer.text.slice(0, 60)}${_v2ActiveAnswer.text.length > 60 ? '…' : ''}"`
         : 'הקלידי תשובה בפאנל ואז לחצי + על הסעיף המתאים';
     }
+    _v2UpdateActiveHighlights();
   });
 
-  // Heuristic structural mapping of the ORIGINAL CV text into blocks.
-  // (Placeholder for the Task-1 AI semantic map — same block/anchor shape.)
+  // V2 addition (requirement 2): keep every '+' target inside the CV window
+  // visually tied to whichever question card is glowing in the panel — same
+  // purple highlight, plus a small pill naming what a click would insert
+  // there. Re-run on every active-answer change so both sides update in the
+  // same tick; also re-run once after (re)building the blocks so a window
+  // opened/restored while an answer is already active shows the glow right away.
+  function _v2UpdateActiveHighlights() {
+    const paper = document.getElementById('jma-v2-cv-paper');
+    if (!paper) return;
+    const active = !!(_v2ActiveAnswer && _v2ActiveAnswer.text);
+    const labelText = active
+      ? `[+] הוסף "${(_v2ActiveAnswer.skill || _v2ActiveAnswer.text).slice(0, 24)}"`
+      : '';
+    paper.querySelectorAll('.jma-v2-cv-block').forEach(block => {
+      const wrap = block.querySelector('.jma-v2-cv-plus-wrap');
+      if (!wrap) return; // not an insertable block
+      block.classList.toggle('jma-v2-active-target', active);
+      const labelEl = wrap.querySelector('.jma-v2-cv-plus-label');
+      if (labelEl) labelEl.textContent = labelText;
+    });
+  }
+
+  // ═══ 6a. Real AI semantic block mapping (Task 1), with heuristic fallback ═
+  //
+  // Answering the architecture questions directly:
+  //   Q: Does a one-time AI parser register exact role boundaries on upload?
+  //   A: It did not until this endpoint — the ONLY AI touchpoint that already
+  //      existed for the raw uploaded CV was /api/extract-profile (main.py:1497),
+  //      which extracts a skills/years-per-domain PROFILE for local-matcher
+  //      scoring (stored as jma_user_profile). It has no text offsets or role
+  //      labels and isn't shaped for layout — it can't be repurposed for block
+  //      boundaries. The only other CV-splitting logic in the codebase
+  //      (main.py:754 split_experience_units / _is_role_header_line) is a
+  //      deterministic regex heuristic run on the ALREADY-tailored output
+  //      during generate_cv, for diff-highlighting — not on the raw upload.
+  //   Q: Where would AI mapping data live and how do we use it for blocks?
+  //   A: /api/v2/semantic-map (server-python/v2/semantic_map.py) — new, since
+  //      no V1 equivalent exists to replicate. It returns start_line/end_line
+  //      per block instead of trusting the model to retype CV content, so the
+  //      ORIGINAL lines are sliced back out server-side byte-for-byte — this
+  //      mirrors V1's own anti-hallucination diff-matching design (main.py's
+  //      "never an LLM's re-typed approximation" comment at _split_original_lines).
+  //      That's what guarantees native spacing/line-breaks survive untouched.
+  //      Cached client-side per unique CV text (jma_v2_semantic_map_<hash>) so
+  //      it only runs once per CV, not on every panel open.
+  function _v2HashText(text) {
+    let h = 0;
+    for (let i = 0; i < (text || '').length; i++) h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
+    return Math.abs(h).toString(36);
+  }
+
+  async function _v2FetchSemanticMap(cvText) {
+    const stored = await chrome.storage.local.get(['licenseKey']);
+    const resp = await fetch(`${BACKEND}/api/v2/semantic-map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-License-Key': stored.licenseKey || '' },
+      body: JSON.stringify({ cvText }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const blocks = data.blocks;
+    if (!Array.isArray(blocks) || blocks.length === 0) throw new Error('empty semantic map');
+    return blocks.map((b, i) => ({
+      id: `b${i}`,
+      type: b.type === 'skills' ? 'skills' : (b.type === 'role' ? 'role' : 'text'),
+      label: (b.label || '').slice(0, 60),
+      insertable: b.type === 'skills' || b.type === 'role',
+      text: b.text || '',
+    }));
+  }
+
+  // Tries the cached AI map, then a fresh AI call, then falls back to the
+  // local heuristic below on any failure (offline, invalid license, server
+  // error, malformed response) — the CV window must never fail to render.
+  async function _v2GetCvBlocks(cvText) {
+    const cacheKey = `jma_v2_semantic_map_${_v2HashText(cvText)}`;
+    try {
+      const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
+      if (cached?.blocks?.length) return cached.blocks;
+    } catch {}
+
+    try {
+      const blocks = await _v2FetchSemanticMap(cvText);
+      chrome.storage.local.set({ [cacheKey]: { blocks, ts: Date.now() } }).catch(() => {});
+      return blocks;
+    } catch (err) {
+      console.warn('[JMA:V2] semantic-map AI call failed, using heuristic fallback:', err);
+      return _v2MapCvBlocks(cvText);
+    }
+  }
+
+  // Heuristic structural mapping of the ORIGINAL CV text into blocks — the
+  // fallback path when the AI semantic map is unavailable. Kept intentionally
+  // simple/robust (no network dependency) since it must always succeed.
   const SECTION_HEADINGS = [
     { type: 'skills',     re: /^(technical skills|core skills|skills|כישורים( טכניים)?|מיומנויות|טכנולוגיות)\b/i },
     { type: 'experience', re: /^(work experience|professional experience|experience|employment( history)?|ניסיון( מקצועי| תעסוקתי)?)\b/i },
@@ -454,7 +547,10 @@
     win.innerHTML = `
       <div id="jma-v2-cv-header" dir="rtl">
         <span class="jma-v2-cv-title">📄 קורות החיים המקוריים — לחצי + כדי למקם תשובה</span>
-        <button type="button" id="jma-v2-cv-close" title="סגירה">✕</button>
+        <div class="jma-v2-cv-header-actions">
+          <button type="button" id="jma-v2-cv-min" title="מזעור">_</button>
+          <button type="button" id="jma-v2-cv-close" title="סגירה">✕</button>
+        </div>
       </div>
       <div id="jma-v2-cv-active-hint" dir="rtl">הקלידי תשובה בפאנל ואז לחצי + על הסעיף המתאים</div>
       <div id="jma-v2-cv-paper"></div>`;
@@ -462,6 +558,10 @@
     // chooser fix above.
     document.documentElement.appendChild(win);
     win.querySelector('#jma-v2-cv-close').addEventListener('click', () => _v2CloseCvWindow());
+    win.querySelector('#jma-v2-cv-min').addEventListener('click', (e) => {
+      e.stopPropagation();
+      _v2ToggleMinimizeCvWindow(win);
+    });
     _v2MakeDraggable(win, win.querySelector('#jma-v2-cv-header'));
 
     const paper = win.querySelector('#jma-v2-cv-paper');
@@ -470,8 +570,10 @@
       return;
     }
     paper.dir = detectLanguage(cvText) === 'hebrew' ? 'rtl' : 'ltr';
+    paper.innerHTML = '<div class="jma-v2-cv-empty" dir="rtl">מנתחת את מבנה הקו"ח…</div>';
 
-    const blocks = _v2MapCvBlocks(cvText);
+    const blocks = await _v2GetCvBlocks(cvText);
+    paper.innerHTML = '';
     for (const block of blocks) {
       const el = document.createElement('div');
       el.className = `jma-v2-cv-block jma-v2-cv-${block.type}`;
@@ -489,6 +591,14 @@
       el.appendChild(body);
 
       if (block.insertable) {
+        // Requirement 2: a dynamic pill next to the + button names what a
+        // click would insert here, and both the pill and the surrounding
+        // block glow in sync with the active question card in the panel
+        // (state driven entirely by _v2UpdateActiveHighlights).
+        const wrap = document.createElement('div');
+        wrap.className = 'jma-v2-cv-plus-wrap';
+        const label = document.createElement('span');
+        label.className = 'jma-v2-cv-plus-label';
         const plus = document.createElement('button');
         plus.type = 'button';
         plus.className = 'jma-v2-cv-plus';
@@ -497,7 +607,9 @@
           : `הוספת התשובה הפעילה ל-"${block.label}"`;
         plus.textContent = '+';
         plus.addEventListener('click', () => _v2InjectActiveAnswer(block, el, plus));
-        el.appendChild(plus);
+        wrap.appendChild(label);
+        wrap.appendChild(plus);
+        el.appendChild(wrap);
       }
       paper.appendChild(el);
     }
@@ -510,11 +622,36 @@
         if (host) _v2RenderInjected(host, p);
       }
     } catch {}
+
+    _v2UpdateActiveHighlights(); // reflect an already-active answer immediately
   }
 
   function _v2CloseCvWindow() {
     const win = document.getElementById('jma-v2-cv-window');
     if (win) win.style.display = 'none';
+  }
+
+  // Requirement 1: minimize collapses the window into a small badge anchored
+  // at a screen corner; clicking again restores it to its EXACT prior
+  // position, not just wherever the badge happened to land. The snapshot is
+  // taken at minimize time (not once at open time) so repeated minimize/drag/
+  // minimize cycles always restore to the most recent full-size position.
+  let _v2CvPrevPos = null; // {left, top} of the window just before it was minimized
+
+  function _v2ToggleMinimizeCvWindow(win) {
+    const minBtn = win.querySelector('#jma-v2-cv-min');
+    const minimized = win.classList.toggle('jma-v2-cv-minimized');
+    if (minimized) {
+      const rect = win.getBoundingClientRect();
+      _v2CvPrevPos = { left: win.style.left || `${rect.left}px`, top: win.style.top || `${rect.top}px` };
+      if (minBtn) { minBtn.textContent = '▢'; minBtn.title = 'שחזור לגודל מלא'; }
+    } else {
+      if (_v2CvPrevPos) {
+        win.style.left = _v2CvPrevPos.left;
+        win.style.top  = _v2CvPrevPos.top;
+      }
+      if (minBtn) { minBtn.textContent = '_'; minBtn.title = 'מזעור'; }
+    }
   }
 
   async function _v2InjectActiveAnswer(block, blockEl, plusBtn) {
@@ -571,6 +708,7 @@
     let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
     handle.addEventListener('pointerdown', (e) => {
       if (e.target.closest('button')) return;
+      if (win.classList.contains('jma-v2-cv-minimized')) return; // badge isn't draggable
       dragging = true;
       sx = e.clientX; sy = e.clientY;
       const r = win.getBoundingClientRect();
@@ -684,12 +822,30 @@
         border-radius:13px 13px 0 0;font-size:13px;font-weight:700;
       }
       #jma-v2-cv-header:active{cursor:grabbing}
-      #jma-v2-cv-close{
+      .jma-v2-cv-header-actions{display:flex;gap:6px;flex-shrink:0}
+      #jma-v2-cv-min,#jma-v2-cv-close{
         all:unset;cursor:pointer;width:24px;height:24px;text-align:center;
         line-height:24px;border-radius:7px;background:rgba(255,255,255,.15);
         font-size:12px;
       }
-      #jma-v2-cv-close:hover{background:rgba(255,255,255,.35)}
+      #jma-v2-cv-min:hover,#jma-v2-cv-close:hover{background:rgba(255,255,255,.35)}
+
+      /* ── Minimized state (requirement 1): collapse to a small badge
+         anchored at a screen corner. !important is required here because a
+         prior drag may have left a plain (non-important) inline left/top on
+         the element, which this state must override; restoring removes the
+         class and re-applies the pre-minimize position (see
+         _v2ToggleMinimizeCvWindow), so no !important is needed for that. ── */
+      #jma-v2-cv-window.jma-v2-cv-minimized{
+        top:auto!important;left:16px!important;bottom:16px!important;
+        right:auto!important;width:auto!important;height:auto!important;
+        box-shadow:0 6px 18px rgba(20,15,45,.35);
+      }
+      #jma-v2-cv-window.jma-v2-cv-minimized #jma-v2-cv-header{
+        border-radius:20px;padding:8px 12px;
+      }
+      #jma-v2-cv-window.jma-v2-cv-minimized #jma-v2-cv-active-hint,
+      #jma-v2-cv-window.jma-v2-cv-minimized #jma-v2-cv-paper{display:none}
       #jma-v2-cv-active-hint{
         padding:7px 14px;font-size:12px;color:#4C1D95;
         background:rgba(124,58,237,.1);border-bottom:1px solid #DDD6F3;
@@ -710,16 +866,46 @@
       }
       .jma-v2-cv-role .jma-v2-cv-block-label{border-bottom-style:dashed;font-size:13px}
       .jma-v2-cv-block-body{white-space:pre-wrap;word-break:break-word}
+      .jma-v2-cv-plus-wrap{
+        position:absolute;top:2px;inset-inline-end:-4px;z-index:1;
+        display:flex;align-items:center;gap:6px;direction:rtl;
+      }
       .jma-v2-cv-plus{
-        all:unset;cursor:pointer;position:absolute;top:4px;
-        inset-inline-end:-4px;width:26px;height:26px;text-align:center;
-        line-height:24px;border-radius:50%;font-size:17px;font-weight:800;
+        all:unset;cursor:pointer;flex-shrink:0;width:26px;height:26px;
+        text-align:center;line-height:24px;border-radius:50%;
+        font-size:17px;font-weight:800;
         background:#7C3AED;color:#fff;box-shadow:0 3px 8px rgba(124,58,237,.45);
         transition:transform .12s ease, background .12s ease;
       }
       .jma-v2-cv-plus:hover{transform:scale(1.18);background:#6D28D9}
       .jma-v2-plus-nag{animation:jmaV2Nag .3s ease 2}
       @keyframes jmaV2Nag{50%{transform:translateX(4px);background:#DC2626}}
+
+      /* ── Requirement 2: dynamic label + coordinated glow ──────────────────
+         Mirrors the panel's .jma-v2-active-question pulse (same purple, same
+         rhythm) so the two sides read as one linked state. */
+      .jma-v2-cv-plus-label{
+        display:none;font-size:10.5px;font-weight:700;color:#5B21B6;
+        background:#fff;border:1px solid #C9B8F0;border-radius:8px;
+        padding:2px 8px;white-space:nowrap;max-width:170px;overflow:hidden;
+        text-overflow:ellipsis;box-shadow:0 2px 6px rgba(124,58,237,.2);
+        font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+        animation:jmaV2LabelIn .18s ease;
+      }
+      @keyframes jmaV2LabelIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+      .jma-v2-cv-block.jma-v2-active-target .jma-v2-cv-plus-label{display:inline-block}
+      .jma-v2-cv-block.jma-v2-active-target{
+        outline:2px solid #7C3AED;outline-offset:3px;border-radius:8px;
+        animation:jmaV2TargetPulse 1.6s ease-in-out infinite;
+      }
+      @keyframes jmaV2TargetPulse{
+        0%,100%{box-shadow:0 0 0 0 rgba(124,58,237,.3)}
+        50%{box-shadow:0 0 14px 3px rgba(124,58,237,.4)}
+      }
+      .jma-v2-cv-block.jma-v2-active-target .jma-v2-cv-plus{
+        background:#7C3AED;animation:jmaV2PlusPulse 1.6s ease-in-out infinite;
+      }
+      @keyframes jmaV2PlusPulse{50%{transform:scale(1.14)}}
       .jma-v2-injected{
         position:relative;margin:7px 0 3px;padding:7px 10px;
         background:#F2FBF5;border:1px dashed #34C071;border-radius:8px;

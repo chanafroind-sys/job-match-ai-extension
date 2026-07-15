@@ -337,7 +337,18 @@ function _updateQuestionsScore() {
 // Whenever the user focuses or types an answer, the parent page (v2_content.js)
 // is told what the "active answer" is, so the CV window's + buttons can inject
 // it. Posted to the host page; carries only the user's own typed answer.
+// Also owns the "which question card is active" highlight (single source of
+// truth — every focus/click/input site already calls this function), so the
+// panel-side glow and the CV-side glow always change in the same tick.
+function _setActiveQuestionCard(idx) {
+  document.querySelectorAll('.question-card').forEach(c => c.classList.remove('jma-v2-active-question'));
+  const q = state.questions?.[idx];
+  const ta = document.getElementById(`qs_ta_${q?.id ?? idx}`);
+  ta?.closest('.question-card')?.classList.add('jma-v2-active-question');
+}
+
 function _announceActiveAnswer(idx) {
+  _setActiveQuestionCard(idx);
   const q  = state.questions?.[idx];
   const ta = document.getElementById(`qs_ta_${q?.id ?? idx}`);
   const text = (ta?.value || '').trim();

@@ -226,6 +226,18 @@
     color: #15803D; border-radius: var(--border-radius);
     padding: 12px 14px; font-size: 13px; margin-top: 12px; line-height: 1.6;
   }
+
+  /* V2 addition — coordinated highlight: pulses in sync with the matching
+     '+' targets rendered inside the floating CV window (v2_content.js). */
+  .question-card.jma-v2-active-question {
+    border-color: #7C3AED;
+    box-shadow: 0 0 0 1.5px #7C3AED, 0 0 14px rgba(124,58,237,.35);
+    animation: jmaV2QuestionPulse 1.6s ease-in-out infinite;
+  }
+  @keyframes jmaV2QuestionPulse {
+    0%,100% { box-shadow: 0 0 0 1.5px #7C3AED, 0 0 10px rgba(124,58,237,.25); }
+    50%     { box-shadow: 0 0 0 1.5px #7C3AED, 0 0 18px rgba(124,58,237,.55); }
+  }
 </style>
 </head>
 <body>
