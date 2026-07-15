@@ -11,9 +11,11 @@ import asyncio
 import sys
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows console defaults to cp1255
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from main import anthropic_client, _cv_system_blocks, _split_strategy_stream, STREAM_FIT_STRATEGY_PROMPT
+from main import (anthropic_client, _apply_decision_override, _cv_system_blocks,
+                  _split_strategy_stream, STREAM_FIT_STRATEGY_PROMPT)
 
 FIXTURES_DIR = Path(__file__).resolve().parent
 CV_TEXT = (FIXTURES_DIR / "backend_cv.txt").read_text(encoding="utf-8")
@@ -42,14 +44,24 @@ async def run_one(label: str, job_file: str, expected: str):
         async for token in stream.text_stream:
             full_text += token
 
-    prose, strategy = _split_strategy_stream(full_text)
+    # Mirror the server's parsing. Output order: ###ANALYSIS### (private) →
+    # ###STRATEGY###{json} → ###SUMMARY### (user-visible Hebrew, streamed to end).
+    pre, _, visible = full_text.partition("###SUMMARY###")
+    if not visible:  # model skipped the summary marker — fail-open like the server
+        pre = full_text
+    analysis, strategy = _split_strategy_stream(pre)
+    strategy = _apply_decision_override(analysis, strategy)
+    visible = visible.strip()
     got = strategy.get("fit_type")
     verdict = "PASS" if got == expected else "FAIL"
 
     print("=" * 88)
     print(f"{label}  [expected={expected} got={got} -> {verdict}]")
     print("-" * 88)
-    print("PROSE:\n" + prose.strip())
+    if analysis.strip():
+        print("PRIVATE ANALYSIS (hidden from user):\n" + analysis.replace("###ANALYSIS###", "").strip())
+        print("-" * 88)
+    print(f"USER-VISIBLE SUMMARY ({len(visible.split())} words):\n" + visible)
     print("-" * 88)
     print("STRATEGY:", strategy)
     print()

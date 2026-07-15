@@ -1772,26 +1772,13 @@ function _renderFitStrategyBlock() {
       qEl.style.display = '';
       qEl.innerHTML = '';
       const selections = {};
-      let interacted = false;
 
-      const maybeTrigger = () => {
-        if (!interacted) return;
-        if (!questions.every(q => selections[q.id])) return;
-        const choices = questions.map(q => {
-          const opt = (q.options || []).find(o => o.id === selections[q.id]);
-          return {
-            question: q.question,
-            chosen: opt?.label || selections[q.id],
-            // impact drives backend model routing: all-keep/light choices → cheap Haiku
-            // polish. Missing tag is treated as structural (conservative) server-side.
-            impact: opt?.impact || 'structural',
-          };
-        });
-        onReady(choices);
-      };
-
+      // Chips ONLY record the selection. Generation fires exclusively from the explicit
+      // Continue chip below — the flow halts here indefinitely until the user clicks it.
       questions.forEach(q => {
-        selections[q.id] = q.recommended; // pre-select the recommendation
+        // Pre-select the recommendation; fall back to the first option if the model
+        // omitted the recommended id, so a selection always exists for every question.
+        selections[q.id] = q.recommended || (q.options && q.options[0] && q.options[0].id);
 
         const qWrap = document.createElement('div');
         qWrap.className = 'jma-q-wrap';
@@ -1808,19 +1795,18 @@ function _renderFitStrategyBlock() {
           chip.className = 'jma-q-chip';
           chip.dataset.oid = opt.id;
           const isRecommended = opt.id === q.recommended;
+          const isSelected = opt.id === selections[q.id];
           chip.style.cssText = `padding:5px 10px;border-radius:14px;cursor:pointer;font-size:11.5px;` +
-            `border:1px solid ${isRecommended ? 'var(--primary,#6366f1)' : 'var(--border)'};` +
-            `background:${isRecommended ? 'rgba(99,102,241,.12)' : 'transparent'};`;
+            `border:1px solid ${isSelected ? 'var(--primary,#6366f1)' : 'var(--border)'};` +
+            `background:${isSelected ? 'rgba(99,102,241,.12)' : 'transparent'};`;
           chip.textContent = opt.label + (isRecommended ? ' · מומלץ' : '');
           chip.addEventListener('click', () => {
-            interacted = true;
             selections[q.id] = opt.id;
             optsWrap.querySelectorAll('.jma-q-chip').forEach(c => {
               const active = c.dataset.oid === selections[q.id];
               c.style.borderColor = active ? 'var(--primary,#6366f1)' : 'var(--border)';
               c.style.background  = active ? 'rgba(99,102,241,.12)' : 'transparent';
             });
-            maybeTrigger();
           });
           optsWrap.appendChild(chip);
         });
@@ -1830,9 +1816,21 @@ function _renderFitStrategyBlock() {
       const confirmChip = document.createElement('button');
       confirmChip.type = 'button';
       confirmChip.className = 'jma-q-confirm';
-      confirmChip.style.cssText = 'margin-top:4px;padding:6px 12px;border-radius:14px;border:1px solid var(--primary,#6366f1);background:rgba(99,102,241,.12);cursor:pointer;font-size:12px;font-weight:600';
-      confirmChip.textContent = 'המשך עם ההמלצות ✓';
-      confirmChip.addEventListener('click', () => { interacted = true; maybeTrigger(); });
+      confirmChip.style.cssText = 'margin-top:4px;padding:7px 14px;border-radius:14px;border:1px solid var(--primary,#6366f1);background:rgba(99,102,241,.12);cursor:pointer;font-size:12px;font-weight:600';
+      confirmChip.textContent = 'המשך ליצירת קורות חיים ✓';
+      confirmChip.addEventListener('click', () => {
+        const choices = questions.map(q => {
+          const opt = (q.options || []).find(o => o.id === selections[q.id]);
+          return {
+            question: q.question,
+            chosen: opt?.label || selections[q.id],
+            // impact drives backend model routing: all-light choices → cheap Haiku
+            // polish. Missing tag is treated as structural (conservative) server-side.
+            impact: opt?.impact || 'structural',
+          };
+        });
+        onReady(choices);
+      });
       qEl.appendChild(confirmChip);
     },
   };
@@ -1851,16 +1849,28 @@ async function startDeepAnalysisOverlay(answers) {
 
   const ui = _renderFitStrategyBlock();
 
+  let failOpenTimer = null;
+  const disarmFailOpen = () => { if (failOpenTimer) { clearTimeout(failOpenTimer); failOpenTimer = null; } };
+
   const triggerGeneration = (strategyChoices) => {
     if (state._cvGenTriggered) return; // double-trigger guard
     state._cvGenTriggered = true;
-    clearTimeout(failOpenTimer);
+    disarmFailOpen();
     ui.showGeneratingStatus();
     startCVGeneration(state.answers, cvOptions.language, cvOptions.format, cvOptions.coverLetter, strategyChoices);
   };
 
-  // FAIL-OPEN: no ###STRATEGY### within 20s → generate with no questions
-  const failOpenTimer = setTimeout(() => triggerGeneration([]), 20000);
+  // FAIL-OPEN is an IDLE watchdog, not a total-duration cap: it fires only if the stream
+  // makes no progress for 20s before a strategy arrives. It is re-armed on every token and
+  // disarmed permanently the moment the strategy event lands — once questions are on
+  // screen the flow waits indefinitely for the user's explicit confirmation and must
+  // NEVER self-trigger past them.
+  const armFailOpen = () => {
+    if (state._cvGenTriggered) return;
+    disarmFailOpen();
+    failOpenTimer = setTimeout(() => triggerGeneration([]), 20000);
+  };
+  armFailOpen();
 
   try {
     const stored = await chrome.storage.local.get(['licenseKey', 'cvText', ANSWER_BANK_KEY]);
@@ -1897,13 +1907,19 @@ async function startDeepAnalysisOverlay(answers) {
         if (evt.token) {
           ui.appendProse(evt.token);
           sendToPage({ token: evt.token }); // mirror into page-side panel
+          armFailOpen(); // stream is alive — reset the idle watchdog
         }
-        if (evt.strategy) strategy = evt.strategy;
+        if (evt.strategy) {
+          strategy = evt.strategy;
+          disarmFailOpen(); // analysis succeeded — from here only explicit paths trigger
+        }
       }
     }
+    disarmFailOpen(); // stream ended — the code below decides explicitly, no timer race
 
-    // Detect and use the ###STRATEGY### result parsed server-side into evt.strategy
-    state.tailoringStrategy = strategy || { fit_type: 'high_fit', questions: [] };
+    // Detect and use the ###STRATEGY### result parsed server-side into evt.strategy.
+    // Empty fit_type = unknown → backend routes to the full-quality pipeline.
+    state.tailoringStrategy = strategy || { fit_type: '', questions: [] };
 
     if (state.tailoringStrategy.fit_type === 'niche_fit' && state.tailoringStrategy.questions?.length) {
       ui.renderQuestions(state.tailoringStrategy.questions, (choices) => triggerGeneration(choices));
@@ -2304,7 +2320,7 @@ async function startCVGeneration(answers, language, format, coverLetter, strateg
 
   state.generatedCV = response.cvText;
   state.coverLetterText = response.coverLetterText || '';
-  await saveJobState({ generatedCV: response.cvText, cvLanguage: language, coverLetterText: state.coverLetterText });
+  await saveJobState({ generatedCV: response.cvText, cvLanguage: language, coverLetterText: state.coverLetterText, wizard_step: 'cv_result' });
 
   await new Promise(r => setTimeout(r, 400));
 

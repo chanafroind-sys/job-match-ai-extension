@@ -1933,18 +1933,26 @@ answer CONTENT only — never style, length, or phrasing — and count a live MV
 product, or production project as significant experience even if not employment.
 
 Analyze how well the candidate's CV fits this job, thinking about overall professional \
-fit — not keyword matching. Write in the same language as the job description (Hebrew \
-if the job/CV are in Hebrew, otherwise English).
+fit — not keyword matching. ALL user-facing text — the summary, questions, context, and \
+option labels — must be written in HEBREW, regardless of the job or CV language.
 
-STRICT OUTPUT — no preamble, no headers, no markdown:
-1. First, stream free-flowing prose in two parts:
-   - 2-4 concrete sentences on WHY the CV fits: name actual overlapping skills, \
-     experience, or domains that genuinely match the job.
-   - 2-4 sentences on WHERE tailoring is needed to best present the candidate for \
-     this specific role.
-2. Then, on its own final line, output machine-readable JSON prefixed by the exact \
-   marker below (nothing after it):
+STRICT OUTPUT — three parts, in this exact order. You MUST always produce ALL THREE \
+sections — never stop before the ###SUMMARY### section is complete:
+1. The marker ###ANALYSIS### followed by your PRIVATE reasoning (English, never shown \
+to the user, 80 words MAXIMUM — be telegraphic): the CV's primary professional \
+identity; the job's core domain; apply THE DECIDING TEST below (primary vs secondary); \
+if niche, which structural decisions need the user's input. End this section with one \
+explicit line: DECISION: high_fit  — or —  DECISION: niche_fit
+2. Immediately after, on its own line, the machine-readable JSON. fit_type MUST equal \
+your DECISION line exactly:
 ###STRATEGY###{{"fit_type":"high_fit|niche_fit","questions":[...]}}
+3. The marker ###SUMMARY### followed by the user-facing Hebrew summary. HARD LIMIT: 60 \
+Hebrew words total. Plain text only — no markdown, no **, no headings, no English \
+except technology names:
+   - 2-3 short sentences on WHY the CV fits — name the actual overlapping skills or \
+     experience from the CV.
+   - Then 2-3 gap/tailoring points, each on its own line starting with "• " — where \
+     adjustment is needed to best present the candidate for this role.
 
 FIT CLASSIFICATION — this is a conceptual judgment, NOT keyword counting:
 Classify the fit by asking: does this job align with the CANDIDATE'S OVERALL \
@@ -1996,9 +2004,15 @@ QUESTION RULES (only relevant when fit_type is niche_fit):
   angles, (e) how far to shift emphasis between the candidate's domains.
 - NEVER ask about wording, bolding, keywords, or sentence-level edits — decide those \
   silently yourself.
-- Usually 1 question, hard max 3. Each question has a "recommended" option id.
+- Usually 1 question, hard max 3. Each question has a "recommended" option id — \
+  "recommended" is REQUIRED, never omit it.
 - Options must be concrete degrees, not yes/no (e.g. "reduce to minimal detail" / \
   "medium detail" / "keep full, emphasize relevant parts").
+- BE BRIEF — these render as small chips in a narrow popup: question text max 20 \
+  words; context max 15 words; each option label max 15 words (a short choice, NOT \
+  implementation instructions — you decide the implementation details yourself later).
+- Write the question, context, and option labels in HEBREW (technology names may \
+  stay in English), same as the summary.
 - NEVER offer a "leave everything unchanged" option. The user is running this tool to \
 adapt their CV — every option must improve the tailoring. Options range from light \
 polish to deep restructuring.
@@ -2034,25 +2048,46 @@ class DeepAnalysisRequest(BaseModel):
 def _split_strategy_stream(full_text: str) -> tuple[str, dict]:
     """Split accumulated stream text into (prose, strategy dict).
 
-    Fails open to {"fit_type": "high_fit", "questions": []} on a missing marker or
-    malformed JSON, so CV generation is never blocked on the analysis stream.
+    Fails open to {"fit_type": "", "questions": []} on a missing marker or malformed
+    JSON — "" means UNKNOWN, which routes CV generation to the full-quality pipeline.
+    (An earlier version failed open to "high_fit", which wrongly routed unparseable
+    niche jobs to the cheap light-polish path.)
     """
     marker = "###STRATEGY###"
     if marker not in full_text:
-        return full_text, {"fit_type": "high_fit", "questions": []}
+        return full_text, {"fit_type": "", "questions": []}
 
     prose, _, rest = full_text.partition(marker)
     try:
-        parsed = json.loads(rest.strip())
+        parsed = json.loads(repair_json(rest.strip()))
         fit_type = parsed.get("fit_type") if isinstance(parsed, dict) else None
         if fit_type not in ("high_fit", "niche_fit"):
-            fit_type = "high_fit"
+            fit_type = ""
         questions = parsed.get("questions") if isinstance(parsed, dict) else []
         if not isinstance(questions, list):
             questions = []
         return prose, {"fit_type": fit_type, "questions": questions}
     except Exception:
-        return prose, {"fit_type": "high_fit", "questions": []}
+        return prose, {"fit_type": "", "questions": []}
+
+
+def _apply_decision_override(analysis_text: str, strategy: dict) -> dict:
+    """Trust the explicit DECISION line in the private analysis over the JSON fit_type.
+
+    Calibration showed the reasoning is consistently correct while the JSON fit_type
+    occasionally contradicts it (decision decay / truncation). The DECISION line is the
+    freshest signal — when they disagree, the DECISION line wins.
+    """
+    m = re.search(r"DECISION:\s*(high_fit|niche_fit)", analysis_text)
+    if not m:
+        return strategy
+    decided = m.group(1)
+    if strategy.get("fit_type") != decided:
+        print(f"[JMA:stream_fit_strategy] DECISION line ({decided}) overrides JSON fit_type ({strategy.get('fit_type')!r})")
+        strategy = {**strategy, "fit_type": decided}
+        if decided == "high_fit":
+            strategy["questions"] = []
+    return strategy
 
 
 @app.post("/api/stream-deep-analysis")
@@ -2077,35 +2112,53 @@ async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optiona
         answer_bank=answer_bank)
 
     async def generate():
-        marker   = "###STRATEGY###"
-        buf      = ""
-        strategy = {"fit_type": "high_fit", "questions": []}
+        # Model output order: ###ANALYSIS### (private reasoning, buffered silently) →
+        # ###STRATEGY###{json} (parsed + emitted the moment it completes, i.e. when the
+        # summary marker arrives) → ###SUMMARY### (Hebrew user text, streamed live to end).
+        # The JSON sits right after the reasoning so the decision can't decay across the
+        # summary — an earlier ordering produced correct reasoning but a stale fit_type.
+        summary_marker = "###SUMMARY###"
+        buf           = ""
+        summary_seen  = False
+        strategy      = {"fit_type": "", "questions": []}  # "" = unknown → full pipeline
+        strategy_sent = False
 
         try:
             async with anthropic_client.messages.stream(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=900,
+                max_tokens=1500,
                 system=sys_blocks,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
                 async for token in stream.text_stream:
                     buf += token
-                    if marker in buf:
-                        break
-                    # Only flush text that cannot possibly be part of the marker yet,
-                    # so the marker is never split across two SSE token events.
-                    safe_len = len(buf) - len(marker)
-                    if safe_len > 0:
-                        yield f"data: {json.dumps({'token': buf[:safe_len]})}\n\n"
-                        buf = buf[safe_len:]
+                    if not summary_seen:
+                        if summary_marker not in buf:
+                            continue  # still inside private analysis / strategy JSON
+                        pre, _, buf = buf.partition(summary_marker)
+                        buf = buf.lstrip("\n")
+                        # pre = private analysis + ###STRATEGY###{json} — parse, never stream.
+                        # The DECISION line in the analysis is authoritative over the JSON.
+                        analysis_text, strategy = _split_strategy_stream(pre)
+                        strategy = _apply_decision_override(analysis_text, strategy)
+                        yield f"data: {json.dumps({'strategy': strategy})}\n\n"
+                        strategy_sent = True
+                        summary_seen  = True
+                    if buf:
+                        # Summary is the final section — no trailing marker, flush freely.
+                        yield f"data: {json.dumps({'token': buf})}\n\n"
+                        buf = ""
 
-            prose_tail, strategy = _split_strategy_stream(buf)
-            if prose_tail:
-                yield f"data: {json.dumps({'token': prose_tail})}\n\n"
+            if not summary_seen:
+                # Model stopped before ###SUMMARY### — salvage the decision from whatever
+                # arrived (DECISION line and/or JSON), but never show the private analysis.
+                analysis_text, strategy = _split_strategy_stream(buf)
+                strategy = _apply_decision_override(analysis_text, strategy)
         except Exception as e:
             print(f"[JMA:stream_fit_strategy] {e}")
 
-        yield f"data: {json.dumps({'strategy': strategy})}\n\n"
+        if not strategy_sent:
+            yield f"data: {json.dumps({'strategy': strategy})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream",

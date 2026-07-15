@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as main_module
-from main import GenerateCVRequest, _split_strategy_stream
+from main import GenerateCVRequest, _apply_decision_override, _split_strategy_stream
 
 _DUMMY_CV = (
     "[NAME]\nJohn Doe\n[HEADLINE]\nBackend Developer\n[CONTACT]\nemail@x.com\n"
@@ -49,27 +49,59 @@ class TestSplitStrategyStream:
         _, strategy = _split_strategy_stream(text)
         assert strategy == {"fit_type": "high_fit", "questions": []}
 
-    def test_malformed_json_fails_open(self):
-        text = "טקסט חופשי כלשהו על ההתאמה.\n###STRATEGY###{this is not valid json"
+    def test_malformed_json_fails_open_to_unknown(self):
+        # "" = unknown fit → backend routes to the full-quality pipeline, never light polish
+        text = "טקסט חופשי כלשהו על ההתאמה.\n###STRATEGY###<<<не json вообще>>>"
         prose, strategy = _split_strategy_stream(text)
-        assert strategy == {"fit_type": "high_fit", "questions": []}
+        assert strategy == {"fit_type": "", "questions": []}
         assert "טקסט חופשי" in prose
 
-    def test_missing_marker_fails_open(self):
+    def test_missing_marker_fails_open_to_unknown(self):
         text = "טקסט חופשי בלי סמן בכלל."
         prose, strategy = _split_strategy_stream(text)
         assert prose == text
-        assert strategy == {"fit_type": "high_fit", "questions": []}
+        assert strategy == {"fit_type": "", "questions": []}
 
-    def test_invalid_fit_type_defaults_to_high_fit(self):
+    def test_invalid_fit_type_defaults_to_unknown(self):
         text = '###STRATEGY###{"fit_type":"something_weird","questions":[]}'
         _, strategy = _split_strategy_stream(text)
-        assert strategy["fit_type"] == "high_fit"
+        assert strategy["fit_type"] == ""
 
     def test_non_list_questions_defaults_to_empty(self):
         text = '###STRATEGY###{"fit_type":"niche_fit","questions":"oops"}'
         _, strategy = _split_strategy_stream(text)
         assert strategy["questions"] == []
+
+
+class TestDecisionOverride:
+    def test_decision_line_overrides_contradicting_json(self):
+        # Calibration showed reasoning is right while trailing JSON can decay — line wins.
+        analysis = "CV identity: backend. Job: ETL subset.\nDECISION: niche_fit"
+        strategy = {"fit_type": "high_fit", "questions": []}
+        out = _apply_decision_override(analysis, strategy)
+        assert out["fit_type"] == "niche_fit"
+
+    def test_override_to_high_fit_clears_questions(self):
+        analysis = "Job matches primary identity.\nDECISION: high_fit"
+        strategy = {"fit_type": "niche_fit", "questions": [{"id": "q1"}]}
+        out = _apply_decision_override(analysis, strategy)
+        assert out == {"fit_type": "high_fit", "questions": []}
+
+    def test_matching_decision_keeps_questions(self):
+        analysis = "DECISION: niche_fit"
+        strategy = {"fit_type": "niche_fit", "questions": [{"id": "q1"}]}
+        assert _apply_decision_override(analysis, strategy) is strategy
+
+    def test_no_decision_line_leaves_strategy_untouched(self):
+        strategy = {"fit_type": "", "questions": []}
+        assert _apply_decision_override("no decision here", strategy) is strategy
+
+    def test_salvages_decision_when_json_never_arrived(self):
+        # Model stopped early (truncation): no JSON, but the DECISION line exists.
+        analysis = "###ANALYSIS### reasoning...\nDECISION: niche_fit"
+        _, strategy = _split_strategy_stream(analysis)  # fails open to unknown
+        out = _apply_decision_override(analysis, strategy)
+        assert out["fit_type"] == "niche_fit"
 
 
 class TestGenerateCVRequestSchema:
