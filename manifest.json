@@ -32,7 +32,8 @@
       "*.html",
       "*.js",
       "*.css",
-      "icons/*"
+      "icons/*",
+      "v2/*"
     ],
     "matches": ["https://*/*", "http://*/*"]
   }
@@ -48,7 +49,7 @@
   "content_scripts": [
     {
       "matches": ["https://*/*", "http://*/*"],
-      "js": ["matcher.js", "content.js"],
+      "js": ["matcher.js", "content.js", "v2/v2_content.js"],
       "run_at": "document_idle",
       "all_frames": false
     }

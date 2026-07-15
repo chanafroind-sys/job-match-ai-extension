@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Job Match AI — V2 Beta</title>
+<style>
+  :root{
+    --bg:#14121F; --card:#1E1B2E; --accent:#7C3AED; --accent-soft:#5B21B6;
+    --text:#E9E4F8; --text-dim:#8E85AC; --ok:#34D399; --err:#F87171;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--text);min-height:100vh;
+    font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+    padding:44px 18px 18px;display:flex;flex-direction:column;gap:14px;
+  }
+  .v2-badge{
+    position:fixed;top:0;right:0;left:0;padding:8px 14px;
+    background:linear-gradient(90deg,#5B21B6,#7C3AED);
+    color:#fff;font-size:12.5px;font-weight:700;text-align:center;
+  }
+  h1{font-size:17px;font-weight:800}
+  .v2-sub{font-size:12.5px;color:var(--text-dim);line-height:1.5}
+  .v2-job-card{
+    background:var(--card);border:1px solid rgba(124,58,237,.35);
+    border-radius:12px;padding:12px 14px;font-size:13.5px;line-height:1.5;
+  }
+  .v2-job-card .v2-job-url{
+    display:block;font-size:11px;color:var(--text-dim);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;
+    text-align:right;margin-top:4px;
+  }
+  ul.v2-facts{list-style:none;display:flex;flex-direction:column;gap:6px}
+  ul.v2-facts li{font-size:12.5px;color:var(--text-dim)}
+  #v2HealthBtn{
+    all:unset;cursor:pointer;text-align:center;padding:11px;
+    background:var(--accent-soft);color:#fff;border-radius:10px;
+    font-size:13.5px;font-weight:700;
+  }
+  #v2HealthBtn:hover{background:var(--accent)}
+  #v2HealthResult{font-size:12.5px;min-height:18px;text-align:center}
+  #v2HealthResult.ok{color:var(--ok)}
+  #v2HealthResult.err{color:var(--err)}
+</style>
+</head>
+<body>
+  <div class="v2-badge">🧪 מצב אינטראקטיבי — V2 Beta (סביבה מבודדת)</div>
+  <h1>סביבת V2 פעילה</h1>
+  <div class="v2-sub">
+    הפאנל הזה רץ אך ורק על קוד V2. זרימת V1 לא הופעלה ולא תופעל כל עוד המצב
+    האינטראקטיבי נבחר.
+  </div>
+  <div class="v2-job-card" id="v2JobCard">טוען נתוני משרה…</div>
+  <ul class="v2-facts">
+    <li>✅ OR-flow בלעדי — V1 נעצר ברמת האירוע</li>
+    <li>✅ אחסון מבודד — מפתחות jma_v2_* בלבד</li>
+    <li>✅ שרת מבודד — קריאות ל-/api/v2/* בלבד</li>
+    <li>⏳ שלב 2: שכפול 1:1 של אשף השאלות (SSE)</li>
+  </ul>
+  <button type="button" id="v2HealthBtn">🔌 בדיקת חיבור /api/v2</button>
+  <div id="v2HealthResult"></div>
+  <script src="v2_popup.js"></script>
+</body>
+</html>
