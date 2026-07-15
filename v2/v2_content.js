@@ -223,6 +223,35 @@
     chooser.remove();
   });
 
+  // Position a floating box next to an anchor element, fully clamped to the
+  // viewport. BUG FIX: this used to assume the FAB was docked to the right
+  // edge and computed `right: innerWidth - rect.left`. V1's real FAB is
+  // docked at left:20px (content.js:1111) — for a left-docked anchor that
+  // formula produces a `right` value near innerWidth, pinning the chooser's
+  // right edge a few px from the LEFT edge and pushing its ~230px body to a
+  // negative x-coordinate, i.e. fully off-screen (the reported "sliver on
+  // the far left"). Fixed by measuring the anchor's actual rect and always
+  // clamping the result inside [0, viewport]. `setProperty(...,'important')`
+  // is used so an inline declaration (which always wins specificity ties,
+  // even against a host stylesheet's own `!important` rules) pins the final
+  // position regardless of any page CSS trying to override left/right.
+  function _v2PositionNear(box, anchorEl) {
+    const a = anchorEl.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    const margin = 10;
+    const roomRight = window.innerWidth - a.right;
+    const roomLeft  = a.left;
+    let left = (roomRight >= b.width + margin || roomRight >= roomLeft)
+      ? a.right + margin   // open toward the side with more room
+      : a.left - b.width - margin;
+    left = Math.max(margin, Math.min(left, window.innerWidth - b.width - margin));
+    const top = Math.max(margin, Math.min(a.top, window.innerHeight - b.height - margin));
+
+    box.style.setProperty('left', `${left}px`, 'important');
+    box.style.setProperty('top', `${top}px`, 'important');
+    box.style.setProperty('right', 'auto', 'important');
+  }
+
   function _toggleChooser(wrap) {
     const existing = document.getElementById('jma-v2-chooser');
     if (existing) { existing.remove(); return; }
@@ -241,11 +270,12 @@
         🧪 מצב אינטראקטיבי
         <span>V2 Beta — התאמה ויזואלית על הקו"ח</span>
       </button>`;
-    document.body.appendChild(box);
-
-    const rect = wrap.getBoundingClientRect();
-    box.style.top = `${Math.max(8, rect.top - 8)}px`;
-    box.style.right = `${Math.min(window.innerWidth - 8, window.innerWidth - rect.left + 12)}px`;
+    // Appended to <html> (sibling of <body>) rather than document.body so a
+    // transform/filter the host page applies to <body> itself (a common
+    // cause of position:fixed being reinterpreted relative to that ancestor
+    // instead of the viewport) can't hijack our containing block.
+    document.documentElement.appendChild(box);
+    _v2PositionNear(box, wrap);
 
     box.querySelector('#jma-v2-btn-classic').addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -289,14 +319,24 @@
     iframe.src = chrome.runtime.getURL('v2/v2_popup.html');
     iframe.setAttribute('allowtransparency', 'true');
     panel.appendChild(iframe);
-    document.body.appendChild(panel);
+    // Appended to <html>, not document.body — same reasoning as the chooser:
+    // avoids a body-level transform/filter hijacking position:fixed.
+    document.documentElement.appendChild(panel);
   }
 
   function _v2TogglePanel(open) {
     _ensureV2Panel();
     _v2PanelOpen = open === undefined ? !_v2PanelOpen : !!open;
-    document.getElementById('jma-v2-panel')
-      .classList.toggle('jma-v2-panel-open', _v2PanelOpen);
+    const panel = document.getElementById('jma-v2-panel');
+    panel.classList.toggle('jma-v2-panel-open', _v2PanelOpen);
+    // Belt-and-suspenders: also pin the offset as an inline !important
+    // declaration. Inline declarations always win specificity ties over
+    // stylesheet rules of equal importance, so this holds the panel at the
+    // right edge even if a host stylesheet has its own `!important` rule
+    // forcing `left`/`right` on injected elements (common in RTL sites that
+    // blanket-flip left/right for their own components).
+    panel.style.setProperty('right', _v2PanelOpen ? '0px' : '-420px', 'important');
+    panel.style.setProperty('left', 'auto', 'important');
   }
 
   // ═══ 6. Floating CV window + reversed '+' insertion (V2 addition) ═════════
@@ -418,7 +458,9 @@
       </div>
       <div id="jma-v2-cv-active-hint" dir="rtl">הקלידי תשובה בפאנל ואז לחצי + על הסעיף המתאים</div>
       <div id="jma-v2-cv-paper"></div>`;
-    document.body.appendChild(win);
+    // Appended to <html>, not document.body — consistent with the panel/
+    // chooser fix above.
+    document.documentElement.appendChild(win);
     win.querySelector('#jma-v2-cv-close').addEventListener('click', () => _v2CloseCvWindow());
     _v2MakeDraggable(win, win.querySelector('#jma-v2-cv-header'));
 
@@ -585,7 +627,8 @@
     style.id = 'jma-v2-styles';
     style.textContent = `
       #jma-v2-chooser{
-        position:fixed;z-index:2147483646;min-width:230px;
+        position:fixed!important;z-index:2147483647!important;
+        min-width:230px;max-width:260px;
         background:#1E1B2E;border:1px solid #7C3AED;border-radius:14px;
         padding:12px;box-shadow:0 10px 30px rgba(0,0,0,.45);
         font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
@@ -608,13 +651,14 @@
       #jma-v2-btn-interactive:hover{background:#6D28D9}
 
       #jma-v2-panel{
-        position:fixed;top:0;right:-420px;width:400px;height:100vh;
-        z-index:2147483645;background:#14121F;
+        position:fixed!important;top:0!important;right:-420px!important;
+        left:auto!important;width:400px!important;height:100vh!important;
+        z-index:2147483647!important;background:#14121F;
         border-left:2px solid #7C3AED;
         box-shadow:-8px 0 28px rgba(0,0,0,.4);
         transition:right .25s ease;
       }
-      #jma-v2-panel.jma-v2-panel-open{right:0}
+      #jma-v2-panel.jma-v2-panel-open{right:0!important}
       #jma-v2-panel iframe{width:100%;height:100%;border:none;display:block}
       #jma-v2-panel-close{
         all:unset;cursor:pointer;position:absolute;top:8px;left:8px;
