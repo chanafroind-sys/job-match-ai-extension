@@ -4,61 +4,261 @@
 <meta charset="UTF-8">
 <title>Job Match AI — V2 Beta</title>
 <style>
-  :root{
-    --bg:#14121F; --card:#1E1B2E; --accent:#7C3AED; --accent-soft:#5B21B6;
-    --text:#E9E4F8; --text-dim:#8E85AC; --ok:#34D399; --err:#F87171;
+  /* ═══════════════════════════════════════════════════════════════════════
+     1:1 copy of the V1 popup.html styles needed by the questions wizard
+     (replication contract). V2-only additions are marked "V2 addition".
+     ═══════════════════════════════════════════════════════════════════════ */
+  :root {
+    --bg-main:      #F8FAFC;
+    --bg-card:      #FFFFFF;
+    --bg-hover:     #F1F5F9;
+    --bg-accent-soft: rgba(99,102,241,0.07);
+    --border:       #E2E8F0;
+    --border-hover: #CBD5E1;
+    --text-primary:   #0F172A;
+    --text-secondary: #334155;
+    --text-muted:     #64748B;
+    --text-dim:       #94A3B8;
+    --accent:       #6366F1;
+    --accent-dark:  #4F46E5;
+    --accent-blue:  #2563EB;
+    --success:      #16A34A;
+    --success-bg:   #F0FDF4;
+    --success-border:#BBF7D0;
+    --warning:      #D97706;
+    --danger:       #DC2626;
+    --danger-bg:    #FEF2F2;
+    --danger-border:#FEE2E2;
+    --danger-text:  #991B1B;
+    --orange:       #EA580C;
+    --popup-width:  380px;
+    --border-radius: 12px;
+    --shadow-sm: 0 1px 3px rgba(15,23,42,0.08), 0 1px 2px rgba(15,23,42,0.04);
+    --shadow-md: 0 4px 12px rgba(15,23,42,0.10), 0 2px 4px rgba(15,23,42,0.06);
+    --focus-ring: 0 0 0 3px rgba(99,102,241,0.18);
   }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{
-    background:var(--bg);color:var(--text);min-height:100vh;
-    font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
-    padding:44px 18px 18px;display:flex;flex-direction:column;gap:14px;
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    width: var(--popup-width);
+    min-height: 520px;
+    max-height: 640px;
+    overflow-y: auto;
+    background: var(--bg-main);
+    color: var(--text-primary);
+    font-family: 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    direction: rtl;
   }
-  .v2-badge{
-    position:fixed;top:0;right:0;left:0;padding:8px 14px;
-    background:linear-gradient(90deg,#5B21B6,#7C3AED);
-    color:#fff;font-size:12.5px;font-weight:700;text-align:center;
+  body::-webkit-scrollbar { width: 5px; }
+  body::-webkit-scrollbar-track { background: transparent; }
+  body::-webkit-scrollbar-thumb { background: var(--border-hover); border-radius: 3px; }
+
+  /* V2 addition — beta ribbon so the user always knows which pipeline runs */
+  .v2-badge {
+    position: sticky; top: 0; z-index: 10;
+    padding: 7px 14px; text-align: center;
+    background: linear-gradient(90deg, #5B21B6, #7C3AED);
+    color: #fff; font-size: 12px; font-weight: 700;
   }
-  h1{font-size:17px;font-weight:800}
-  .v2-sub{font-size:12.5px;color:var(--text-dim);line-height:1.5}
-  .v2-job-card{
-    background:var(--card);border:1px solid rgba(124,58,237,.35);
-    border-radius:12px;padding:12px 14px;font-size:13.5px;line-height:1.5;
+
+  .screen { display: none; padding: 20px; }
+  .screen.active { display: block; }
+
+  .btn {
+    display: block; width: 100%; padding: 12px 16px;
+    border: none; border-radius: var(--border-radius);
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: background 0.18s, box-shadow 0.18s, transform 0.1s;
+    text-align: center; font-family: inherit; letter-spacing: 0.1px;
   }
-  .v2-job-card .v2-job-url{
-    display:block;font-size:11px;color:var(--text-dim);
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;
-    text-align:right;margin-top:4px;
+  .btn:active { transform: scale(0.98); }
+  .btn-primary {
+    background: var(--accent); color: #fff;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.35);
   }
-  ul.v2-facts{list-style:none;display:flex;flex-direction:column;gap:6px}
-  ul.v2-facts li{font-size:12.5px;color:var(--text-dim)}
-  #v2HealthBtn{
-    all:unset;cursor:pointer;text-align:center;padding:11px;
-    background:var(--accent-soft);color:#fff;border-radius:10px;
-    font-size:13.5px;font-weight:700;
+  .btn-primary:hover { background: var(--accent-dark); box-shadow: 0 4px 14px rgba(99,102,241,0.45); }
+  .btn-secondary {
+    background: var(--bg-card); color: var(--text-muted);
+    border: 1.5px solid var(--border); margin-top: 10px;
+    box-shadow: var(--shadow-sm);
   }
-  #v2HealthBtn:hover{background:var(--accent)}
-  #v2HealthResult{font-size:12.5px;min-height:18px;text-align:center}
-  #v2HealthResult.ok{color:var(--ok)}
-  #v2HealthResult.err{color:var(--err)}
+  .btn-secondary:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-hover); }
+
+  .error-box {
+    background: var(--danger-bg); border: 1px solid var(--danger-border);
+    color: var(--danger-text); border-radius: var(--border-radius);
+    padding: 12px 14px; font-size: 13px; margin-bottom: 12px;
+  }
+
+  .loading-wrap { text-align: center; padding: 48px 24px; }
+  .spinner {
+    width: 34px; height: 34px; margin: 0 auto 14px;
+    border: 3px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: v2spin 0.8s linear infinite;
+  }
+  @keyframes v2spin { to { transform: rotate(360deg); } }
+  .loading-text { font-size: 13px; color: var(--text-muted); }
+
+  .screen-title {
+    font-size: 16px; font-weight: 700; color: var(--text-primary);
+    margin-bottom: 4px; letter-spacing: -0.2px;
+  }
+  .screen-subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 18px; }
+  .question-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--border-radius); padding: 16px; margin-bottom: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+  .question-skill {
+    font-size: 10px; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 6px;
+  }
+  .question-text { font-size: 14px; color: var(--text-primary); margin-bottom: 5px; font-weight: 500; }
+  .question-why { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; font-style: italic; }
+  .question-he-exp {
+    font-size: 12px; color: var(--accent);
+    background: var(--bg-accent-soft); border-right: 3px solid var(--accent);
+    padding: 6px 10px; border-radius: 0 6px 6px 0;
+    margin-bottom: 12px; line-height: 1.5;
+  }
+  .quick-answers { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .qa-btn {
+    padding: 5px 11px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    cursor: pointer; border: 1.5px solid var(--border);
+    background: var(--bg-card); color: var(--text-secondary);
+    transition: all 0.15s; font-family: inherit;
+  }
+  .qa-btn:hover { border-color: var(--border-hover); background: var(--bg-hover); }
+  .qa-btn.selected { font-weight: 600; }
+  .qa-yes.selected  { border-color: #16A34A; color: #15803D; background: #F0FDF4; }
+  .qa-partial.selected { border-color: #D97706; color: #B45309; background: #FFFBEB; }
+  .qa-no.selected   { border-color: #DC2626; color: #991B1B; background: #FEF2F2; }
+
+  .questions-score-bar {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--border-radius); padding: 12px 16px;
+    margin-bottom: 16px; box-shadow: var(--shadow-sm);
+  }
+  .qs-score-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+  .qs-score-track {
+    flex: 1; height: 8px; background: var(--border);
+    border-radius: 4px; overflow: hidden;
+  }
+  .qs-score-fill {
+    height: 100%; background: linear-gradient(90deg, var(--accent), #818CF8);
+    border-radius: 4px; transition: width 0.4s cubic-bezier(.4,0,.2,1);
+  }
+  .qs-score-value {
+    font-size: 18px; font-weight: 700; color: var(--accent);
+    min-width: 44px; text-align: left; transition: all 0.3s;
+  }
+
+  /* ── Preflight waiting screen ─────────────────────────────────────────── */
+  .pf-wait-wrap {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 40px 20px; gap: 16px; text-align: center;
+  }
+  .pf-wait-icon { font-size: 36px; animation: pf-bob 2s ease-in-out infinite; }
+  @keyframes pf-bob {
+    0%,100% { transform: translateY(0); }
+    50%      { transform: translateY(-6px); }
+  }
+  .pf-wait-title {
+    font-size: 15px; font-weight: 600; color: var(--text-primary);
+    min-height: 22px; transition: opacity 0.3s;
+  }
+  .pf-wait-bar {
+    width: 220px; height: 6px; background: var(--border);
+    border-radius: 3px; overflow: hidden;
+  }
+  .pf-wait-fill {
+    height: 100%; width: 0;
+    background: linear-gradient(90deg, var(--accent), #818CF8);
+    border-radius: 3px;
+    animation: pf-fill 12s cubic-bezier(.4,0,.2,1) forwards;
+  }
+  @keyframes pf-fill { 0%{width:0} 70%{width:80%} 100%{width:90%} }
+  .pf-wait-hint { font-size: 12px; color: var(--text-muted); }
+
+  /* ── Streaming questions loader + card animation ──────────────────────── */
+  .qs-stream-loader {
+    text-align: center; color: var(--text-muted); font-size: 13px;
+    padding: 20px 0; animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+
+  .question-card {
+    opacity: 0; transform: translateY(6px);
+    animation: qs-slide-in .22s ease forwards;
+  }
+  @keyframes qs-slide-in { to { opacity:1; transform:translateY(0); } }
+
+  .question-card.qs-streaming .question-text::after {
+    content: '|'; display: inline-block;
+    animation: blink .7s step-end infinite;
+    color: var(--accent); margin-inline-start: 2px;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  .q-textarea {
+    width: 100%; background: var(--bg-main); border: 1.5px solid var(--border);
+    border-radius: 8px; color: var(--text-primary);
+    padding: 10px 12px; font-size: 13px; resize: vertical; min-height: 72px;
+    direction: rtl; font-family: inherit; outline: none; line-height: 1.55;
+    transition: border-color 0.18s, box-shadow 0.18s; margin-top: 10px;
+    box-sizing: border-box;
+  }
+  .q-textarea:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+  .q-textarea::placeholder { color: var(--text-dim); font-size: 12px; }
+
+  /* V2 addition — hint that answers can be placed on the CV window */
+  .v2-place-hint {
+    font-size: 11.5px; color: #6D28D9; background: rgba(124,58,237,.07);
+    border: 1px dashed rgba(124,58,237,.4); border-radius: 8px;
+    padding: 7px 10px; margin-bottom: 14px; line-height: 1.5;
+  }
+  .v2-done-note {
+    background: var(--success-bg); border: 1px solid var(--success-border);
+    color: #15803D; border-radius: var(--border-radius);
+    padding: 12px 14px; font-size: 13px; margin-top: 12px; line-height: 1.6;
+  }
 </style>
 </head>
 <body>
-  <div class="v2-badge">🧪 מצב אינטראקטיבי — V2 Beta (סביבה מבודדת)</div>
-  <h1>סביבת V2 פעילה</h1>
-  <div class="v2-sub">
-    הפאנל הזה רץ אך ורק על קוד V2. זרימת V1 לא הופעלה ולא תופעל כל עוד המצב
-    האינטראקטיבי נבחר.
+<div class="v2-badge">🧪 מצב אינטראקטיבי — V2 Beta</div>
+
+<!-- MAIN SCREEN (loading / error) — copy of the V1 wizard's minimal main states -->
+<div class="screen" id="screen-main">
+  <div id="mainLoading" class="loading-wrap">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loadingText">מנתח את דף המשרה...</div>
+    <div style="font-size:11px;color:var(--text-dim);margin-top:8px;display:none" id="loadingHint">
+      השרת מתעורר — זה לוקח עד 45 שניות בפעם הראשונה...
+    </div>
   </div>
-  <div class="v2-job-card" id="v2JobCard">טוען נתוני משרה…</div>
-  <ul class="v2-facts">
-    <li>✅ OR-flow בלעדי — V1 נעצר ברמת האירוע</li>
-    <li>✅ אחסון מבודד — מפתחות jma_v2_* בלבד</li>
-    <li>✅ שרת מבודד — קריאות ל-/api/v2/* בלבד</li>
-    <li>⏳ שלב 2: שכפול 1:1 של אשף השאלות (SSE)</li>
-  </ul>
-  <button type="button" id="v2HealthBtn">🔌 בדיקת חיבור /api/v2</button>
-  <div id="v2HealthResult"></div>
-  <script src="v2_popup.js"></script>
+  <div id="mainError" style="display:none">
+    <div class="error-box" id="mainErrorMsg"></div>
+    <button class="btn btn-secondary" id="btnRetry">🔄 נסה שוב</button>
+  </div>
+</div>
+
+<!-- QUESTIONS SCREEN — 1:1 copy of V1's #screen-questions -->
+<div class="screen" id="screen-questions">
+  <div class="screen-title">כמה שאלות לפני הניתוח</div>
+  <div class="screen-subtitle">תשובותיך ישפיעו על הציון וניתוח ההתאמה</div>
+  <div class="v2-place-hint">
+    ✨ V2: כתבי תשובה ואז לחצי על כפתור ה-<b>+</b> בחלון קורות החיים הצף כדי
+    למקם אותה בסעיף המתאים.
+  </div>
+  <div id="questionsContainer"></div>
+  <button class="btn btn-primary" id="btnContinueToCV">המשך — התאמת קורות חיים ›</button>
+  <button class="btn btn-secondary" id="btnSkipQuestions">דלג — נתח ללא תשובות</button>
+</div>
+
+<script src="v2_popup.js"></script>
 </body>
 </html>

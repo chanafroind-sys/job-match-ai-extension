@@ -15,3 +15,8 @@ V2_VERSION = "2.0.0-beta.1"
 async def v2_health():
     """Liveness stub proving the /api/v2 surface is mounted and isolated."""
     return {"ok": True, "version": V2_VERSION, "flow": "v2-isolated"}
+
+
+# Endpoint modules register themselves on `router` — imported after the router
+# object exists so the decorator can attach routes.
+from v2 import stream_questions  # noqa: E402,F401
