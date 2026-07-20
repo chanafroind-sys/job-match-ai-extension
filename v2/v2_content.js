@@ -29,6 +29,7 @@
 
   const V2_JOBS_KEY = 'jma_v2_recent_jobs';
   const BYPASS = '_jmaV2Bypass';
+  const BACKEND = 'https://job-match-ai-extension.onrender.com';
   const EXT_ORIGIN = new URL(chrome.runtime.getURL('')).origin;
   let _v2PanelOpen = false;
 
@@ -345,6 +346,27 @@
   // Announced by v2_popup.js via postMessage (validated extension origin).
   let _v2ActiveAnswer = null; // { idx, skill, text }
 
+  // BUG FIX: this used to call _v2UpdateActiveHighlights() on EVERY message —
+  // which fires on every keystroke, not just on focus (v2_popup.js announces
+  // the active answer on 'input' too, so the injected text stays fresh). That
+  // meant every insertable block's outline/box-shadow classList was toggled
+  // and every pill's textContent was rewritten on every single character
+  // typed, which is exactly the kind of per-keystroke DOM churn that shows up
+  // as visible jitter. The fix: only re-run the highlight/pill update when
+  // the ACTIVE QUESTION ITSELF changes (focus moved to a different question),
+  // tracked via idx. The hint text still updates on every keystroke (cheap,
+  // single text node) so the injected text is never stale.
+  //
+  // Note on scope: this listener only ever touches #jma-v2-cv-paper in THIS
+  // document (the host page). The question wizard lives inside
+  // #jma-v2-panel-iframe's OWN document (v2/v2_popup.html) — a separate
+  // browsing context entirely. Nothing in this file can add/remove/hide an
+  // element inside that iframe; postMessage is the only channel between them,
+  // and this file never sends anything back. If a question card visibly
+  // jumps or disappears on focus, that has to originate inside v2_popup.js/
+  // v2_popup.html itself, not here.
+  let _v2LastActiveIdx = undefined;
+
   window.addEventListener('message', (e) => {
     if (e.origin !== EXT_ORIGIN) return;
     const d = e.data;
@@ -356,7 +378,10 @@
         ? `תשובה פעילה (${_v2ActiveAnswer.skill || 'שאלה ' + (d.idx + 1)}): "${_v2ActiveAnswer.text.slice(0, 60)}${_v2ActiveAnswer.text.length > 60 ? '…' : ''}"`
         : 'הקלידי תשובה בפאנל ואז לחצי + על הסעיף המתאים';
     }
-    _v2UpdateActiveHighlights();
+    if (d.idx !== _v2LastActiveIdx) {
+      _v2LastActiveIdx = d.idx;
+      _v2UpdateActiveHighlights();
+    }
   });
 
   // V2 addition (requirement 2): keep every '+' target inside the CV window
@@ -381,7 +406,7 @@
     });
   }
 
-  // ═══ 6a. Real AI semantic block mapping (Task 1), with heuristic fallback ═
+  // ═══ 6a. AI semantic block mapping (Task 1) — upload-time only, DB-backed ═
   //
   // Answering the architecture questions directly:
   //   Q: Does a one-time AI parser register exact role boundaries on upload?
@@ -395,141 +420,39 @@
   //      deterministic regex heuristic run on the ALREADY-tailored output
   //      during generate_cv, for diff-highlighting — not on the raw upload.
   //   Q: Where would AI mapping data live and how do we use it for blocks?
-  //   A: /api/v2/semantic-map (server-python/v2/semantic_map.py) — new, since
-  //      no V1 equivalent exists to replicate. It returns start_line/end_line
-  //      per block instead of trusting the model to retype CV content, so the
-  //      ORIGINAL lines are sliced back out server-side byte-for-byte — this
-  //      mirrors V1's own anti-hallucination diff-matching design (main.py's
-  //      "never an LLM's re-typed approximation" comment at _split_original_lines).
-  //      That's what guarantees native spacing/line-breaks survive untouched.
-  //      Cached client-side per unique CV text (jma_v2_semantic_map_<hash>) so
-  //      it only runs once per CV, not on every panel open.
-  function _v2HashText(text) {
-    let h = 0;
-    for (let i = 0; i < (text || '').length; i++) h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
-    return Math.abs(h).toString(36);
-  }
-
-  async function _v2FetchSemanticMap(cvText) {
+  //   A: server-python/v2/models.py's V2CvSemanticMap table (one row per
+  //      user, Alembic migration e7f1a9c3b2d4) — new, since no V1 equivalent
+  //      exists to replicate. POST /api/v2/semantic-map (server-python/v2/
+  //      semantic_map.py) runs the AI parse and UPSERTS the row EXACTLY ONCE,
+  //      triggered only from the CV-upload flow (see v2/v2-entry.js's
+  //      parallel #btnSaveSettings listener — never from here). This function
+  //      only ever performs GET /api/v2/cv-blocks, a pure DB read: no AI
+  //      call, no heuristic fallback, no client-side result caching. If
+  //      nothing has been processed yet, the CV window shows an explicit
+  //      "re-upload to enable mapping" empty state rather than computing
+  //      anything on the fly.
+  //      The line-range-only response shape (never trusting the model to
+  //      retype content) mirrors V1's own anti-hallucination diff-matching
+  //      design (main.py's "never an LLM's re-typed approximation" comment
+  //      at _split_original_lines) — that's what guarantees native
+  //      spacing/line-breaks survive untouched.
+  async function _v2GetCvBlocks() {
     const stored = await chrome.storage.local.get(['licenseKey']);
-    const resp = await fetch(`${BACKEND}/api/v2/semantic-map`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-License-Key': stored.licenseKey || '' },
-      body: JSON.stringify({ cvText }),
+    const resp = await fetch(`${BACKEND}/api/v2/cv-blocks`, {
+      headers: { 'X-License-Key': stored.licenseKey || '' },
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    const blocks = data.blocks;
-    if (!Array.isArray(blocks) || blocks.length === 0) throw new Error('empty semantic map');
-    return blocks.map((b, i) => ({
+    if (!data.processed || !Array.isArray(data.blocks) || data.blocks.length === 0) {
+      return null; // not yet processed — caller renders the re-upload prompt
+    }
+    return data.blocks.map((b, i) => ({
       id: `b${i}`,
       type: b.type === 'skills' ? 'skills' : (b.type === 'role' ? 'role' : 'text'),
       label: (b.label || '').slice(0, 60),
       insertable: b.type === 'skills' || b.type === 'role',
       text: b.text || '',
     }));
-  }
-
-  // Tries the cached AI map, then a fresh AI call, then falls back to the
-  // local heuristic below on any failure (offline, invalid license, server
-  // error, malformed response) — the CV window must never fail to render.
-  async function _v2GetCvBlocks(cvText) {
-    const cacheKey = `jma_v2_semantic_map_${_v2HashText(cvText)}`;
-    try {
-      const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
-      if (cached?.blocks?.length) return cached.blocks;
-    } catch {}
-
-    try {
-      const blocks = await _v2FetchSemanticMap(cvText);
-      chrome.storage.local.set({ [cacheKey]: { blocks, ts: Date.now() } }).catch(() => {});
-      return blocks;
-    } catch (err) {
-      console.warn('[JMA:V2] semantic-map AI call failed, using heuristic fallback:', err);
-      return _v2MapCvBlocks(cvText);
-    }
-  }
-
-  // Heuristic structural mapping of the ORIGINAL CV text into blocks — the
-  // fallback path when the AI semantic map is unavailable. Kept intentionally
-  // simple/robust (no network dependency) since it must always succeed.
-  const SECTION_HEADINGS = [
-    { type: 'skills',     re: /^(technical skills|core skills|skills|כישורים( טכניים)?|מיומנויות|טכנולוגיות)\b/i },
-    { type: 'experience', re: /^(work experience|professional experience|experience|employment( history)?|ניסיון( מקצועי| תעסוקתי)?)\b/i },
-    { type: 'education',  re: /^(education|academic|השכלה)\b/i },
-    { type: 'summary',    re: /^(summary|profile|about( me)?|תקציר|פרופיל|אודות)\b/i },
-    { type: 'languages',  re: /^(languages|שפות)\b/i },
-    { type: 'projects',   re: /^(projects|personal projects|פרויקטים)\b/i },
-    { type: 'military',   re: /^(military( service)?|שירות צבאי)\b/i },
-  ];
-  const ROLE_START_RE = /((19|20)\d{2})\s*[-–—]\s*((19|20)\d{2}|present|current|now|היום|כיום)/i;
-
-  function _v2MapCvBlocks(cvText) {
-    const lines = (cvText || '').split('\n');
-    const sections = [];
-    let cur = { type: 'header', label: 'פתיח', lines: [] };
-
-    for (const line of lines) {
-      const t = line.trim();
-      const heading = t.length > 0 && t.length <= 45
-        ? SECTION_HEADINGS.find(h => h.re.test(t.replace(/[:\-–—\s]+$/, '')))
-        : null;
-      if (heading) {
-        if (cur.lines.some(l => l.trim())) sections.push(cur);
-        cur = { type: heading.type, label: t.replace(/[:\s]+$/, ''), lines: [] };
-      } else {
-        cur.lines.push(line);
-      }
-    }
-    if (cur.lines.some(l => l.trim())) sections.push(cur);
-
-    // Split the experience section into per-role blocks
-    const blocks = [];
-    let blockId = 0;
-    for (const sec of sections) {
-      if (sec.type !== 'experience') {
-        blocks.push({
-          id: `b${blockId++}`,
-          type: sec.type === 'skills' ? 'skills' : 'text',
-          label: sec.label,
-          insertable: sec.type === 'skills',
-          text: sec.lines.join('\n').trim(),
-        });
-        continue;
-      }
-      // Experience: a new role starts on a line with a year range, or a
-      // "Title | Company" / "Title @ Company" line following a blank line.
-      let role = null;
-      const flushRole = () => {
-        if (role && role.lines.some(l => l.trim())) {
-          const firstLine = role.lines.find(l => l.trim())?.trim() || sec.label;
-          blocks.push({
-            id: `b${blockId++}`,
-            type: 'role',
-            label: firstLine.slice(0, 60),
-            insertable: true,
-            sectionLabel: sec.label,
-            text: role.lines.join('\n').trim(),
-          });
-        }
-      };
-      let prevBlank = true;
-      for (const line of sec.lines) {
-        const t = line.trim();
-        const isRoleStart = t &&
-          (ROLE_START_RE.test(t) || (prevBlank && /.+\s*[|@]\s*.+/.test(t) && t.length <= 80));
-        if (isRoleStart && role && role.lines.some(l => l.trim())) {
-          flushRole();
-          role = { lines: [line] };
-        } else {
-          if (!role) role = { lines: [] };
-          role.lines.push(line);
-        }
-        prevBlank = !t;
-      }
-      flushRole();
-    }
-    return blocks;
   }
 
   async function _v2OpenCvWindow() {
@@ -570,10 +493,26 @@
       return;
     }
     paper.dir = detectLanguage(cvText) === 'hebrew' ? 'rtl' : 'ltr';
-    paper.innerHTML = '<div class="jma-v2-cv-empty" dir="rtl">מנתחת את מבנה הקו"ח…</div>';
+    paper.innerHTML = '<div class="jma-v2-cv-empty" dir="rtl">טוענת את מבנה הקו"ח…</div>';
 
-    const blocks = await _v2GetCvBlocks(cvText);
+    let blocks = null;
+    try {
+      blocks = await _v2GetCvBlocks();
+    } catch (err) {
+      console.warn('[JMA:V2] cv-blocks fetch failed:', err);
+    }
     paper.innerHTML = '';
+
+    if (!blocks) {
+      // Upload-time-only contract: never compute a map here. If none exists
+      // yet for this user, direct them to the one legitimate trigger point.
+      paper.innerHTML = `<div class="jma-v2-cv-empty" dir="rtl">
+        מבנה הקו"ח עוד לא עובד. פתחי ⚙️ הגדרות ושמרי מחדש את קובץ הקו"ח כדי
+        להפעיל את המיפוי החכם (פעם אחת בלבד).
+      </div>`;
+      return;
+    }
+
     for (const block of blocks) {
       const el = document.createElement('div');
       el.className = `jma-v2-cv-block jma-v2-cv-${block.type}`;
@@ -867,7 +806,11 @@
       .jma-v2-cv-role .jma-v2-cv-block-label{border-bottom-style:dashed;font-size:13px}
       .jma-v2-cv-block-body{white-space:pre-wrap;word-break:break-word}
       .jma-v2-cv-plus-wrap{
-        position:absolute;top:2px;inset-inline-end:-4px;z-index:1;
+        /* Floats just above the block (not top:2px inside it) so the label
+           pill can never overlap the block's own body text — it's still
+           position:absolute (out of flow, can't trigger a reflow of
+           surrounding content), this just avoids the cosmetic overlap. */
+        position:absolute;top:-11px;inset-inline-end:-4px;z-index:1;
         display:flex;align-items:center;gap:6px;direction:rtl;
       }
       .jma-v2-cv-plus{
@@ -885,9 +828,9 @@
          Mirrors the panel's .jma-v2-active-question pulse (same purple, same
          rhythm) so the two sides read as one linked state. */
       .jma-v2-cv-plus-label{
-        display:none;font-size:10.5px;font-weight:700;color:#5B21B6;
+        display:none;pointer-events:none;font-size:10.5px;font-weight:700;color:#5B21B6;
         background:#fff;border:1px solid #C9B8F0;border-radius:8px;
-        padding:2px 8px;white-space:nowrap;max-width:170px;overflow:hidden;
+        padding:2px 8px;white-space:nowrap;max-width:140px;overflow:hidden;
         text-overflow:ellipsis;box-shadow:0 2px 6px rgba(124,58,237,.2);
         font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
         animation:jmaV2LabelIn .18s ease;

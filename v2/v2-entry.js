@@ -8,10 +8,67 @@
 //   Interactive (V2) → stopPropagation() starves V1; the V2 panel is opened
 //                      on the job page via the jmaV2OpenPanel message, which
 //                      only v2/v2_content.js answers.
+//
+// CV upload is NOT a V1-vs-V2 choice — it's shared infrastructure (both
+// pipelines read the same cvText). So the upload-time semantic-map trigger
+// below is a second, independent, non-exclusive 'click' listener on V1's own
+// #btnSaveSettings — it never intercepts or stops that event, popup.js's own
+// handler still runs exactly as before. This is the ONLY legitimate place
+// the AI CV-structure parser fires (see server-python/v2/semantic_map.py's
+// upload-time-only contract) — v2_content.js's CV window only ever reads the
+// already-computed result, never computes one during job navigation.
 (() => {
   'use strict';
 
   const BYPASS = '_jmaV2Bypass';
+  const V2_BACKEND = 'https://job-match-ai-extension.onrender.com';
+  const LAST_MAPPED_HASH_KEY = 'jma_v2_last_mapped_cv_hash';
+
+  function _v2HashText(text) {
+    let h = 0;
+    for (let i = 0; i < (text || '').length; i++) h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
+    return Math.abs(h).toString(36);
+  }
+
+  // Fires alongside (not instead of) popup.js's own save handler. Reads the
+  // pending upload straight off the file input's own stash — the same
+  // fields popup.js itself reads at click time (fileInput._extractedText) —
+  // so this doesn't need to wait for V1's async save chain to finish.
+  document.getElementById('btnSaveSettings')?.addEventListener('click', () => {
+    const fileInput = document.getElementById('cvFileInput');
+    const cvText = fileInput?._extractedText;
+    if (!cvText) return; // no new CV in this save — nothing to (re)map
+
+    (async () => {
+      const hash = _v2HashText(cvText);
+      // Not a runtime/result cache — just a dedup guard so re-saving other
+      // settings (license key, tracking toggle) without changing the CV
+      // file doesn't re-trigger the AI parse. The actual mapping result is
+      // never read from here or from local storage — only from the DB via
+      // GET /api/v2/cv-blocks.
+      const { [LAST_MAPPED_HASH_KEY]: lastHash } = await chrome.storage.local.get(LAST_MAPPED_HASH_KEY);
+      if (lastHash === hash) return;
+
+      try {
+        console.log('[JMA:V2] upload-time semantic-map: sending CV for structural mapping…');
+        const { licenseKey } = await chrome.storage.local.get('licenseKey');
+        const resp = await fetch(`${V2_BACKEND}/api/v2/semantic-map`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey || '' },
+          body: JSON.stringify({ cvText }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.saved) {
+          await chrome.storage.local.set({ [LAST_MAPPED_HASH_KEY]: hash });
+          console.log(`[JMA:V2] upload-time semantic-map: saved ${data.blocks?.length ?? 0} blocks to profile DB`);
+        } else {
+          console.warn(`[JMA:V2] upload-time semantic-map: NOT saved (HTTP ${resp.status}, saved=${data.saved ?? 'n/a'})`);
+        }
+      } catch (err) {
+        console.warn('[JMA:V2] upload-time semantic-map call failed:', err);
+      }
+    })();
+  });
 
   document.addEventListener('click', (e) => {
     if (e[BYPASS]) return; // Classic handoff — V1's listener takes it
