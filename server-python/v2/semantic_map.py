@@ -147,13 +147,20 @@ async def semantic_map_endpoint(
             }],
             user_content=SEMANTIC_MAP_PROMPT.format(numbered_cv=numbered_cv),
             max_tokens=2000,
-            model="claude-3-5-haiku",
+            # Real Anthropic Haiku ID (matches _resolve_model('haiku') and every
+            # actually-executed call in main.py). Was "claude-3-5-haiku" — an
+            # invalid ID copied from main.py:1875's Pass-1 path, which almost
+            # never runs (Pass 1 is skipped when the client sends a local
+            # score), so its typo stayed latent there. Here the AI runs every
+            # time, so the bad ID made the API reject every call and the row
+            # never saved.
+            model="claude-haiku-4-5-20251001",
         )
         parsed = json.loads(repair_json(raw if isinstance(raw, str) else str(raw)))
         raw_blocks = parsed.get("blocks", []) if isinstance(parsed, dict) else []
     except Exception as e:
         print(f"[JMA:v2:semantic_map] error: {e}")
-        return {"blocks": [], "saved": False}
+        return {"blocks": [], "saved": False, "error": f"{type(e).__name__}: {e}"}
 
     clamped = _clamp_blocks(raw_blocks, len(lines))
     blocks = [
@@ -166,7 +173,7 @@ async def semantic_map_endpoint(
     ]
     blocks = [b for b in blocks if b["text"]]
     if not blocks:
-        return {"blocks": [], "saved": False}
+        return {"blocks": [], "saved": False, "error": "ai_returned_no_blocks"}
 
     cv_hash = _cv_hash(body.cvText)
     result = await db.execute(select(V2CvSemanticMap).where(V2CvSemanticMap.user_id == user.id))

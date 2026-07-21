@@ -30,45 +30,64 @@
     return Math.abs(h).toString(36);
   }
 
-  // Fires alongside (not instead of) popup.js's own save handler. Reads the
-  // pending upload straight off the file input's own stash — the same
-  // fields popup.js itself reads at click time (fileInput._extractedText) —
-  // so this doesn't need to wait for V1's async save chain to finish.
-  document.getElementById('btnSaveSettings')?.addEventListener('click', () => {
-    const fileInput = document.getElementById('cvFileInput');
-    const cvText = fileInput?._extractedText;
-    if (!cvText) return; // no new CV in this save — nothing to (re)map
-
-    (async () => {
-      const hash = _v2HashText(cvText);
-      // Not a runtime/result cache — just a dedup guard so re-saving other
-      // settings (license key, tracking toggle) without changing the CV
-      // file doesn't re-trigger the AI parse. The actual mapping result is
-      // never read from here or from local storage — only from the DB via
-      // GET /api/v2/cv-blocks.
+  // Runs the AI structural map and saves it to the profile DB. Deduped by CV
+  // text hash so it only actually calls the server when THIS CV hasn't been
+  // mapped yet — clicking Save repeatedly, or for unrelated settings, is a
+  // cheap no-op. `sync:true` skips the dedup (used by a fresh file upload,
+  // where we always want to (re)map even if the hash somehow matches).
+  async function _v2EnsureSemanticMap(cvText, { force = false } = {}) {
+    if (!cvText || cvText.trim().length < 50) return;
+    const hash = _v2HashText(cvText);
+    if (!force) {
       const { [LAST_MAPPED_HASH_KEY]: lastHash } = await chrome.storage.local.get(LAST_MAPPED_HASH_KEY);
-      if (lastHash === hash) return;
-
-      try {
-        console.log('[JMA:V2] upload-time semantic-map: sending CV for structural mapping…');
-        const { licenseKey } = await chrome.storage.local.get('licenseKey');
-        const resp = await fetch(`${V2_BACKEND}/api/v2/semantic-map`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey || '' },
-          body: JSON.stringify({ cvText }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (resp.ok && data.saved) {
-          await chrome.storage.local.set({ [LAST_MAPPED_HASH_KEY]: hash });
-          console.log(`[JMA:V2] upload-time semantic-map: saved ${data.blocks?.length ?? 0} blocks to profile DB`);
-        } else {
-          console.warn(`[JMA:V2] upload-time semantic-map: NOT saved (HTTP ${resp.status}, saved=${data.saved ?? 'n/a'})`);
-        }
-      } catch (err) {
-        console.warn('[JMA:V2] upload-time semantic-map call failed:', err);
+      if (lastHash === hash) return; // already mapped this exact CV
+    }
+    try {
+      console.log('[JMA:V2] upload-time semantic-map: sending CV for structural mapping…');
+      const { licenseKey } = await chrome.storage.local.get('licenseKey');
+      const resp = await fetch(`${V2_BACKEND}/api/v2/semantic-map`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey || '' },
+        body: JSON.stringify({ cvText }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.saved) {
+        await chrome.storage.local.set({ [LAST_MAPPED_HASH_KEY]: hash });
+        console.log(`[JMA:V2] upload-time semantic-map: saved ${data.blocks?.length ?? 0} blocks to profile DB`);
+      } else {
+        console.warn(`[JMA:V2] upload-time semantic-map: NOT saved (HTTP ${resp.status}, saved=${data.saved ?? 'n/a'}, error=${data.error ?? 'none'})`);
       }
+    } catch (err) {
+      console.warn('[JMA:V2] upload-time semantic-map call failed:', err);
+    }
+  }
+
+  // Fires alongside (not instead of) popup.js's own save handler — never
+  // intercepts or stops the event. Document-level delegation (not a direct
+  // getElementById at load time) so it works no matter when the settings
+  // screen / button is rendered. BUG FIX: previously this only read
+  // fileInput._extractedText, which is set ONLY on a fresh file pick — so
+  // clicking Save with an already-saved CV (no re-selection) mapped nothing.
+  // Now it falls back to the stored cvText, which also self-heals CVs that
+  // were uploaded before this feature existed.
+  document.addEventListener('click', (e) => {
+    const saveBtn = e.target instanceof Element ? e.target.closest('#btnSaveSettings') : null;
+    if (!saveBtn) return;
+    const freshUpload = document.getElementById('cvFileInput')?._extractedText;
+    (async () => {
+      const cvText = freshUpload || (await chrome.storage.local.get('cvText')).cvText || '';
+      await _v2EnsureSemanticMap(cvText, { force: !!freshUpload });
     })();
   });
+
+  // Extra self-heal: when the popup opens and a CV is already saved but has
+  // never been mapped, kick the mapping off in the background. Makes existing
+  // users work without needing to re-save at all. Deduped, so it's a no-op
+  // once mapped.
+  (async () => {
+    const { cvText } = await chrome.storage.local.get('cvText');
+    if (cvText) _v2EnsureSemanticMap(cvText);
+  })();
 
   document.addEventListener('click', (e) => {
     if (e[BYPASS]) return; // Classic handoff — V1's listener takes it

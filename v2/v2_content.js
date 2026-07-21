@@ -132,6 +132,32 @@
   }
   const _placementsKey = () => `jma_v2_placements_${_urlHash(location.href)}`;
 
+  // After the extension is reloaded/updated at chrome://extensions, a content
+  // script already injected into an open tab keeps running but its chrome.*
+  // APIs are dead — any chrome.storage/runtime call throws "Extension context
+  // invalidated". chrome.runtime.id goes undefined in exactly that state, so
+  // it's the cheapest guard. The only real remedy is a page refresh (which
+  // injects a fresh content script), so we detect it and say so rather than
+  // letting an uncaught throw abort the whole open silently.
+  function _v2ContextAlive() {
+    try { return !!(chrome.runtime && chrome.runtime.id); }
+    catch { return false; }
+  }
+
+  function _v2ShowRefreshToast() {
+    if (document.getElementById('jma-v2-stale-toast')) return;
+    _injectStyles();
+    const toast = document.createElement('div');
+    toast.id = 'jma-v2-stale-toast';
+    toast.setAttribute('dir', 'rtl');
+    toast.innerHTML = `
+      <span>🔄 התוסף עודכן — רענני את הדף (F5) כדי להפעיל את מצב V2</span>
+      <button type="button" id="jma-v2-stale-reload">רענני עכשיו</button>`;
+    document.documentElement.appendChild(toast);
+    toast.querySelector('#jma-v2-stale-reload').addEventListener('click', () => location.reload());
+    setTimeout(() => toast.remove(), 12000);
+  }
+
   async function _v2GetRecentJobs() {
     const res = await chrome.storage.local.get(V2_JOBS_KEY);
     return res[V2_JOBS_KEY] || [];
@@ -291,10 +317,19 @@
     box.querySelector('#jma-v2-btn-interactive').addEventListener('click', async (ev) => {
       ev.stopPropagation();
       box.remove();
+      // If the extension was reloaded under this open tab, chrome.* is dead —
+      // bail with a clear refresh prompt instead of throwing at the first
+      // storage call and leaving the panel half-open.
+      if (!_v2ContextAlive()) { _v2ShowRefreshToast(); return; }
       // V1 was starved by stopPropagation at capture — only V2 runs from here.
-      await jmaV2RunPipeline();
-      _v2TogglePanel(true);
-      await _v2OpenCvWindow(); // floating CV window opens in parallel
+      try {
+        await jmaV2RunPipeline();
+        _v2TogglePanel(true);
+        await _v2OpenCvWindow(); // floating CV window opens in parallel
+      } catch (err) {
+        if (!_v2ContextAlive()) { _v2ShowRefreshToast(); return; }
+        console.error('[JMA:V2] failed to open interactive mode:', err);
+      }
     });
   }
 
@@ -436,23 +471,41 @@
   //      design (main.py's "never an LLM's re-typed approximation" comment
   //      at _split_original_lines) — that's what guarantees native
   //      spacing/line-breaks survive untouched.
+  // Returns { status, blocks } so the caller can show a precise empty-state:
+  //   'ok'         → blocks present, render them
+  //   'unmapped'   → 200 but no DB row yet → user must re-save CV once
+  //   'missing'    → 404 → cv-blocks endpoint not deployed yet → deploy needed
+  //   'error'      → any other failure (network, 5xx, auth)
   async function _v2GetCvBlocks() {
     const stored = await chrome.storage.local.get(['licenseKey']);
-    const resp = await fetch(`${BACKEND}/api/v2/cv-blocks`, {
-      headers: { 'X-License-Key': stored.licenseKey || '' },
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    if (!data.processed || !Array.isArray(data.blocks) || data.blocks.length === 0) {
-      return null; // not yet processed — caller renders the re-upload prompt
+    let resp;
+    try {
+      resp = await fetch(`${BACKEND}/api/v2/cv-blocks`, {
+        headers: { 'X-License-Key': stored.licenseKey || '' },
+      });
+    } catch (err) {
+      console.warn('[JMA:V2] cv-blocks network error:', err);
+      return { status: 'error', blocks: null };
     }
-    return data.blocks.map((b, i) => ({
-      id: `b${i}`,
-      type: b.type === 'skills' ? 'skills' : (b.type === 'role' ? 'role' : 'text'),
-      label: (b.label || '').slice(0, 60),
-      insertable: b.type === 'skills' || b.type === 'role',
-      text: b.text || '',
-    }));
+    console.log(`[JMA:V2] cv-blocks → HTTP ${resp.status}`);
+    if (resp.status === 404) return { status: 'missing', blocks: null };
+    if (!resp.ok) return { status: 'error', blocks: null };
+
+    const data = await resp.json().catch(() => ({}));
+    console.log(`[JMA:V2] cv-blocks → processed=${data.processed} blocks=${data.blocks?.length ?? 0}`);
+    if (!data.processed || !Array.isArray(data.blocks) || data.blocks.length === 0) {
+      return { status: 'unmapped', blocks: null };
+    }
+    return {
+      status: 'ok',
+      blocks: data.blocks.map((b, i) => ({
+        id: `b${i}`,
+        type: b.type === 'skills' ? 'skills' : (b.type === 'role' ? 'role' : 'text'),
+        label: (b.label || '').slice(0, 60),
+        insertable: b.type === 'skills' || b.type === 'role',
+        text: b.text || '',
+      })),
+    };
   }
 
   async function _v2OpenCvWindow() {
@@ -495,21 +548,23 @@
     paper.dir = detectLanguage(cvText) === 'hebrew' ? 'rtl' : 'ltr';
     paper.innerHTML = '<div class="jma-v2-cv-empty" dir="rtl">טוענת את מבנה הקו"ח…</div>';
 
-    let blocks = null;
-    try {
-      blocks = await _v2GetCvBlocks();
-    } catch (err) {
-      console.warn('[JMA:V2] cv-blocks fetch failed:', err);
-    }
+    const { status, blocks } = await _v2GetCvBlocks();
     paper.innerHTML = '';
 
     if (!blocks) {
-      // Upload-time-only contract: never compute a map here. If none exists
-      // yet for this user, direct them to the one legitimate trigger point.
-      paper.innerHTML = `<div class="jma-v2-cv-empty" dir="rtl">
-        מבנה הקו"ח עוד לא עובד. פתחי ⚙️ הגדרות ושמרי מחדש את קובץ הקו"ח כדי
-        להפעיל את המיפוי החכם (פעם אחת בלבד).
-      </div>`;
+      // Progressive-enhancement fallback: the SMART per-role blocks + '+'
+      // buttons still require the DB map (upload-time only, as required) — but
+      // we always DISPLAY the raw CV so the window is never blank. Splitting
+      // here is pure display formatting (blank-line paragraphs, preserving
+      // native line breaks) — NOT semantic mapping: no role detection, no AI,
+      // no classification. When the DB map lands (after deploy + re-save) this
+      // upgrades automatically to per-role blocks with insertion buttons.
+      const reason = {
+        missing:  'השרת עדיין לא עודכן — המיפוי החכם (כפתורי + לפי תפקיד) יופעל אחרי deploy לשרת ושמירה מחדש של הקו"ח.',
+        unmapped: 'המיפוי החכם עדיין לא חושב — פתחי ⚙️ הגדרות ושמרי מחדש את הקו"ח (פעם אחת) כדי להפעיל כפתורי + לפי תפקיד.',
+        error:    'לא הצלחנו לקבל את מבנה הקו"ח מהשרת (ייתכן שהוא מתעורר) — מציגים את הקו"ח, נסי שוב מאוחר יותר להפעלת הכפתורים.',
+      }[status] || 'מציגים את הקו"ח; המיפוי החכם אינו זמין כרגע.';
+      _v2RenderRawCvFallback(paper, cvText, reason);
       return;
     }
 
@@ -563,6 +618,29 @@
     } catch {}
 
     _v2UpdateActiveHighlights(); // reflect an already-active answer immediately
+  }
+
+  // Display-only fallback when no DB semantic map exists. Renders the raw CV
+  // (blank-line paragraphs, native line breaks preserved) with a banner
+  // explaining that per-role '+' buttons activate once the map is computed.
+  // No role detection / classification / insertion here — that stays DB-only.
+  function _v2RenderRawCvFallback(paper, cvText, reason) {
+    const banner = document.createElement('div');
+    banner.className = 'jma-v2-cv-fallback-banner';
+    banner.dir = 'rtl';
+    banner.textContent = `ℹ️ ${reason}`;
+    paper.appendChild(banner);
+
+    const paragraphs = cvText.split(/\n\s*\n/).map(p => p.replace(/\s+$/g, '')).filter(p => p.trim());
+    for (const para of paragraphs) {
+      const block = document.createElement('div');
+      block.className = 'jma-v2-cv-block jma-v2-cv-text';
+      const body = document.createElement('div');
+      body.className = 'jma-v2-cv-block-body';
+      body.textContent = para;
+      block.appendChild(body);
+      paper.appendChild(block);
+    }
   }
 
   function _v2CloseCvWindow() {
@@ -667,9 +745,13 @@
 
   chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
     if (req?.action === 'jmaV2OpenPanel') {
+      if (!_v2ContextAlive()) { _v2ShowRefreshToast(); sendResponse({ ok: false, stale: true }); return; }
       jmaV2RunPipeline().then(() => {
         _v2TogglePanel(true);
         return _v2OpenCvWindow();
+      }).catch((err) => {
+        if (!_v2ContextAlive()) _v2ShowRefreshToast();
+        else console.error('[JMA:V2] openPanel failed:', err);
       }).finally(() => sendResponse({ ok: true }));
       return true;
     }
@@ -868,6 +950,25 @@
       }
       .jma-v2-injected-remove:hover{color:#DC2626}
       .jma-v2-cv-empty{padding:30px;text-align:center;color:#6B7280;font-size:13px}
+      .jma-v2-cv-fallback-banner{
+        margin-bottom:14px;padding:9px 12px;border-radius:8px;
+        background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;
+        font-size:11.5px;line-height:1.5;
+        font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+      }
+      #jma-v2-stale-toast{
+        position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+        z-index:2147483647;display:flex;align-items:center;gap:12px;
+        background:#1E1B2E;border:1px solid #7C3AED;border-radius:12px;
+        padding:12px 16px;box-shadow:0 10px 30px rgba(0,0,0,.45);
+        color:#E9E4F8;font-size:13px;font-weight:600;direction:rtl;
+        font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+      }
+      #jma-v2-stale-reload{
+        all:unset;cursor:pointer;background:#7C3AED;color:#fff;
+        padding:6px 12px;border-radius:8px;font-size:12.5px;font-weight:700;
+      }
+      #jma-v2-stale-reload:hover{background:#6D28D9}
     `;
     document.documentElement.appendChild(style);
   }
