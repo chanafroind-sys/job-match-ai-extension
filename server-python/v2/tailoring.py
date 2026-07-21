@@ -82,13 +82,27 @@ class ClassifyFitRequest(BaseModel):
 CLASSIFY_USER = """Using the ORIGINAL CV and JOB DESCRIPTION in your system context, classify \
 the match as exactly one of "general" or "niche".
 
-- "general" (General Fit): the CV's broad professional identity roughly matches the job — \
-same core domains and trajectory. Needs only minor grooming, not a rewrite.
-- "niche" (Niche Fit): the job is highly specialised toward ONE domain while the CV is \
+- "general" (General Fit): the JOB spans essentially the SAME breadth as the CV's PRIMARY \
+identity — same core domains and trajectory. The CV needs only minor grooming, not a \
+rewrite. Choose this ONLY when the job is broadly aligned with the whole CV.
+
+- "niche" (Niche Fit): the job concentrates on ONE specialised subset while the CV is \
 broad/multi-domain. To compete, the CV needs a structural shift — shrink the unrelated \
 experience and expand the niche focus.
 
-Judge the professional story, not keyword overlap. A tool-level mismatch is NOT niche.
+⚠️ EXPLICIT DECIDING RULE — this IS niche, do NOT call it general:
+If the CV carries SUBSTANTIAL weight across several disciplines (e.g. heavy traditional \
+Backend + DB optimization AS WELL AS AI / automations), but the JOB focuses almost \
+entirely on ONE of those subsets (e.g. exclusively AI Agents, Prompt Engineering, \
+client-facing automations), you MUST classify it as NICHE. Reason: leaving the heavy \
+non-relevant experience (e.g. traditional Java/SQL backend) prominent would DILUTE the \
+candidate's signal for the specialised role — so the off-target domain must be \
+structurally shrunk and the on-target domain expanded. High keyword overlap does NOT \
+make it general when the job targets only one slice of a multi-domain CV.
+
+When you are torn between general and niche for a SPECIALISED job description, choose \
+niche. A pure tool-level mismatch alone (knows PostgreSQL, job says MySQL, same domain) \
+is NOT by itself niche.
 
 The CV's structural blocks (use these exact ids for focus_areas):
 {blocks}
