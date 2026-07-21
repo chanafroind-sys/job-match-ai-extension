@@ -28,3 +28,4 @@ async def v2_health():
 # object exists so the decorator can attach routes.
 from v2 import stream_questions  # noqa: E402,F401
 from v2 import semantic_map      # noqa: E402,F401
+from v2 import tailoring         # noqa: E402,F401

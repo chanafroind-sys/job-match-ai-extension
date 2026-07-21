@@ -700,10 +700,19 @@ async function _finishQuestions(skipped) {
   const note = document.createElement('div');
   note.className = 'v2-done-note';
   note.textContent = skipped
-    ? '✔️ דילגת על השאלות. שלב הסיום (אבחון התאמה + יצירת קו"ח) יגיע בפאזה הבאה של V2.'
-    : '✔️ התשובות והמיקומים שסימנת בחלון הקו"ח נשמרו. שלב הסיום (אבחון התאמה + יצירת קו"ח) יגיע בפאזה הבאה של V2.';
+    ? '✔️ דילגת על השאלות. מבצעים כעת התאמה חכמה של הקו"ח בחלון שמשמאל…'
+    : '✔️ התשובות נשמרו. מבצעים כעת התאמה חכמה של הקו"ח בחלון שמשמאל…';
   container.appendChild(note);
   note.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+  // Phase 2 lives in the host-page CV window (v2_content.js). Hand off the
+  // answers across the iframe boundary — content.js runs classify → baseline
+  // groom → general/niche branch, applying changes live on the CV.
+  try {
+    window.parent.postMessage({ type: 'jmaV2QuestionsDone', answers, skipped }, '*');
+  } catch (e) {
+    console.warn('[JMA:V2] failed to hand off to Phase 2:', e);
+  }
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

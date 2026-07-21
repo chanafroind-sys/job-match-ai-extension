@@ -405,7 +405,10 @@
   window.addEventListener('message', (e) => {
     if (e.origin !== EXT_ORIGIN) return;
     const d = e.data;
-    if (!d || d.type !== 'jmaV2ActiveAnswer') return;
+    if (!d) return;
+    // Phase 2 trigger: the wizard finished (or was skipped) in the panel iframe.
+    if (d.type === 'jmaV2QuestionsDone') { _v2RunPhase2(d.answers || []); return; }
+    if (d.type !== 'jmaV2ActiveAnswer') return;
     _v2ActiveAnswer = { idx: d.idx, skill: d.skill || '', text: (d.text || '').trim() };
     const hint = document.getElementById('jma-v2-cv-active-hint');
     if (hint) {
@@ -581,7 +584,7 @@
       }
       const body = document.createElement('div');
       body.className = 'jma-v2-cv-block-body';
-      body.textContent = block.text;
+      _v2SetBlockBody(body, block.text);
       el.appendChild(body);
 
       if (block.insertable) {
@@ -617,6 +620,11 @@
       }
     } catch {}
 
+    // Capture context for Phase 2 tailoring (needs mapped blocks + the JD text).
+    let jobText = '';
+    try { jobText = (await _v2GetRecentJobs()).find(j => j.url === location.href)?.jobText || ''; } catch {}
+    _v2CaptureTailorContext(cvText, jobText, blocks, paper);
+
     _v2UpdateActiveHighlights(); // reflect an already-active answer immediately
   }
 
@@ -648,6 +656,233 @@
     if (win) win.style.display = 'none';
   }
 
+  // ═══ 6c. Phase 2: General-vs-Niche tailoring, live preview + undo stack ════
+  //
+  // After the wizard finishes (jmaV2QuestionsDone from the panel iframe), we:
+  //   1. classify-fit (general|niche) in parallel — shares the cached CV+JD
+  //      context the baseline groom warms, so it's cheap/fast.
+  //   2. Phase 1 baseline-groom (ALL fits): constrained, live per-block.
+  //   3. Branch: general → toast; niche → modal (focus areas + shrink scale) →
+  //      niche-restructure → live per-block.
+  // Every transform snapshots block state onto a stack, so any step is
+  // cleanly revertible (Original → Baseline → Niche). The three backend calls
+  // reuse ONE cached CV+JD system block (prompt caching) — see v2/tailoring.py.
+  let _v2Tailor = null; // { cvText, jobText, paper, blocks:[{id,type,label,text}], stack:[], answers }
+
+  function _v2EscapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+  // Render **x** as bold — escape first so CV text can never inject markup.
+  function _v2SetBlockBody(bodyEl, text) {
+    bodyEl.innerHTML = _v2EscapeHtml(text).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+
+  function _v2CaptureTailorContext(cvText, jobText, blocks, paper) {
+    _v2Tailor = {
+      cvText, jobText, paper,
+      blocks: blocks.map(b => ({ id: b.id, type: b.type, label: b.label, text: b.text })),
+      stack: [],
+      answers: [],
+    };
+  }
+
+  function _v2BlocksPayload() {
+    return _v2Tailor.blocks.map(b => ({ id: b.id, type: b.type, label: b.label, text: b.text }));
+  }
+
+  async function _v2CallTailor(path, payload) {
+    const { licenseKey } = await chrome.storage.local.get('licenseKey');
+    const resp = await fetch(`${BACKEND}/api/v2/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey || '' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+  }
+
+  function _v2SetHint(text) {
+    const hint = document.getElementById('jma-v2-cv-active-hint');
+    if (hint) hint.textContent = text;
+  }
+
+  // Snapshot current block texts before a transform, so it can be reverted.
+  function _v2PushState(label) {
+    _v2Tailor.stack.push({ label, blocks: _v2Tailor.blocks.map(b => ({ ...b })) });
+    _v2RenderUndoBar();
+  }
+
+  // Apply per-block updates one at a time with a brief highlight — the
+  // "live, step-by-step" reveal. Returns a promise resolving when all applied.
+  function _v2ApplyUpdatesLive(updates, { label }) {
+    return new Promise((resolve) => {
+      _v2PushState(label);
+      const paper = _v2Tailor.paper;
+      let i = 0;
+      const step = () => {
+        if (i >= updates.length) { _v2RenderUndoBar(); resolve(); return; }
+        const u = updates[i++];
+        const b = _v2Tailor.blocks.find(x => x.id === u.id);
+        if (b) {
+          b.text = u.text;
+          const el = paper?.querySelector(`[data-block-id="${u.id}"]`);
+          const body = el?.querySelector('.jma-v2-cv-block-body');
+          if (el && body) {
+            el.classList.add('jma-v2-block-updating');
+            _v2SetBlockBody(body, u.text);
+            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            setTimeout(() => el.classList.remove('jma-v2-block-updating'), 900);
+          }
+        }
+        setTimeout(step, 340);
+      };
+      step();
+    });
+  }
+
+  function _v2Undo() {
+    const prev = _v2Tailor.stack.pop();
+    if (!prev) return;
+    _v2Tailor.blocks = prev.blocks.map(b => ({ ...b }));
+    for (const b of _v2Tailor.blocks) {
+      const el = _v2Tailor.paper?.querySelector(`[data-block-id="${b.id}"]`);
+      const body = el?.querySelector('.jma-v2-cv-block-body');
+      if (body) _v2SetBlockBody(body, b.text);
+    }
+    _v2RenderUndoBar();
+  }
+
+  function _v2RenderUndoBar() {
+    const win = document.getElementById('jma-v2-cv-window');
+    if (!win) return;
+    let bar = document.getElementById('jma-v2-cv-undobar');
+    const depth = _v2Tailor?.stack.length || 0;
+    if (depth === 0) { bar?.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'jma-v2-cv-undobar';
+      bar.dir = 'rtl';
+      win.querySelector('#jma-v2-cv-active-hint').insertAdjacentElement('afterend', bar);
+    }
+    const cur = _v2Tailor.stack[depth - 1].label;
+    bar.innerHTML = `<span>שלב: <b>${_v2EscapeHtml(cur)}</b></span>
+      <button type="button" id="jma-v2-undo-btn">↩ בטל שינוי אחרון</button>`;
+    bar.querySelector('#jma-v2-undo-btn').addEventListener('click', _v2Undo);
+  }
+
+  async function _v2RunPhase2(answers) {
+    if (!_v2Tailor) {
+      // No mapped blocks (raw-CV fallback) — Phase 2 needs the structural map.
+      _v2ShowToast('כדי לבצע התאמה חכמה צריך מיפוי מבנה — שמרי מחדש את הקו"ח בהגדרות.');
+      return;
+    }
+    _v2Tailor.answers = answers || [];
+    _v2TogglePanel(true);
+    const winEl = document.getElementById('jma-v2-cv-window');
+    if (winEl) winEl.style.display = 'flex';
+
+    // Classify in parallel with the baseline groom (both reuse the cached ctx).
+    const classifyP = _v2CallTailor('classify-fit', {
+      cvText: _v2Tailor.cvText, jobText: _v2Tailor.jobText,
+      answers: _v2Tailor.answers, blocks: _v2BlocksPayload(),
+    }).catch((e) => { console.warn('[JMA:V2] classify failed:', e); return { fit_type: 'general', recommendations: {} }; });
+
+    // ── Phase 1: baseline grooming (all fits) — live ──
+    _v2SetHint('✨ מבצע התאמת בסיס (הדגשת מילות מפתח וניסוח)…');
+    try {
+      const groom = await _v2CallTailor('baseline-groom', {
+        cvText: _v2Tailor.cvText, jobText: _v2Tailor.jobText,
+        answers: _v2Tailor.answers, blocks: _v2BlocksPayload(),
+      });
+      if (groom.blocks?.length) await _v2ApplyUpdatesLive(groom.blocks, { label: 'התאמת בסיס' });
+    } catch (e) {
+      console.warn('[JMA:V2] baseline groom failed:', e);
+    }
+
+    // ── Phase 2: branch on classification ──
+    const cls = await classifyP;
+    if (cls.fit_type === 'niche') {
+      _v2SetHint('🎯 זוהתה משרה נישתית');
+      _v2ShowNicheModal(cls);
+    } else {
+      _v2SetHint('✅ התאמה כוללת — בוצעו שינויים קלים');
+      _v2ShowToast('התאמה כוללת זוהתה. ביצענו שינויים קלים הכוללים הדגשת מילות מפתח טכנולוגיות, בולטים ושינויי ניסוח קלים כדי להתאים לדרישות המשרה.');
+    }
+  }
+
+  function _v2ShowToast(msg) {
+    _injectStyles();
+    document.getElementById('jma-v2-toast')?.remove();
+    const t = document.createElement('div');
+    t.id = 'jma-v2-toast';
+    t.dir = 'rtl';
+    t.textContent = msg;
+    document.documentElement.appendChild(t);
+    requestAnimationFrame(() => t.classList.add('jma-v2-toast-in'));
+    setTimeout(() => { t.classList.remove('jma-v2-toast-in'); setTimeout(() => t.remove(), 300); }, 9000);
+  }
+
+  function _v2ShowNicheModal(cls) {
+    _injectStyles();
+    document.getElementById('jma-v2-niche-modal')?.remove();
+    const rec = cls.recommendations || {};
+    const focus = Array.isArray(rec.focus_areas) ? rec.focus_areas : [];
+    const shrink = Array.isArray(rec.shrink_candidates) ? rec.shrink_candidates : [];
+    const overlay = document.createElement('div');
+    overlay.id = 'jma-v2-niche-modal';
+    overlay.dir = 'rtl';
+    const chk = (items, attr) => items.length
+      ? items.map(x => `<label class="jma-v2-modal-chk"><input type="checkbox" data-${attr}="${_v2EscapeHtml(x.id)}" checked> ${_v2EscapeHtml(x.label || x.id)}</label>`).join('')
+      : '<span class="jma-v2-modal-empty">— לא זוהו —</span>';
+    overlay.innerHTML = `
+      <div class="jma-v2-modal-card">
+        <div class="jma-v2-modal-title">זוהתה משרה נישתית הדורשת מיקוד ספציפי</div>
+        <div class="jma-v2-modal-sub">האם תרצה לבצע התאמות עומק בקורות החיים?</div>
+        ${cls.summary_he ? `<div class="jma-v2-modal-summary">${_v2EscapeHtml(cls.summary_he)}</div>` : ''}
+        <div class="jma-v2-modal-section">
+          <div class="jma-v2-modal-label">🔎 מיקוד — הרחבת התחומים הרלוונטיים:</div>
+          <div>${chk(focus, 'focus')}</div>
+        </div>
+        <div class="jma-v2-modal-section">
+          <div class="jma-v2-modal-label">✂️ צמצום ניסיון לא רלוונטי:</div>
+          <div>${chk(shrink, 'shrink')}</div>
+        </div>
+        <div class="jma-v2-modal-section">
+          <div class="jma-v2-modal-label">📉 עוצמת הצמצום:</div>
+          <div class="jma-v2-modal-scale">
+            <label><input type="radio" name="jmaV2Shrink" value="50" ${rec.suggested_shrink === 70 ? '' : 'checked'}> צמצום 50%</label>
+            <label><input type="radio" name="jmaV2Shrink" value="70" ${rec.suggested_shrink === 70 ? 'checked' : ''}> צמצום 70%</label>
+          </div>
+        </div>
+        <div class="jma-v2-modal-actions">
+          <button type="button" id="jma-v2-niche-apply">בצע התאמות עומק</button>
+          <button type="button" id="jma-v2-niche-skip">דלג — השאר כפי שהוא</button>
+        </div>
+      </div>`;
+    document.documentElement.appendChild(overlay);
+    overlay.querySelector('#jma-v2-niche-skip').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#jma-v2-niche-apply').addEventListener('click', async () => {
+      const focusIds = [...overlay.querySelectorAll('[data-focus]:checked')].map(c => c.dataset.focus);
+      const shrinkIds = [...overlay.querySelectorAll('[data-shrink]:checked')].map(c => c.dataset.shrink);
+      const shrinkPct = parseInt(overlay.querySelector('input[name="jmaV2Shrink"]:checked')?.value || '50', 10);
+      overlay.remove();
+      _v2SetHint('🔧 מבצע התאמות עומק (מיקוד נישתי)…');
+      try {
+        const res = await _v2CallTailor('niche-restructure', {
+          cvText: _v2Tailor.cvText, jobText: _v2Tailor.jobText, answers: _v2Tailor.answers,
+          blocks: _v2BlocksPayload(), focusAreaIds: focusIds, shrinkIds, shrinkPct,
+        });
+        if (res.blocks?.length) await _v2ApplyUpdatesLive(res.blocks, { label: `מיקוד נישתי (${shrinkPct}%)` });
+        _v2SetHint('✅ הותאם לנישה — אפשר לבטל שלבים דרך "בטל שינוי אחרון"');
+      } catch (e) {
+        console.warn('[JMA:V2] niche restructure failed:', e);
+        _v2SetHint('⚠️ ההתאמה נכשלה — נסי שוב');
+      }
+    });
+  }
+
   // Requirement 1: minimize collapses the window into a small badge anchored
   // at a screen corner; clicking again restores it to its EXACT prior
   // position, not just wherever the badge happened to land. The snapshot is
@@ -671,6 +906,88 @@
     }
   }
 
+  // ═══ 6b. On-device polish via Chrome's built-in Gemini Nano (Task 3) ══════
+  //
+  // Rephrases the raw answer into an elegant, professional CV line before it's
+  // inserted. Uses Chrome's built-in Prompt API (Gemini Nano) — runs entirely
+  // ON-DEVICE, so it's genuinely free AND unlimited (no quota, no server cost,
+  // no API key). Falls back to verbatim insertion if the browser has no
+  // on-device model (older Chrome, model not downloaded), so insertion always
+  // works. Handles both the current global `LanguageModel` API and the older
+  // `window.ai.languageModel` shape.
+  let _v2NanoBasePromise = null; // cached base session; null once known-unavailable
+  let _v2NanoUnavailable = false;
+
+  async function _v2GetNanoBase() {
+    if (_v2NanoUnavailable) return null;
+    if (_v2NanoBasePromise) return _v2NanoBasePromise;
+    const SYS = 'You are a CV-writing assistant. You rewrite a candidate\'s rough note ' +
+      'into polished, professional CV content. Follow the formatting instructions in each ' +
+      'request exactly and output ONLY the requested text — no preamble, no quotes, no explanations.';
+    _v2NanoBasePromise = (async () => {
+      try {
+        // Current API: global `LanguageModel`
+        if (typeof LanguageModel !== 'undefined' && LanguageModel?.availability) {
+          const avail = await LanguageModel.availability();
+          if (avail === 'unavailable') { _v2NanoUnavailable = true; return null; }
+          return await LanguageModel.create({ initialPrompts: [{ role: 'system', content: SYS }] });
+        }
+        // Legacy API: `window.ai.languageModel`
+        const ai = self.ai || (typeof window !== 'undefined' && window.ai);
+        if (ai?.languageModel?.create) {
+          const caps = ai.languageModel.capabilities ? await ai.languageModel.capabilities() : { available: 'readily' };
+          if (caps.available === 'no') { _v2NanoUnavailable = true; return null; }
+          return await ai.languageModel.create({ systemPrompt: SYS });
+        }
+      } catch (err) {
+        console.warn('[JMA:V2] Gemini Nano init failed, will insert verbatim:', err);
+      }
+      _v2NanoUnavailable = true;
+      return null;
+    })();
+    return _v2NanoBasePromise;
+  }
+
+  function _v2CleanPolish(out) {
+    if (!out) return '';
+    let s = String(out).trim();
+    s = s.split('\n').map(l => l.trim()).filter(Boolean)[0] || ''; // first non-empty line
+    s = s.replace(/^[•\-–—*·]\s*/, '');          // strip leading bullet symbol
+    s = s.replace(/^["'“”«»]+|["'“”«»]+$/g, '').trim(); // strip surrounding quotes
+    return s.slice(0, 240);
+  }
+
+  // Returns { text, polished }. Never throws — verbatim on any failure.
+  async function _v2PolishAnswer(rawText, { blockType, skill, lang }) {
+    const base = await _v2GetNanoBase();
+    if (!base) return { text: rawText, polished: false };
+
+    const langRule = lang === 'hebrew'
+      ? 'Write the result in Hebrew.'
+      : 'Write the result in professional English.';
+    const prompt = blockType === 'skills'
+      ? `Extract the concise professional skill name(s) implied by this note, for a CV ` +
+        `skills list. Output ONLY the skill name(s), comma-separated, no sentence, no extra words.\n` +
+        `Note: ${rawText}`
+      : `Rewrite this note as ONE polished, professional CV bullet point. ${langRule} ` +
+        `Use past tense and a strong action verb, no first-person pronouns, no bullet symbol, ` +
+        `max 22 words, stay truthful to the note.${skill ? ` Emphasise the skill "${skill}".` : ''}\n` +
+        `Note: ${rawText}`;
+
+    let session = base;
+    let usedClone = false;
+    try {
+      if (typeof base.clone === 'function') { session = await base.clone(); usedClone = true; }
+      const out = _v2CleanPolish(await session.prompt(prompt));
+      return out ? { text: out, polished: true } : { text: rawText, polished: false };
+    } catch (err) {
+      console.warn('[JMA:V2] Gemini Nano polish failed, inserting verbatim:', err);
+      return { text: rawText, polished: false };
+    } finally {
+      if (usedClone && typeof session.destroy === 'function') { try { session.destroy(); } catch {} }
+    }
+  }
+
   async function _v2InjectActiveAnswer(block, blockEl, plusBtn) {
     if (!_v2ActiveAnswer || !_v2ActiveAnswer.text) {
       plusBtn.classList.add('jma-v2-plus-nag');
@@ -679,6 +996,7 @@
       if (hint) hint.textContent = '⚠️ אין תשובה פעילה — הקלידי תשובה בפאנל ואז לחצי +';
       return;
     }
+    const rawText = _v2ActiveAnswer.text;
     const placement = {
       id: `p_${Date.now().toString(36)}`,
       blockId: block.id,
@@ -686,10 +1004,24 @@
       blockLabel: block.label,
       skill: _v2ActiveAnswer.skill,
       qIdx: _v2ActiveAnswer.idx,
-      text: _v2ActiveAnswer.text,
+      rawText,
+      text: rawText,       // provisional — replaced with the polished version below
+      polished: false,
       ts: Date.now(),
     };
-    _v2RenderInjected(blockEl, placement);
+
+    // Render immediately in a "polishing…" state so the click feels responsive
+    // even while the on-device model runs (first run may load the model).
+    const inj = _v2RenderInjected(blockEl, placement, { pending: true });
+
+    const lang = detectLanguage(block.text || '') === 'hebrew' ? 'hebrew' : 'english';
+    const { text, polished } = await _v2PolishAnswer(rawText, {
+      blockType: block.type, skill: placement.skill, lang,
+    });
+    placement.text = text;
+    placement.polished = polished;
+    _v2UpdateInjected(inj, placement);
+
     try {
       const key = _placementsKey();
       const saved = (await chrome.storage.local.get(key))[key] || [];
@@ -700,15 +1032,17 @@
     }
   }
 
-  function _v2RenderInjected(blockEl, placement) {
+  // Renders the inserted line as an elegant CV bullet (green-tinted, removable).
+  // Returns the element so the caller can flip it from pending → final.
+  function _v2RenderInjected(blockEl, placement, { pending = false } = {}) {
     const inj = document.createElement('div');
     inj.className = 'jma-v2-injected';
     inj.dataset.placementId = placement.id;
     inj.innerHTML = `
-      <span class="jma-v2-injected-tag">${placement.skill ? '＋ ' + placement.skill : '＋ תשובה'}</span>
+      <span class="jma-v2-injected-bullet">•</span>
       <span class="jma-v2-injected-text"></span>
+      <span class="jma-v2-injected-badge"></span>
       <button type="button" class="jma-v2-injected-remove" title="הסרה">✕</button>`;
-    inj.querySelector('.jma-v2-injected-text').textContent = placement.text;
     inj.querySelector('.jma-v2-injected-remove').addEventListener('click', async () => {
       inj.remove();
       try {
@@ -718,7 +1052,19 @@
       } catch {}
     });
     blockEl.appendChild(inj);
+    _v2UpdateInjected(inj, placement, { pending });
     inj.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return inj;
+  }
+
+  function _v2UpdateInjected(inj, placement, { pending = false } = {}) {
+    inj.classList.toggle('jma-v2-injected-pending', pending);
+    inj.querySelector('.jma-v2-injected-text').textContent = pending
+      ? (placement.text || '')
+      : placement.text;
+    const badge = inj.querySelector('.jma-v2-injected-badge');
+    badge.textContent = pending ? '✨ מנסח…' : (placement.polished ? '✨ AI' : '');
+    badge.title = placement.polished ? 'נוסח על־ידי Gemini Nano (מקומי)' : '';
   }
 
   function _v2MakeDraggable(win, handle) {
@@ -932,21 +1278,30 @@
       }
       @keyframes jmaV2PlusPulse{50%{transform:scale(1.14)}}
       .jma-v2-injected{
-        position:relative;margin:7px 0 3px;padding:7px 10px;
-        background:#F2FBF5;border:1px dashed #34C071;border-radius:8px;
-        font-size:12.5px;line-height:1.5;color:#14532D;
+        position:relative;display:flex;align-items:flex-start;gap:6px;
+        margin:6px 0 3px;padding:6px 30px 6px 10px;
+        background:#F2FBF5;border-inline-start:3px solid #34C071;border-radius:6px;
+        font-size:13px;line-height:1.55;color:#14532D;
         animation:jmaV2InjIn .25s ease;
-        font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+        font-family:inherit;
       }
       @keyframes jmaV2InjIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
-      .jma-v2-injected-tag{
-        display:inline-block;font-size:10px;font-weight:800;color:#0F7A3D;
+      .jma-v2-injected-bullet{flex-shrink:0;color:#15803D;font-weight:800;line-height:1.5}
+      .jma-v2-injected-text{flex:1;word-break:break-word}
+      .jma-v2-injected-badge{
+        flex-shrink:0;font-size:9.5px;font-weight:800;color:#0F7A3D;
         background:rgba(52,192,113,.15);border-radius:5px;padding:1px 6px;
-        margin-inline-end:6px;vertical-align:middle;
+        white-space:nowrap;align-self:center;
       }
+      .jma-v2-injected-badge:empty{display:none}
+      .jma-v2-injected-pending{opacity:.7;font-style:italic}
+      .jma-v2-injected-pending .jma-v2-injected-badge{
+        color:#6D28D9;background:rgba(124,58,237,.12);animation:jmaV2Pulse 1.1s ease-in-out infinite;
+      }
+      @keyframes jmaV2Pulse{50%{opacity:.5}}
       .jma-v2-injected-remove{
-        all:unset;cursor:pointer;position:absolute;top:4px;inset-inline-end:6px;
-        font-size:10px;color:#9CA3AF;width:16px;height:16px;text-align:center;
+        all:unset;cursor:pointer;position:absolute;top:5px;inset-inline-end:8px;
+        font-size:10px;color:#9CA3AF;width:16px;height:16px;text-align:center;line-height:16px;
       }
       .jma-v2-injected-remove:hover{color:#DC2626}
       .jma-v2-cv-empty{padding:30px;text-align:center;color:#6B7280;font-size:13px}
@@ -969,6 +1324,71 @@
         padding:6px 12px;border-radius:8px;font-size:12.5px;font-weight:700;
       }
       #jma-v2-stale-reload:hover{background:#6D28D9}
+
+      /* ── Phase 2: live tailoring UI ── */
+      .jma-v2-cv-block-body strong{font-weight:800;color:#4C1D95}
+      .jma-v2-cv-block.jma-v2-block-updating{
+        background:rgba(124,58,237,.1)!important;
+        box-shadow:0 0 0 2px rgba(124,58,237,.35);border-radius:6px;
+        transition:background .3s, box-shadow .3s;
+      }
+      #jma-v2-cv-undobar{
+        display:flex;align-items:center;justify-content:space-between;gap:10px;
+        margin:0 14px 10px;padding:7px 12px;border-radius:8px;
+        background:#EDE9FE;border:1px solid #C4B5FD;color:#4C1D95;
+        font-size:12px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+      }
+      #jma-v2-undo-btn{
+        all:unset;cursor:pointer;background:#7C3AED;color:#fff;
+        padding:5px 10px;border-radius:7px;font-size:11.5px;font-weight:700;
+      }
+      #jma-v2-undo-btn:hover{background:#6D28D9}
+      #jma-v2-toast{
+        position:fixed;bottom:22px;left:50%;
+        transform:translateX(-50%) translateY(80px);opacity:0;
+        z-index:2147483647;max-width:440px;width:calc(100vw - 60px);
+        background:#14121F;border:1px solid #7C3AED;border-radius:12px;
+        padding:14px 18px;box-shadow:0 12px 34px rgba(0,0,0,.5);
+        color:#E9E4F8;font-size:13px;line-height:1.6;direction:rtl;text-align:right;
+        font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+        transition:transform .3s ease, opacity .3s ease;
+      }
+      #jma-v2-toast.jma-v2-toast-in{transform:translateX(-50%) translateY(0);opacity:1}
+      #jma-v2-niche-modal{
+        position:fixed;inset:0;z-index:2147483647;
+        background:rgba(15,10,30,.55);display:flex;align-items:center;justify-content:center;
+        font-family:system-ui,-apple-system,'Segoe UI',sans-serif;direction:rtl;
+      }
+      .jma-v2-modal-card{
+        width:min(460px,calc(100vw - 48px));max-height:88vh;overflow-y:auto;
+        background:#1E1B2E;border:1px solid #7C3AED;border-radius:16px;
+        padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.5);color:#E9E4F8;
+      }
+      .jma-v2-modal-title{font-size:16px;font-weight:800;margin-bottom:6px}
+      .jma-v2-modal-sub{font-size:13px;color:#C4B5FD;margin-bottom:12px}
+      .jma-v2-modal-summary{
+        font-size:12.5px;line-height:1.6;color:#CFC8E8;
+        background:rgba(124,58,237,.12);border-radius:10px;padding:10px 12px;margin-bottom:14px;
+      }
+      .jma-v2-modal-section{margin-bottom:14px}
+      .jma-v2-modal-label{font-size:12.5px;font-weight:700;color:#B9AEDD;margin-bottom:7px}
+      .jma-v2-modal-chk{display:flex;align-items:center;gap:7px;font-size:13px;padding:4px 0;cursor:pointer}
+      .jma-v2-modal-chk input{accent-color:#7C3AED;width:15px;height:15px}
+      .jma-v2-modal-empty{font-size:12px;color:#8E85AC}
+      .jma-v2-modal-scale{display:flex;gap:16px}
+      .jma-v2-modal-scale label{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer}
+      .jma-v2-modal-scale input{accent-color:#7C3AED}
+      .jma-v2-modal-actions{display:flex;gap:10px;margin-top:18px}
+      #jma-v2-niche-apply{
+        all:unset;cursor:pointer;flex:1;text-align:center;background:#7C3AED;color:#fff;
+        padding:11px;border-radius:10px;font-size:13.5px;font-weight:700;
+      }
+      #jma-v2-niche-apply:hover{background:#6D28D9}
+      #jma-v2-niche-skip{
+        all:unset;cursor:pointer;text-align:center;color:#B9AEDD;
+        padding:11px 14px;border-radius:10px;font-size:13px;border:1px solid #4B4569;
+      }
+      #jma-v2-niche-skip:hover{background:rgba(124,58,237,.15)}
     `;
     document.documentElement.appendChild(style);
   }
