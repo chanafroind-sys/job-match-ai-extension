@@ -810,11 +810,24 @@
     const l = document.getElementById('jma-v2-cv-loading');
     if (l) l.style.display = 'none';
   }
-  function _v2ShowDoneFooter() {
+  // Final step — hand the tailored blocks to the panel, which runs EXACTLY V1's
+  // CV-preparation route (options screen → docx-builder.js). The page-side
+  // window keeps showing the live preview; the actual file is produced in the
+  // panel, same as V1 does after its questions.
+  async function _v2ShowDoneFooter() {
     _v2SetStep(3, 'done');
     const f = document.getElementById('jma-v2-cv-footer');
     if (f) f.style.display = 'flex';
-    _v2SetHint('✅ הקו"ח מוכן — אפשר להוריד, או לבטל שלבים דרך "בטל שינוי אחרון"');
+    _v2SetHint('✅ הקו"ח מוכן — עברי לפאנל מימין לבחירת שפה/פורמט והורדה');
+
+    let placements = [];
+    try { placements = (await chrome.storage.local.get(_placementsKey()))[_placementsKey()] || []; } catch {}
+    try {
+      document.getElementById('jma-v2-panel-iframe')?.contentWindow
+        ?.postMessage({ type: 'jmaV2TailoringDone', blocks: _v2Tailor.blocks, placements }, EXT_ORIGIN);
+    } catch (err) {
+      console.warn('[JMA:V2] failed to hand off to CV options:', err);
+    }
   }
 
   async function _v2RunPhase2(answers) {
@@ -895,38 +908,13 @@
     overlay.querySelector('#jma-v2-general-ok').addEventListener('click', () => overlay.remove());
   }
 
-  // Build a formatted Word (.doc via HTML) from the current tailored blocks +
-  // any inserted answers, and download it. Interim export until the full
-  // Task-4 DOCX pipeline; still gives real Word formatting (headings, bold,
-  // RTL, margins) so the download reflects the on-screen tailoring.
-  async function _v2DownloadCv() {
+  // The file itself is built in the panel through V1's own docx-builder.js
+  // pipeline (one-page adaptive layout, bullets, bolding, RTL) — this button
+  // just re-opens that options screen, so there is exactly ONE export path.
+  function _v2DownloadCv() {
     if (!_v2Tailor) return;
-    let placements = [];
-    try { placements = (await chrome.storage.local.get(_placementsKey()))[_placementsKey()] || []; } catch {}
-    const isRtl = detectLanguage(_v2Tailor.cvText) === 'hebrew';
-    const boldHtml = (t) => _v2EscapeHtml(t).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-
-    const sections = _v2Tailor.blocks.map((b) => {
-      const heading = b.type !== 'header' && b.label
-        ? `<h2 style="font-size:13pt;color:#2b2b6b;border-bottom:1px solid #999;margin:14pt 0 4pt">${_v2EscapeHtml(b.label)}</h2>` : '';
-      const body = `<div style="margin:0 0 6pt">${boldHtml(b.text)}</div>`;
-      const adds = placements.filter(p => p.blockId === b.id)
-        .map(p => `<div style="margin:2pt 0">• ${boldHtml(p.text)}</div>`).join('');
-      return heading + body + adds;
-    }).join('');
-
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
-      <style>@page{margin:2cm} body{font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.4;${isRtl ? 'direction:rtl;' : ''}}</style>
-      </head><body>${sections}</body></html>`;
-    const blob = new Blob(['﻿', html], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `CV_${(_v2Tailor.blocks[0]?.label || 'tailored').replace(/[^a-zA-Z0-9א-ת]/g, '_').slice(0, 30)}.doc`;
-    document.documentElement.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    _v2TogglePanel(true);
+    _v2ShowDoneFooter();
   }
 
   function _v2ShowToast(msg) {

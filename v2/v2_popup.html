@@ -227,6 +227,43 @@
     padding: 12px 14px; font-size: 13px; margin-top: 12px; line-height: 1.6;
   }
 
+  /* ── CV options / result screens — copied from V1 popup.html ──────────── */
+  .cv-opts-section { margin-bottom: 16px; }
+  .cv-opts-row { display: flex; gap: 10px; margin-top: 8px; }
+  .cv-opt-btn {
+    flex: 1; padding: 11px 8px; border: 1.5px solid var(--border);
+    border-radius: var(--border-radius); background: var(--bg-card);
+    color: var(--text-secondary); cursor: pointer; font-size: 13px;
+    font-weight: 500; transition: all 0.18s; text-align: center;
+    font-family: inherit; box-shadow: var(--shadow-sm);
+  }
+  .cv-opt-btn:hover { border-color: var(--border-hover); background: var(--bg-hover); }
+  .cv-opt-btn.active {
+    border-color: var(--accent); background: var(--bg-accent-soft);
+    color: var(--accent); font-weight: 600;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.10);
+  }
+  .settings-label {
+    font-size: 12px; color: var(--text-muted); margin-bottom: 8px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .cv-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+  .cv-actions .btn { margin: 0; }
+  .cv-preview {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--border-radius); padding: 16px;
+    font-size: 12px; color: var(--text-secondary);
+    line-height: 1.65; white-space: pre-wrap;
+    max-height: 280px; overflow-y: auto;
+    direction: ltr; text-align: left; box-shadow: var(--shadow-sm);
+  }
+  .tracking-opt-label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--text-secondary); cursor: pointer;
+  }
+  .tracking-opt-label input { accent-color: var(--accent); }
+  .info-icon { font-size: 12px; color: var(--text-dim); cursor: help; margin-inline-start: 4px; }
+
   /* V2 addition — coordinated highlight: pulses in sync with the matching
      '+' targets rendered inside the floating CV window (v2_content.js). */
   .question-card.jma-v2-active-question {
@@ -278,6 +315,40 @@
   <button class="btn btn-secondary" id="btnSkipQuestions">דלג — נתח ללא תשובות</button>
 </div>
 
+<!-- CV OPTIONS SCREEN — 1:1 copy of V1's #screen-cv-options (popup.html:953) -->
+<div class="screen" id="screen-cv-options">
+  <div class="screen-title" style="margin-bottom:14px">✨ התאמת קורות חיים</div>
+  <div class="cv-opts-section">
+    <div class="settings-label">🌐 שפת קורות החיים</div>
+    <div class="cv-opts-row">
+      <button class="cv-opt-btn" id="cvOptLangEn" data-lang="english">🇺🇸 English</button>
+      <button class="cv-opt-btn" id="cvOptLangHe" data-lang="hebrew">🇮🇱 עברית</button>
+    </div>
+  </div>
+  <div class="cv-opts-section">
+    <div class="settings-label">📁 פורמט הקובץ</div>
+    <div class="cv-opts-row">
+      <button class="cv-opt-btn active" id="cvOptFmtDocx" data-fmt="docx">📄 Word (.docx)</button>
+      <button class="cv-opt-btn" id="cvOptFmtPdf" data-fmt="pdf">🖨️ PDF</button>
+    </div>
+  </div>
+  <div class="cv-opts-section" id="cvoTrackingSection"></div>
+  <button class="btn btn-primary" id="btnStartCvGen" style="margin-top:14px;font-size:14px">✨ צור קורות חיים</button>
+</div>
+
+<!-- CV RESULT SCREEN — copy of V1's #screen-cv-result (popup.html:1006) -->
+<div class="screen" id="screen-cv-result">
+  <div class="cv-actions">
+    <button class="btn btn-primary" id="btnDownloadDocx" style="flex:1">📄 הורד DOCX</button>
+    <button class="btn btn-secondary" id="btnDownloadPdf" style="flex:1;margin:0">🖨️ PDF</button>
+  </div>
+  <div class="cv-actions" style="margin-top:6px">
+    <button class="btn btn-secondary" id="btnCopyCV" style="flex:1;margin:0">📋 העתק טקסט</button>
+  </div>
+  <div class="cv-preview" id="cvPreview"></div>
+</div>
+
+<script src="../docx-builder.js"></script>
 <script src="v2_popup.js"></script>
 </body>
 </html>

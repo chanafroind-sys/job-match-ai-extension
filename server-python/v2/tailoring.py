@@ -206,17 +206,32 @@ class NicheRestructureRequest(BaseModel):
 
 NICHE_RESTRUCTURE_USER = """Task: NICHE RESTRUCTURING — the user opted into a structural emphasis shift.
 
-Focus (EXPAND and lead with these block ids): {focus_ids}
-Condense (SHRINK these block ids by about {shrink_pct}%): {shrink_ids}
+The user made TWO opposite selections. Read them carefully — never swap them:
+
+EXPAND (make MORE prominent — these are the job's niche focus):
+{focus_list}
+
+SHRINK (make LESS prominent — off-target for this job):
+{shrink_list}
+
+SHRINK semantics — unambiguous: remove about {shrink_pct}% of each SHRINK block's \
+volume, i.e. KEEP only ~{keep_pct}% of it. Keep the role header/title line and the \
+strongest {keep_bullets} bullet(s); drop the rest. A SHRINK block's output MUST be \
+clearly SHORTER than its input. NEVER delete a role entirely or fabricate employment gaps.
+
+EXPAND semantics: sharpen and surface the job-relevant achievements, lead with the most \
+relevant points, add emphasis. You may rephrase and re-order WITHIN the block. An EXPAND \
+block's output should be at least as detailed as its input — NEVER shorten an EXPAND block.
 
 RULES:
-- SHRINK targets: condense to ~{shrink_pct}% of their bullets — keep the strongest 1-2 \
-bullets and the role header/title. NEVER delete a role entirely or fabricate gaps.
-- FOCUS targets: expand and sharpen — surface the job-relevant achievements, add emphasis, \
-lead with the most relevant points. You may rephrase and re-order WITHIN the block.
+- Do NOT modify ANY block that is not listed in EXPAND or SHRINK above — return only \
+listed blocks.
 - Do NOT invent experience, skills, employers, or numbers the candidate does not have.
 - Bold job-relevant keywords already present with **double asterisks**.
 - Keep each block's language (Hebrew/English) as in the original.
+
+SELF-CHECK before answering: for every SHRINK id, is your text shorter than the \
+original? For every EXPAND id, is nothing lost? If not, fix it.
 
 Here are the current CV blocks (id-keyed):
 {blocks}
@@ -225,26 +240,79 @@ Return ONLY valid JSON, no markdown. Include ONLY the blocks you changed:
 {{"blocks":[{{"id":"<block id>","text":"<restructured block text, with **bolded** keywords>"}}]}}"""
 
 
+def _labelled_list(ids: list, blocks_by_id: dict) -> str:
+    """Render 'id — label (type)' lines. Passing the LABEL next to the id (not a
+    bare "b3, b7") is what stops the model mixing the two lists up."""
+    if not ids:
+        return "  (none)"
+    out = []
+    for i in ids:
+        b = blocks_by_id.get(i)
+        out.append(f'  - {i} — "{(b or {}).get("label", "")}" ({(b or {}).get("type", "?")})')
+    return "\n".join(out)
+
+
 @router.post("/niche-restructure")
 async def niche_restructure(body: NicheRestructureRequest, user: User = Depends(get_current_user)):
+    """Structural emphasis shift. Hardened against the model doing the inverse of
+    what was asked: the two lists are labelled (not bare ids), overlapping ids are
+    resolved, unrequested blocks are dropped, and — the real guard — any SHRINK
+    block that comes back the same length or LONGER than the original is rejected
+    and the original kept. Same for an EXPAND block that came back shorter."""
     if not body.cvText or not body.blocks:
         return {"blocks": []}
+
+    blocks_by_id = {b.id: b.dict() for b in body.blocks}
+    shrink_ids = [i for i in body.shrinkIds if i in blocks_by_id]
+    # A block can never be both — EXPAND wins (never silently shrink something
+    # the user asked to emphasise).
+    focus_ids = [i for i in body.focusAreaIds if i in blocks_by_id]
+    shrink_ids = [i for i in shrink_ids if i not in focus_ids]
+
+    if not focus_ids and not shrink_ids:
+        # Without at least one target the model has no instruction to follow and
+        # would freestyle over the whole CV — refuse instead.
+        return {"blocks": [], "error": "no_valid_targets"}
+
+    shrink_pct = max(10, min(90, body.shrinkPct))
+    keep_pct = 100 - shrink_pct
     try:
         raw, _ = await call_claude_cached(
             system_blocks=_v2_cached_context(body.cvText, body.jobText),
             user_content=NICHE_RESTRUCTURE_USER.format(
-                focus_ids=", ".join(body.focusAreaIds) or "(none specified)",
-                shrink_ids=", ".join(body.shrinkIds) or "(none specified)",
-                shrink_pct=max(10, min(90, body.shrinkPct)),
+                focus_list=_labelled_list(focus_ids, blocks_by_id),
+                shrink_list=_labelled_list(shrink_ids, blocks_by_id),
+                shrink_pct=shrink_pct,
+                keep_pct=keep_pct,
+                keep_bullets=1 if shrink_pct >= 70 else 2,
                 blocks=_blocks_for_prompt([b.dict() for b in body.blocks]),
             ),
             max_tokens=2500,
             model=_TAILOR_MODEL,
         )
         data = parse_json_response(raw)
-        blocks = data.get("blocks", []) if isinstance(data, dict) else []
-        clean = [{"id": b["id"], "text": b["text"]} for b in blocks if b.get("id") and b.get("text")]
-        return {"blocks": clean}
+        returned = data.get("blocks", []) if isinstance(data, dict) else []
     except Exception as e:
         print(f"[JMA:v2:niche_restructure] error: {e}")
         return {"blocks": [], "error": f"{type(e).__name__}"}
+
+    allowed = set(focus_ids) | set(shrink_ids)
+    clean, rejected = [], []
+    for b in returned:
+        bid, text = b.get("id"), b.get("text")
+        if not bid or not text or bid not in allowed:
+            rejected.append({"id": bid, "why": "not_requested"})
+            continue
+        orig = blocks_by_id[bid].get("text", "") or ""
+        # Direction check — this is what catches an inverted transform.
+        if bid in shrink_ids and len(text) >= len(orig) * 0.95:
+            rejected.append({"id": bid, "why": "shrink_not_shorter"})
+            continue
+        if bid in focus_ids and len(text) < len(orig) * 0.6:
+            rejected.append({"id": bid, "why": "expand_got_shorter"})
+            continue
+        clean.append({"id": bid, "text": text})
+
+    if rejected:
+        print(f"[JMA:v2:niche_restructure] rejected {len(rejected)} block(s): {rejected}")
+    return {"blocks": clean, "rejected": rejected}

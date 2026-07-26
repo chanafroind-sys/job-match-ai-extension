@@ -715,8 +715,247 @@ async function _finishQuestions(skipped) {
   }
 }
 
+// ═══ CV preparation — same route as V1 ═══════════════════════════════════════
+// After Phase-2 tailoring finishes in the CV window, v2_content.js posts
+// jmaV2TailoringDone here. We then run EXACTLY V1's CV-preparation route:
+//   options screen (language / DOCX-PDF / link tracking)  ← popup.html:953
+//   → build via docx-builder.js's buildDocx/downloadDocx   ← the same file V1 uses
+//   → PDF via the print-HTML path copied from popup.js:2614
+// docx-builder.js is loaded unmodified by v2_popup.html, so the one-page
+// adaptive layout (pickFittingProfile), bullets, bolding and RTL handling are
+// literally V1's, not a reimplementation.
+
+// V2 works in semantic blocks; V1's builder works in [SECTION] markers.
+// This is the bridge — blocks + inserted answers → V1 marker text.
+function _v2BlocksToMarkerCv(blocks, placements) {
+  const byType = { role: [], skills: [], education: [], languages: [], summary: [], projects: [], other: [] };
+  const addsFor = (id) => (placements || []).filter(p => p.blockId === id).map(p => `$ ${p.text}`);
+
+  for (const b of blocks || []) {
+    const lines = [String(b.text || '').trim(), ...addsFor(b.id)].filter(Boolean);
+    const body = lines.join('\n');
+    const t = b.type === 'text' ? 'other' : (byType[b.type] ? b.type : 'other');
+    byType[t].push({ label: b.label || '', body });
+  }
+
+  const out = [];
+  // The first 'other' block is the CV header (name / contact) in practice.
+  const header = byType.other.shift();
+  if (header) {
+    const hl = header.body.split('\n').map(l => l.trim()).filter(Boolean);
+    if (hl.length) {
+      out.push('[NAME]', hl[0]);
+      if (hl.length > 1) out.push('[CONTACT]', hl.slice(1).join('\n'));
+    }
+  }
+  if (byType.summary.length) out.push('[PROFILE]', byType.summary.map(s => s.body).join('\n'));
+
+  const exp = [...byType.role, ...byType.projects, ...byType.other];
+  if (exp.length) {
+    out.push('[EXPERIENCE]');
+    for (const r of exp) {
+      // Role header line first (bold) so docx-builder treats it as a job header.
+      if (r.label && !r.body.startsWith(r.label)) out.push(`**${r.label}**`);
+      out.push(r.body);
+    }
+  }
+  if (byType.education.length) out.push('[EDUCATION]', byType.education.map(s => s.body).join('\n'));
+  if (byType.skills.length)    out.push('[SKILLS]',    byType.skills.map(s => s.body).join('\n'));
+  if (byType.languages.length) out.push('[LANGUAGES]', byType.languages.map(s => s.body).join('\n'));
+  return out.join('\n');
+}
+
+// Copy of V1's showCVOptionsScreen (popup.js:2162) — same options, same wiring.
+function showCVOptionsScreen() {
+  const autoLang = state.analysis?.jobLanguage || state.jobLanguage || 'english';
+  cvOptions.language = autoLang;
+  cvOptions.format   = 'docx';
+  document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => {
+    b.classList.toggle('active', b.dataset.lang === autoLang);
+  });
+  document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(b => {
+    b.classList.toggle('active', b.dataset.fmt === 'docx');
+  });
+
+  chrome.storage.local.get(['enableTracking'], (s) => {
+    cvOptions.tracking = s.enableTracking !== false;
+    const trackSection = document.getElementById('cvoTrackingSection');
+    if (!trackSection) return;
+    trackSection.innerHTML = `
+      <label class="tracking-opt-label">
+        <input type="checkbox" id="cbTracking" ${cvOptions.tracking ? 'checked' : ''}>
+        <span>הפעל מעקב קישורים חכם</span>
+      </label>
+      <span class="info-icon" tabindex="0"
+        title="מאפשר לדעת מתי מגייסים פתחו את הקישורים שלך (GitHub/LinkedIn). ⚠️ קישורי מעקב עלולים לגרום להודעת אזהרה ב-Word המקומי.">ⓘ</span>`;
+    document.getElementById('cbTracking')?.addEventListener('change', e => {
+      cvOptions.tracking = e.target.checked;
+      chrome.storage.local.set({ enableTracking: cvOptions.tracking });
+    });
+  });
+
+  showScreen('cv-options');
+}
+
+// Copy of V1's buildCvPrintHtml (popup.js:2614) — the PDF/print path. Uses the
+// same LAYOUT_PROFILES/parseCVSections from docx-builder.js that the DOCX path
+// uses, so both formats agree on what fits one page.
+function buildCvPrintHtml(cvText, isRtl, profile) {
+  const dir = isRtl ? 'rtl' : 'ltr';
+  const ta  = isRtl ? 'right' : 'left';
+  const secs = parseCVSections(cvText);
+  const lp = profile || LAYOUT_PROFILES.normal;
+
+  function bdiWrap(text) {
+    if (!isRtl) return text;
+    return text.replace(/([A-Za-z][A-Za-z0-9_.+\-/#@]*(?:\s[A-Za-z][A-Za-z0-9_.+\-/#@]*)*)/g,
+      (m) => `<bdi>${m}</bdi>`);
+  }
+  function renderInline(text) {
+    const linked = text
+      .replace(/\[LINK:([^\|]*)\|([^\]]*)\]/g, (_, display, url) =>
+        `<a href="${url}" style="color:#7c3aed"><bdi>${display}</bdi></a>`)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return bdiWrap(linked);
+  }
+  function ren(txt) {
+    if (!txt) return '';
+    const lines = txt.split('\n').map(l => l.trim()).filter(Boolean);
+    const parts = [];
+    let inList = false;
+    for (const l of lines) {
+      const isBul = l.startsWith('$ ') || l.startsWith('•') || l.startsWith('- ');
+      const cl = isBul ? l.replace(/^\$\s+|^[•\-]\s*/, '') : l;
+      const html = renderInline(cl);
+      if (isBul) {
+        if (!inList) { parts.push(`<ul dir="${dir}">`); inList = true; }
+        parts.push(`<li>${html}</li>`);
+      } else {
+        if (inList) { parts.push('</ul>'); inList = false; }
+        parts.push(`<p>${html}</p>`);
+      }
+    }
+    if (inList) parts.push('</ul>');
+    return parts.join('');
+  }
+
+  const labels = isRtl
+    ? { profile: 'פרופיל', experience: 'ניסיון', education: 'השכלה', skills: 'כישורים', languages: 'שפות' }
+    : { profile: 'Profile', experience: 'Experience', education: 'Education', skills: 'Skills', languages: 'Languages' };
+
+  const secHtml = [
+    secs['[PROFILE]']    ? `<h2>${labels.profile}</h2>${ren(secs['[PROFILE]'])}` : '',
+    secs['[EXPERIENCE]'] ? `<h2>${labels.experience}</h2>${ren(secs['[EXPERIENCE]'])}` : '',
+    secs['[EDUCATION]']  ? `<h2>${labels.education}</h2>${ren(secs['[EDUCATION]'])}` : '',
+    secs['[SKILLS]']     ? `<h2>${labels.skills}</h2>${ren(secs['[SKILLS]'])}` : '',
+    secs['[LANGUAGES]']  ? `<h2>${labels.languages}</h2>${ren(secs['[LANGUAGES]'])}` : '',
+  ].join('');
+
+  return `<!DOCTYPE html><html lang="${isRtl ? 'he' : 'en'}" dir="${dir}"><head><meta charset="UTF-8"><title>CV</title>
+<style>
+  @media print { @page { margin: ${lp.marginCm}cm; } body { margin: 0; } }
+  body {
+    font-family: 'Arial', 'Calibri', sans-serif;
+    font-size: ${lp.fontPt}pt; color: #1f2937;
+    direction: ${dir} !important; text-align: ${ta} !important;
+    unicode-bidi: plaintext; margin: ${lp.marginCm}cm;
+  }
+  h1 { text-align: center; font-size: 18pt; margin: 0 0 4px; }
+  .hl { text-align: center; color: #7c3aed; font-size: 12pt; margin: 0 0 3px; }
+  .ct { text-align: center; color: #6b7280; font-size: 10pt; margin: 0 0 14px; }
+  h2 {
+    font-size: 11pt; color: #7c3aed; border-bottom: 1px solid #7c3aed;
+    margin: 10px 0 3px; padding-bottom: 2px;
+    text-transform: uppercase; letter-spacing: 0.5px; text-align: ${ta};
+  }
+  p { margin: 2px 0; line-height: 1.35; direction: ${dir}; text-align: ${ta}; }
+  ul, ol {
+    margin: 2px 0;
+    ${isRtl ? 'padding-right: 20px; padding-left: 0;' : 'padding-left: 20px; padding-right: 0;'}
+    list-style-position: outside; direction: ${dir}; text-align: ${ta};
+  }
+  li { margin: 1px 0; line-height: 1.4; direction: ${dir}; text-align: ${ta}; unicode-bidi: plaintext; }
+  bdi { unicode-bidi: isolate; }
+  strong { font-weight: 700; }
+</style></head><body>
+${secs['[NAME]']     ? `<h1>${secs['[NAME]']}</h1>` : ''}
+${secs['[HEADLINE]'] ? `<p class="hl">${secs['[HEADLINE]']}</p>` : ''}
+${secs['[CONTACT]']  ? `<p class="ct">${secs['[CONTACT]'].split('\n').filter(l=>l.trim()).map(renderInline).join(' ‏|‏ ')}</p>` : ''}
+${secHtml}
+<script>window.onload=()=>{ setTimeout(()=>window.print(),300); };<\/script>
+</body></html>`;
+}
+
+// Copy of V1's downloadAsPdf (popup.js:2719).
+function downloadAsPdf(cvText, isRtl) {
+  const sections = parseCVSections(cvText);
+  const { profile } = pickFittingProfile(sections, isRtl || false);
+  const html = buildCvPrintHtml(cvText, isRtl || false, profile);
+  chrome.tabs.create({ url: `data:text/html;charset=utf-8,${encodeURIComponent(html)}` });
+}
+
+async function _v2DownloadDocx() {
+  const jobTitle = (state.analysis?.jobTitle || state.jobTitle || 'CV')
+    .replace(/[^a-zA-Z0-9\sא-ת]/g, '').replace(/\s+/g, '_').trim() || 'CV';
+  const stored = await chrome.storage.local.get(['cvName']);
+  const cvName = (stored.cvName || '').replace(/\.[^.]+$/, '')
+    .replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').trim();
+  // downloadDocx comes from docx-builder.js — the exact V1 builder.
+  downloadDocx(state.generatedCV, `CV_${jobTitle}${cvName ? '_' + cvName : ''}.docx`, state.cvIsRtl);
+}
+
+function _v2ShowCvResult() {
+  document.getElementById('cvPreview').textContent = state.generatedCV;
+  showScreen('cv-result');
+}
+
+// Entry point: Phase-2 tailoring finished on the page-side CV window.
+function _v2OnTailoringDone(blocks, placements) {
+  state.generatedCV = _v2BlocksToMarkerCv(blocks, placements);
+  state.cvIsRtl = /[֐-׿]/.test(state.generatedCV.slice(0, 400));
+  showCVOptionsScreen();
+}
+
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (!d || d.type !== 'jmaV2TailoringDone') return;
+  _v2OnTailoringDone(d.blocks || [], d.placements || []);
+});
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  // CV options wiring — same as V1 (popup.js:2238-2260)
+  document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cvOptions.language = btn.dataset.lang;
+      document.querySelectorAll('.cv-opt-btn[data-lang]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+  document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cvOptions.format = btn.dataset.fmt;
+      document.querySelectorAll('.cv-opt-btn[data-fmt]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+  document.getElementById('btnStartCvGen')?.addEventListener('click', () => {
+    // Language toggle drives the export direction/labels; the tailored content
+    // itself keeps the language it was written in.
+    state.cvIsRtl = cvOptions.language === 'hebrew';
+    _v2ShowCvResult();
+    if (cvOptions.format === 'pdf') downloadAsPdf(state.generatedCV, state.cvIsRtl);
+    else _v2DownloadDocx();
+  });
+  document.getElementById('btnDownloadDocx')?.addEventListener('click', () => _v2DownloadDocx());
+  document.getElementById('btnDownloadPdf')?.addEventListener('click', () => downloadAsPdf(state.generatedCV, state.cvIsRtl));
+  document.getElementById('btnCopyCV')?.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(state.generatedCV);
+    const b = document.getElementById('btnCopyCV');
+    b.textContent = '✅ הועתק!';
+    setTimeout(() => { b.textContent = '📋 העתק טקסט'; }, 1500);
+  });
+
   document.getElementById('btnRetry')?.addEventListener('click', () => startFlow());
   document.getElementById('btnContinueToCV')?.addEventListener('click', () => _finishQuestions(false));
   document.getElementById('btnSkipQuestions')?.addEventListener('click', () => _finishQuestions(true));
