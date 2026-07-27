@@ -30,8 +30,32 @@ from app.core.models import User
 from v2.router import router
 
 # Same Haiku ID the rest of the backend uses (see [[anthropic-model-ids]]);
-# these transforms are cheap/constrained, Haiku is plenty and keeps latency low.
+# classification and the constrained baseline groom are cheap/mechanical, so
+# Haiku is plenty and keeps the live UI snappy.
 _TAILOR_MODEL = "claude-haiku-4-5-20251001"
+# The niche restructure is the one genuinely hard judgement call in the flow —
+# it decides what to cut and how to re-angle a career story — so it runs on the
+# stronger model. It fires once, only when the user explicitly opts in, so the
+# extra cost is bounded (and the cached CV+JD prefix keeps it cheap).
+_TAILOR_MODEL_ADVANCED = "claude-sonnet-4-6"
+
+# Recruiter-craft rules distilled from professional CV-writing guidance. Kept
+# as a shared constant so both transforms speak the same language, and kept
+# deliberately BOUNDED — they improve how existing content is phrased, they
+# never license inventing content. Anything the CV can't support becomes a
+# [למילוי] placeholder for the user to fill, which preserves user control
+# instead of silently fabricating numbers.
+_WRITING_RULES = """\
+WRITING CRAFT (apply within your allowed scope — never as licence to invent):
+- Open every bullet with a strong action verb. Never "responsible for", "helped
+  with", "worked on", "אחראי על", "עזרתי ב-".
+- Weave in the job description's recurring keywords NATURALLY, and ONLY where
+  the candidate's real content already supports them. Never keyword-stuff.
+- Keep every bullet to 1-2 lines. Recruiters skim; dense paragraphs get skipped.
+- Prefer concrete impact: what was achieved, measured by what, by doing what.
+  If a metric is genuinely absent from the CV, do NOT invent one — write the
+  bullet without it, or mark a suggested slot as [למילוי] for the user to fill.
+- Never invent employers, titles, dates, technologies or numbers."""
 
 
 def _v2_cached_context(cv_text: str, job_text: str) -> list:
@@ -165,6 +189,21 @@ are ALREADY present and are relevant to the job in **double asterisks** to bold 
 - Keep each block's language (Hebrew stays Hebrew, English stays English) and roughly \
 its original length.
 
+ONE DELIBERATE EXCEPTION — the professional HEADLINE / TITLE:
+The candidate's professional title line (the headline right under the name, and the \
+opening identity sentence of the summary/profile block, if present) MUST be re-angled \
+to match this specific job, so a recruiter sees the relevant identity immediately. \
+Example shape: a broad "Full-Stack Developer" becomes "AI & Automation Engineer | \
+Full-Stack Developer" when the job is AI-focused — leading with the job's domain while \
+KEEPING the candidate's real background visible.
+Constraints on this exception: use ONLY domains/technologies the CV genuinely supports \
+— never invent a title the candidate has no basis for, never claim a seniority level \
+the CV doesn't show, and never drop their real profession entirely. Reorder and \
+re-emphasise, do not fabricate. Apply it to the headline/summary block ONLY; every \
+other block still follows the HARD RULES above.
+
+{writing_rules}
+
 Here are the CV blocks (id-keyed):
 {blocks}
 
@@ -179,7 +218,10 @@ async def baseline_groom(body: BaselineGroomRequest, user: User = Depends(get_cu
     try:
         raw, _ = await call_claude_cached(
             system_blocks=_v2_cached_context(body.cvText, body.jobText),
-            user_content=BASELINE_GROOM_USER.format(blocks=_blocks_for_prompt([b.dict() for b in body.blocks])),
+            user_content=BASELINE_GROOM_USER.format(
+                writing_rules=_WRITING_RULES,
+                blocks=_blocks_for_prompt([b.dict() for b in body.blocks]),
+            ),
             max_tokens=2500,
             model=_TAILOR_MODEL,
         )
@@ -222,6 +264,10 @@ clearly SHORTER than its input. NEVER delete a role entirely or fabricate employ
 EXPAND semantics: sharpen and surface the job-relevant achievements, lead with the most \
 relevant points, add emphasis. You may rephrase and re-order WITHIN the block. An EXPAND \
 block's output should be at least as detailed as its input — NEVER shorten an EXPAND block.
+Inside an EXPAND block, order the bullets by IMPACT rather than chronology — the most \
+impressive, most job-relevant achievement first.
+
+{writing_rules}
 
 RULES:
 - Do NOT modify ANY block that is not listed in EXPAND or SHRINK above — return only \
@@ -285,10 +331,11 @@ async def niche_restructure(body: NicheRestructureRequest, user: User = Depends(
                 shrink_pct=shrink_pct,
                 keep_pct=keep_pct,
                 keep_bullets=1 if shrink_pct >= 70 else 2,
+                writing_rules=_WRITING_RULES,
                 blocks=_blocks_for_prompt([b.dict() for b in body.blocks]),
             ),
             max_tokens=2500,
-            model=_TAILOR_MODEL,
+            model=_TAILOR_MODEL_ADVANCED,  # hardest judgement in the flow
         )
         data = parse_json_response(raw)
         returned = data.get("blocks", []) if isinstance(data, dict) else []
