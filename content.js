@@ -157,6 +157,85 @@ async function loadJobState(url) {
     return cleanText(document.body.innerText || '').substring(0, 7000);
   }
 
+  // ── "See more" expansion ──────────────────────────────────────────────────
+  //
+  // LinkedIn (and most large boards) ship the description collapsed: the first
+  // few lines plus a "See more" toggle, with the remaining markup either absent
+  // from the DOM or hidden from innerText until the toggle fires. Extracting
+  // without expanding first meant the matcher scored the teaser, not the job.
+
+  const SEE_MORE_SELECTORS = [
+    '.jobs-description__footer-button',        // LinkedIn, logged-in job view
+    '.show-more-less-html__button--more',      // LinkedIn, guest job view
+    '.jobs-box__footer button',
+    '.feed-shared-inline-show-more-text__see-more-less-toggle',
+    'button[aria-label*="see more" i]',
+    'button[aria-label*="show more" i]',
+    'button[aria-label*="הצג עוד"]',
+    'button[aria-label*="קרא עוד"]',
+    '[data-test="show-more-cta"]',             // Glassdoor
+    '[data-testid="show-more-cta"]',
+    '.jobsearch-JobComponent button[aria-label*="more" i]',  // Indeed
+  ];
+
+  const SEE_MORE_TEXT_RE = /^(?:see|show|read|view)\s+(?:more|full|all)\b|^more$|^expand$|^הצג עוד|^קרא עוד|^ראה עוד|^למידע נוסף|^להמשך/i;
+  // Never click these — they navigate away or mutate the user's account.
+  const NEVER_CLICK_RE = /apply|submit|save|share|follow|sign|login|register|הגש|שמור|שתף|הרשמ|התחבר/i;
+
+  function _clickSeeMoreToggles() {
+    const clicked = new Set();
+
+    const tryClick = (el) => {
+      if (!el || clicked.has(el) || clicked.size >= 6) return;
+      if (el.getAttribute('aria-expanded') === 'true') return;
+      if (el.offsetParent === null && el.getClientRects().length === 0) return;
+      clicked.add(el);
+      try { el.click(); } catch {}
+    };
+
+    for (const sel of SEE_MORE_SELECTORS) {
+      try { document.querySelectorAll(sel).forEach(tryClick); } catch {}
+    }
+
+    // Label-matched fallback for the long tail of job boards. Scoped to the
+    // description subtree and restricted to non-navigating controls so we can
+    // never trip an "Apply" button.
+    const pane = _findJobDetailPane();
+    if (pane) {
+      const scope = pane.closest('section, article, main, div[class*="job"]') || pane;
+      scope.querySelectorAll('button, [role="button"]').forEach((el) => {
+        const href = el.getAttribute('href');
+        if (href && href !== '#' && !href.startsWith('javascript:')) return;
+        const label = (el.innerText || el.textContent || '').trim();
+        if (!label || label.length > 24) return;
+        if (NEVER_CLICK_RE.test(label)) return;
+        if (SEE_MORE_TEXT_RE.test(label)) tryClick(el);
+      });
+    }
+
+    return clicked.size;
+  }
+
+  // extractJobText() with the description expanded first. Async because the
+  // expanded markup lands a frame or two after the click.
+  async function extractJobTextExpanded() {
+    const before = extractJobText();
+    let best = before;
+
+    for (let pass = 0; pass < 2; pass++) {
+      if (!_clickSeeMoreToggles()) break;
+      await new Promise(r => setTimeout(r, 450));
+      const after = extractJobText();
+      if (after.length <= best.length) break;
+      best = after;
+    }
+
+    if (best.length > before.length) {
+      console.log(`[JMA:expand] description expanded ${before.length} → ${best.length} chars`);
+    }
+    return best;
+  }
+
   chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     if (req.action === 'triggerSidebar') {
       if (!document.getElementById('jma-float-btn')) {
@@ -239,19 +318,24 @@ async function loadJobState(url) {
     }
 
     if (req.action === 'getJobText') {
-      const text = extractJobText();
-      // Try to extract a clean job title from the page
-      const h1 = document.querySelector('h1')?.innerText?.trim() || '';
-      const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
-      sendResponse({
-        text,
-        language: detectLanguage(text),
-        platform: detectPlatform(),
-        url: window.location.href,
-        title: document.title,
-        h1Title: h1,
-        ogTitle,
+      // Expand "See more" before reading: the popup's analysis was otherwise
+      // handed the collapsed teaser on LinkedIn. The listener already returns
+      // true at the end, so the response channel stays open for this.
+      extractJobTextExpanded().then((text) => {
+        // Try to extract a clean job title from the page
+        const h1 = document.querySelector('h1')?.innerText?.trim() || '';
+        const ogTitle = document.querySelector('meta[property="og:title"]')?.content?.trim() || '';
+        sendResponse({
+          text,
+          language: detectLanguage(text),
+          platform: detectPlatform(),
+          url: window.location.href,
+          title: document.title,
+          h1Title: h1,
+          ogTitle,
+        });
       });
+      return true; // async response
     }
 
     if (req.action === 'runFabPipeline') {
@@ -386,12 +470,36 @@ async function loadJobState(url) {
     const lo = (text || '').toLowerCase().replace(/[‘’]/g, "'");
     return REQUIREMENTS_SIGNALS.some(sig => lo.includes(sig));
   }
-function initJobFab() {
-  if (document.getElementById('jma-float-btn')) return; 
+// Set for the whole of initJobFab, not just until the element exists: the
+// function now awaits "See more" expansion, so a retry tick can land while the
+// first call is still in flight and would otherwise inject a second FAB.
+let _fabInitInFlight = false;
+
+async function initJobFab() {
+  // NOTE: no longer bails when #jma-float-btn exists. That guard let the listings
+  // pill veto the FAB on any detail page carrying a "similar jobs" rail, which is
+  // the misclassification this fix targets. classifyPage() now owns the decision.
+  if (_fabInitInFlight) return;
   if (document.getElementById('jma-fab-wrap')) return;
   if (!pageHasJobKeywords() && !_hasJobRequirementsSignal(document.body.innerText || '')) return;
-  const jobText = extractJobText();
+
+  _fabInitInFlight = true;
+  try {
+    await _initJobFabInner();
+  } finally {
+    _fabInitInFlight = false;
+  }
+}
+
+async function _initJobFabInner() {
+  // Expansion awaits ~1s, and LinkedIn re-routes constantly. Without this the
+  // job we just read could belong to a page the user has already left, and we
+  // would score it onto the new one.
+  const startUrl = location.href;
+  const jobText = await extractJobTextExpanded();
+  if (location.href !== startUrl) return;
   if (!jobText || jobText.length < 350) return;
+  if (document.getElementById('jma-fab-wrap')) return;
 
   if (!_hasJobRequirementsSignal(jobText)) return; // אין סעיף דרישות - לא עמוד משרה מלא
 
@@ -413,6 +521,8 @@ function initJobFab() {
 
   chrome.storage.local.get(['licenseKey', 'cvText', 'jma_recent_jobs'], (conf) => {
     if (!conf.licenseKey || !conf.cvText) return;
+    if (location.href !== startUrl) return;              // navigated during the read
+    if (document.getElementById('jma-fab-wrap')) return; // teardown + re-init raced us
 
     // שליפת המשרה הנוכחית מתוך המערך המאוחד
     const recentJobs = conf.jma_recent_jobs || [];
@@ -577,7 +687,7 @@ function _createFabGauge(jobText, cached) {
   // משמש גם את לחיצת ה-FAB וגם את כפתור "ניתוח והתאמה מעמיקה" בפופ-אפ.
   runFabPipeline = async function () {
     const currentUrl = window.location.href;
-    const extractedText = extractJobText();
+    const extractedText = await extractJobTextExpanded();
 
     // ── אסטרטגיית חילוץ כותרת דינמית (מתוך ה-onMessage שלך) ──────────────────
     const getJobTitle = () => {
@@ -917,6 +1027,133 @@ wrap.addEventListener('click', async () => {
     return heCount >= 2 || enCount >= 3;
   }
 
+  // ── Page-type classification: single job vs. job listings ──────────────────
+  //
+  // The circular FAB (#jma-fab-wrap) belongs on a job DETAIL page; the
+  // "דרג משרות בעמוד" pill (#jma-float-btn) belongs on a SEARCH/LIST page.
+  // They were previously decided by two independent timers — the listing scan at
+  // 1800ms, the FAB scan at 2200ms — and initJobFab() gave up whenever the pill
+  // already existed. Every detail page that renders a "similar jobs" rail
+  // (LinkedIn, Indeed and Glassdoor all do) therefore lost the FAB to a race it
+  // could not win. Detection now runs once and dispatches explicitly.
+
+  // URL shapes that only ever occur on a single-job page.
+  const JOB_DETAIL_URL_RE = [
+    /\/jobs?\/view\//i,          // linkedin.com/jobs/view/4012345678
+    /\/viewjob\b/i,              // indeed.com/viewjob?jk=...
+    /\/job\/[^/?#]+/i,           // generic /job/<slug|id>
+    /\/jobs\/\d+/i,
+    /\/position\/[^/?#]+/i,
+    /\/vacancy\/[^/?#]+/i,
+    /\/opening\/[^/?#]+/i,
+    /\/jobposting\//i,
+    /\/o\/[a-z0-9-]{6,}/i,       // greenhouse/lever posting permalinks
+  ];
+
+  // URL shapes that mean "a set of jobs is being browsed".
+  const JOB_LIST_URL_RE = [
+    /\/jobs\/search/i, /\/jobs\/collections/i, /\/job-search/i,
+    /\/jobs\/?(?:$|[?#])/i, /\/careers\/?(?:$|[?#])/i,
+    /\/positions\/?(?:$|[?#])/i, /\/openings\/?(?:$|[?#])/i,
+    /\/vacancies/i, /\/search\/?(?:$|[?#])/i,
+    /[?&](?:q|keywords|query|search)=/i,
+  ];
+
+  // A job id parked in the query string is how LinkedIn and Indeed say
+  // "the list is still on screen, but one job is currently open in the pane".
+  const SELECTED_JOB_PARAM_RE = /[?&](?:currentJobId|selectedJobId|jk|vjk|jobId)=[^&#]+/i;
+
+  // Tight subset of GENERIC_SELECTORS — containers that exist only on a detail
+  // view. Deliberately excludes 'main'/'article'/'[class*="content"]', which match
+  // on virtually every listing page and would make the check meaningless.
+  const DETAIL_PANE_SELECTORS = [
+    '[class*="job-description"]', '[class*="jobDescription"]',
+    '[id*="job-description"]', '[id*="jobDescription"]',
+    '[class*="position-description"]', '[class*="vacancy-description"]',
+    '[class*="job-details"]', '[class*="jobDetails"]',
+    '[class*="job-view"]', '[class*="jobView"]',
+  ];
+
+  // Several PLATFORM_SELECTORS entries end in a catch-all so extractJobText() can
+  // still find *something* (greenhouse falls back to '#content', jobify360 to
+  // 'main'). Those are fine as a last resort for reading text, but as evidence of
+  // "this is a detail page" they match every listing board too, so drop them here.
+  const TOO_GENERIC_FOR_DETECTION = new Set([
+    '#content', '.content', 'main', 'article', '[class*="content"]',
+    '[class*="job"]', '[class*="description"]',
+  ]);
+
+  // A container holding several job cards is a results list, not a description.
+  function _containsJobCards(el) {
+    const cfg = getCardConfig();
+    const selectors = cfg ? [cfg.cards, ...GENERIC_CARD_SELECTORS] : GENERIC_CARD_SELECTORS;
+    for (const sel of selectors) {
+      try { if (el.querySelectorAll(sel).length >= 2) return true; } catch {}
+    }
+    return false;
+  }
+
+  // Returns the element holding this page's job description, or null.
+  function _findJobDetailPane() {
+    const hostname = window.location.hostname.replace('www.', '');
+    const selectors = [];
+    for (const [domain, sels] of Object.entries(PLATFORM_SELECTORS)) {
+      if (hostname.includes(domain)) selectors.push(...sels);
+    }
+    selectors.push(...DETAIL_PANE_SELECTORS);
+
+    for (const sel of selectors) {
+      if (TOO_GENERIC_FOR_DETECTION.has(sel)) continue;
+      let els;
+      try { els = document.querySelectorAll(sel); } catch { continue; }
+      for (const el of els) {
+        const text = (el.innerText || el.textContent || '').trim();
+        if (text.length < 350 || !_hasJobRequirementsSignal(text)) continue;
+        if (_containsJobCards(el)) continue;
+        return el;
+      }
+    }
+    return null;
+  }
+
+  // 'single' → FAB only · 'listing' → pill only · 'hybrid' → both (list + open pane)
+  function classifyPage() {
+    const url       = window.location.href;
+    const detailUrl = JOB_DETAIL_URL_RE.some(re => re.test(url));
+    const listUrl   = JOB_LIST_URL_RE.some(re => re.test(url));
+    const hasPane   = !!_findJobDetailPane();
+
+    // A detail URL is decisive. However many "similar jobs" cards sit under the
+    // description, this page is one job and the pill must not appear.
+    if (detailUrl && !listUrl) return 'single';
+    if (listUrl && (hasPane || SELECTED_JOB_PARAM_RE.test(url))) return 'hybrid';
+    if (listUrl) return 'listing';
+    if (detailUrl || hasPane) return 'single';
+    // Unrecognised URL and no description container — let detectJobCards() decide.
+    return 'listing';
+  }
+
+  // Cards inside a "similar jobs" / "people also viewed" rail are not what the
+  // page is about, and counting them is what made detail pages look like lists.
+  const SIMILAR_SECTION_RE = /similar|related|recommend|also-?viewed|also_viewed|people-?also|more-?jobs|other-?jobs|suggest|carousel|נוספות|דומות|מומלצות/i;
+
+  function _isInSimilarJobsSection(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      const sig = `${String(n.className || '')} ${n.id || ''} ` +
+                  `${n.getAttribute?.('aria-label') || ''} ${n.getAttribute?.('data-test') || ''}`;
+      if (SIMILAR_SECTION_RE.test(sig)) return true;
+    }
+    return false;
+  }
+
+  // Drops cards from similar-jobs rails, but never returns an empty set when the
+  // unfiltered one was usable — on /jobs/collections/recommended the real results
+  // container itself matches SIMILAR_SECTION_RE.
+  function _dropSimilarJobsCards(cards) {
+    const kept = cards.filter(c => !_isInSimilarJobsSection(c));
+    return kept.length >= 2 ? kept : cards;
+  }
+
   // Structural CSS selectors — ordered from precise to generic
   const GENERIC_CARD_SELECTORS = [
     // Explicit job semantics
@@ -974,22 +1211,25 @@ wrap.addEventListener('click', async () => {
     // 1. Known platform — precise selectors
     const cfg = getCardConfig();
     if (cfg) {
-      const cards = document.querySelectorAll(cfg.cards);
-      if (cards.length >= 2) return { cards: Array.from(cards), cfg };
+      const cards = _dropSimilarJobsCards(Array.from(document.querySelectorAll(cfg.cards)));
+      if (cards.length >= 2) return { cards, cfg };
     }
 
     // 2. Generic structural selectors
     for (const sel of GENERIC_CARD_SELECTORS) {
       try {
-        const cards = document.querySelectorAll(sel);
-        if (cards.length >= 2) return { cards: Array.from(cards), cfg: null };
+        const cards = _dropSimilarJobsCards(Array.from(document.querySelectorAll(sel)));
+        if (cards.length >= 2) return { cards, cfg: null };
       } catch {}
     }
 
     // 3. Pattern-based: repeated containers with links, but ONLY if page has job keywords
     if (pageHasJobKeywords()) {
       const els = findRepeatedLinkContainers();
-      if (els) return { cards: els, cfg: null };
+      if (els) {
+        const cards = _dropSimilarJobsCards(els);
+        if (cards.length >= 2) return { cards, cfg: null };
+      }
     }
 
     return null;
@@ -1015,8 +1255,10 @@ wrap.addEventListener('click', async () => {
       const link = card.querySelector('a[href]');
       const href = link ? link.href : '';
 
-      // Capture full card text as reliable fallback
-      const cardText = (card.innerText || card.textContent || '').trim().replace(/\s+/g,' ').substring(0, 500);
+      // Capture full card text as reliable fallback. cleanText (not /\s+/→' ')
+      // because this feeds matcher.js, whose section parser is line-based —
+      // flattening the newlines makes every requirement invisible to it.
+      const cardText = cleanText(card.innerText || card.textContent || '').substring(0, 800);
 
       return { index: i, title: title.substring(0, 100), company: company.substring(0, 60), snippet: snippet.substring(0, 200), href, cardText };
     })
@@ -1243,8 +1485,8 @@ wrap.addEventListener('click', async () => {
         ${j.company ? `<div class="jma-company">${escHtml(j.company)}</div>` : ''}
         <div class="jma-bar-wrap"><div class="jma-bar" style="width:${j.score}%;background:${col}"></div></div>
         <div class="jma-fit">
-          <div class="jma-fit-row"><span>✅</span><span>${escHtml(j.pro)}</span></div>
-          <div class="jma-fit-row"><span>⚠️</span><span>${escHtml(j.con)}</span></div>
+          <div class="jma-fit-row"><span>${escHtml(j.pro)}</span></div>
+          <div class="jma-fit-row"><span>${escHtml(j.con)}</span></div>
         </div>
       </div>`;
     }).join('');
@@ -1257,6 +1499,63 @@ wrap.addEventListener('click', async () => {
 
   function rankCacheKey() {
     return `jma_rank_${location.origin}${location.pathname}`;
+  }
+
+  // Bullet prefixes produced by matcher.js computeScore().
+  const MATCH_BULLET_RE = /^[✅⚡↔️➕]/u;
+  const GAP_BULLET_RE   = /^[⚠️❌]/u;
+
+  // Ranks the page's jobs with matcher.js — the same deterministic engine the
+  // single-job FAB already uses. Replaces the /api/rank-jobs Claude call: no
+  // token cost, no network round trip, and one consistent score across both UIs.
+  function rankLocally(enrichedJobs, cacheKey) {
+    if (!window.JMA_Matcher || typeof window.JMA_Matcher.computeScore !== 'function') {
+      showSidebarError('מנוע ההתאמה לא נטען. רענני את העמוד ונסי שוב.');
+      return;
+    }
+
+    chrome.storage.local.get(['jma_user_profile', 'cvText'], (s) => {
+      // Same profile resolution as the FAB: AI-extracted profile when present,
+      // otherwise the local stub built from raw CV text.
+      let profile = s.jma_user_profile || null;
+      if (!profile && s.cvText) profile = _profileFromCvText(s.cvText);
+      if (!profile) {
+        showSidebarError('כדי לדרג משרות יש להגדיר קורות חיים תחילה. פתחי את התוסף.');
+        return;
+      }
+
+      const rankedJobs = enrichedJobs.map((job) => {
+        let score = 0, bullets = [];
+        try {
+          ({ score, bullets } = window.JMA_Matcher.computeScore(profile, job.fullText) || {});
+        } catch (err) {
+          console.log(`[JMA:rank] computeScore failed for "${job.title}": ${err.message}`);
+        }
+        bullets = bullets || [];
+        // Bullets keep the marker matcher.js gave them (✅ full / ⚡ partial /
+        // ↔️ adjacent tooling), so renderRanked no longer prefixes its own icon.
+        const pro = bullets.find(b => MATCH_BULLET_RE.test(b)) || '➖ לא זוהו התאמות מובהקות';
+        const con = bullets.find(b => GAP_BULLET_RE.test(b))   || '➖ לא זוהו פערים מובהקים';
+        return {
+          title:   job.title,
+          company: job.company,
+          href:    job.href,
+          score:   typeof score === 'number' ? score : 0,
+          pro, con,
+        };
+      }).filter(j => j.score > 0);
+
+      console.log(`[JMA:rank] scored ${rankedJobs.length}/${enrichedJobs.length} jobs locally (matcher v${window.JMA_Matcher.VERSION})`);
+
+      if (!rankedJobs.length) {
+        showSidebarError('לא הצלחנו לחשב התאמה למשרות בעמוד זה.');
+        return;
+      }
+
+      _rankingDone = true;
+      chrome.storage.local.set({ [cacheKey]: { jobs: rankedJobs, ts: Date.now() } });
+      renderRanked(rankedJobs);
+    });
   }
 
   function startRanking() {
@@ -1306,23 +1605,9 @@ wrap.addEventListener('click', async () => {
           return;
         }
 
-        setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מנתח ומדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">יכול לקחת עד דקה</div></div>');
+        setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">חישוב מקומי — כמה שניות</div></div>');
 
-        console.log(`[JMA:rank] sending rankJobs with ${enrichedJobs.length} jobs`);
-        chrome.runtime.sendMessage({ action: 'rankJobs', jobs: enrichedJobs }, (resp) => {
-          if (chrome.runtime.lastError) {
-            console.log(`[JMA:rank] rankJobs runtime error: ${chrome.runtime.lastError.message}`);
-            showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.');
-            return;
-          }
-          console.log(`[JMA:rank] rankJobs response: error=${resp?.error} rankedJobs_len=${resp?.rankedJobs?.length}`);
-          if (!resp) { showSidebarError('לא הצלחנו לנתח את המשרות. נסי שוב.'); return; }
-          if (resp.error) { showSidebarError(resp.error); return; }
-          _rankingDone = true;
-          // Save to cache
-          chrome.storage.local.set({ [cKey]: { jobs: resp.rankedJobs, ts: Date.now() } });
-          renderRanked(resp.rankedJobs);
-        });
+        rankLocally(enrichedJobs, cKey);
       });
     });
   }
@@ -1400,15 +1685,24 @@ wrap.addEventListener('click', async () => {
 
     injectStyles();
 
-    // Listing page: delayed to let SPA finish rendering cards
-    setTimeout(() => {
-      if (!document.getElementById('jma-float-btn')) initSidebar();
-    }, 1800);
+    // One classification, one dispatch. Previously both timers fired
+    // unconditionally and whichever injected first won, which is how single-job
+    // pages ended up with the listings pill instead of the FAB.
+    let attempt = 0;
+    const dispatch = () => {
+      const kind = classifyPage();
+      console.log(`[JMA:page] classified "${kind}" — ${location.href}`);
 
-    // Single-job FAB: slightly later so page content is fully rendered
-    setTimeout(() => {
-      if (!document.getElementById('jma-fab-wrap')) initJobFab();
-    }, 2200);
+      if (kind !== 'single' && !document.getElementById('jma-float-btn')) initSidebar();
+      if (kind !== 'listing' && !document.getElementById('jma-fab-wrap')) initJobFab();
+
+      // SPA shells often haven't rendered the description or the cards yet at
+      // 1800ms; retry while nothing has been injected.
+      const injected = document.getElementById('jma-float-btn') ||
+                       document.getElementById('jma-fab-wrap');
+      if (!injected && ++attempt < 3) setTimeout(dispatch, 1400);
+    };
+    setTimeout(dispatch, 1800);
   }
 
   // Called whenever a navigation to a new URL is detected.

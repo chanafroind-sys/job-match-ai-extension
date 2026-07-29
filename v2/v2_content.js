@@ -123,6 +123,90 @@
     return cleanText(document.body.innerText || '').substring(0, 7000);
   }
 
+  // ── "See more" expansion — V2's own copy of content.js:167-238 ─────────────
+  //
+  // LinkedIn and most large boards ship the description collapsed behind a
+  // "See more" toggle, so extracting without expanding first fed the tailoring
+  // pipeline the teaser instead of the job.
+
+  const V2_SEE_MORE_SELECTORS = [
+    '.jobs-description__footer-button',        // LinkedIn, logged-in job view
+    '.show-more-less-html__button--more',      // LinkedIn, guest job view
+    '.jobs-box__footer button',
+    '.feed-shared-inline-show-more-text__see-more-less-toggle',
+    'button[aria-label*="see more" i]',
+    'button[aria-label*="show more" i]',
+    'button[aria-label*="הצג עוד"]',
+    'button[aria-label*="קרא עוד"]',
+    '[data-test="show-more-cta"]',             // Glassdoor
+    '[data-testid="show-more-cta"]',
+    '.jobsearch-JobComponent button[aria-label*="more" i]',  // Indeed
+  ];
+  const V2_SEE_MORE_TEXT_RE = /^(?:see|show|read|view)\s+(?:more|full|all)\b|^more$|^expand$|^הצג עוד|^קרא עוד|^ראה עוד|^למידע נוסף|^להמשך/i;
+  const V2_NEVER_CLICK_RE = /apply|submit|save|share|follow|sign|login|register|הגש|שמור|שתף|הרשמ|התחבר/i;
+
+  // The description container, used to scope the label-matched fallback.
+  function _v2FindDescriptionPane() {
+    const hostname = window.location.hostname.replace('www.', '');
+    for (const [domain, selectors] of Object.entries(PLATFORM_SELECTORS)) {
+      if (!hostname.includes(domain)) continue;
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && (el.innerText || '').trim().length > 100) return el;
+      }
+    }
+    return null;
+  }
+
+  function _v2ClickSeeMoreToggles() {
+    const clicked = new Set();
+
+    const tryClick = (el) => {
+      if (!el || clicked.has(el) || clicked.size >= 6) return;
+      if (el.getAttribute('aria-expanded') === 'true') return;
+      if (el.offsetParent === null && el.getClientRects().length === 0) return;
+      clicked.add(el);
+      try { el.click(); } catch {}
+    };
+
+    for (const sel of V2_SEE_MORE_SELECTORS) {
+      try { document.querySelectorAll(sel).forEach(tryClick); } catch {}
+    }
+
+    const pane = _v2FindDescriptionPane();
+    if (pane) {
+      const scope = pane.closest('section, article, main, div[class*="job"]') || pane;
+      scope.querySelectorAll('button, [role="button"]').forEach((el) => {
+        const href = el.getAttribute('href');
+        if (href && href !== '#' && !href.startsWith('javascript:')) return;
+        const label = (el.innerText || el.textContent || '').trim();
+        if (!label || label.length > 24) return;
+        if (V2_NEVER_CLICK_RE.test(label)) return;
+        if (V2_SEE_MORE_TEXT_RE.test(label)) tryClick(el);
+      });
+    }
+
+    return clicked.size;
+  }
+
+  async function extractJobTextExpanded() {
+    const before = extractJobText();
+    let best = before;
+
+    for (let pass = 0; pass < 2; pass++) {
+      if (!_v2ClickSeeMoreToggles()) break;
+      await new Promise(r => setTimeout(r, 450));
+      const after = extractJobText();
+      if (after.length <= best.length) break;
+      best = after;
+    }
+
+    if (best.length > before.length) {
+      console.log(`[JMA-V2:expand] description expanded ${before.length} → ${best.length} chars`);
+    }
+    return best;
+  }
+
   // ═══ 2. V2 job-state persistence — copy of content.js:24-48 (v2 key) ═════
 
   function _urlHash(url) {
@@ -175,7 +259,7 @@
   //        storage → jma_v2_recent_jobs, cache lookup → V2 jobs array ════════
   async function jmaV2RunPipeline() {
     const currentUrl = window.location.href;
-    const extractedText = extractJobText();
+    const extractedText = await extractJobTextExpanded();
     const cached = (await _v2GetRecentJobs()).find(j => j.url === currentUrl) || null;
 
     // ── אסטרטגיית חילוץ כותרת דינמית ─────────────────────────────────────────
@@ -501,9 +585,15 @@
     }
     return {
       status: 'ok',
+      // BUG FIX: this used to collapse every non-skills/non-role type into
+      // 'text', which destroyed 'summary' — so the export's [PROFILE] section
+      // was never emitted and the profile silently vanished from the DOCX
+      // (the CV appeared to start straight at Experience). Keep the real type
+      // the semantic map returned; only fall back to 'text' for unknown ones.
       blocks: data.blocks.map((b, i) => ({
         id: `b${i}`,
-        type: b.type === 'skills' ? 'skills' : (b.type === 'role' ? 'role' : 'text'),
+        type: ['skills', 'role', 'summary', 'education', 'languages', 'projects', 'other']
+          .includes(b.type) ? b.type : 'text',
         label: (b.label || '').slice(0, 60),
         insertable: b.type === 'skills' || b.type === 'role',
         text: b.text || '',
@@ -654,7 +744,7 @@
       block.className = 'jma-v2-cv-block jma-v2-cv-text';
       const body = document.createElement('div');
       body.className = 'jma-v2-cv-block-body';
-      body.textContent = para;
+      _v2SetBlockBody(body, para); // same bullet/bold rendering as mapped blocks
       block.appendChild(body);
       paper.appendChild(block);
     }
@@ -683,9 +773,30 @@
     d.textContent = s == null ? '' : String(s);
     return d.innerHTML;
   }
-  // Render **x** as bold — escape first so CV text can never inject markup.
+  // Render a block body the way V1's export does: real <ul>/<li> bullets for
+  // lines marked with $ • - *, plain lines for headers, and **x** as bold.
+  // BUG FIX: this used to dump the raw text into one pre-wrap div, so the
+  // bullet markers showed as literal "$" characters and a role's bullets read
+  // as a single undifferentiated block — unlike V1, which renders them as a
+  // proper indented list. Escapes first, so CV text can never inject markup.
   function _v2SetBlockBody(bodyEl, text) {
-    bodyEl.innerHTML = _v2EscapeHtml(text).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    const inline = (s) => _v2EscapeHtml(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    const parts = [];
+    let inList = false;
+    for (const raw of String(text || '').split('\n')) {
+      const l = raw.trim();
+      if (!l) { if (inList) { parts.push('</ul>'); inList = false; } continue; }
+      // '* ' requires the trailing space, so it can't swallow a '**bold**' start.
+      if (/^[$•\-–—*]\s+/.test(l)) {
+        if (!inList) { parts.push('<ul class="jma-v2-cv-ul">'); inList = true; }
+        parts.push(`<li>${inline(l.replace(/^[$•\-–—*]\s+/, ''))}</li>`);
+      } else {
+        if (inList) { parts.push('</ul>'); inList = false; }
+        parts.push(`<div class="jma-v2-cv-line">${inline(l)}</div>`);
+      }
+    }
+    if (inList) parts.push('</ul>');
+    bodyEl.innerHTML = parts.join('');
   }
 
   function _v2CaptureTailorContext(cvText, jobText, blocks, paper) {
@@ -1064,6 +1175,17 @@
     return _v2NanoBasePromise;
   }
 
+  // Bold the skill term inside an inserted line (mirrors the same helper in
+  // v2_popup.js, which acts as a safety net at export time).
+  function _v2BoldSkill(text, skill) {
+    const t = String(text || '').trim();
+    if (!t || t.includes('**')) return t;
+    const s = String(skill || '').trim();
+    if (!s) return t;
+    const re = new RegExp(`(?<![\\w*])(${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\\w*])`, 'i');
+    return re.test(t) ? t.replace(re, '**$1**') : `**${s}:** ${t}`;
+  }
+
   function _v2CleanPolish(out) {
     if (!out) return '';
     let s = String(out).trim();
@@ -1134,7 +1256,10 @@
     const { text, polished } = await _v2PolishAnswer(rawText, {
       blockType: block.type, skill: placement.skill, lang,
     });
-    placement.text = text;
+    // Emphasise the skill term the same way groomed content is emphasised —
+    // the on-device polish returns plain text, so without this the inserted
+    // lines were the only un-bolded content in the CV.
+    placement.text = _v2BoldSkill(text, placement.skill);
     placement.polished = polished;
     _v2UpdateInjected(inj, placement);
 
@@ -1175,9 +1300,8 @@
 
   function _v2UpdateInjected(inj, placement, { pending = false } = {}) {
     inj.classList.toggle('jma-v2-injected-pending', pending);
-    inj.querySelector('.jma-v2-injected-text').textContent = pending
-      ? (placement.text || '')
-      : placement.text;
+    // Bold-aware so an inserted line looks the same on screen as in the file.
+    _v2SetBlockBody(inj.querySelector('.jma-v2-injected-text'), placement.text || '');
     const badge = inj.querySelector('.jma-v2-injected-badge');
     badge.textContent = pending ? '✨ מנסח…' : (placement.polished ? '✨ AI' : '');
     badge.title = placement.polished ? 'נוסח על־ידי Gemini Nano (מקומי)' : '';
@@ -1225,17 +1349,20 @@
     }
     if (req?.action === 'jmaV2GetJobText') {
       // Same response shape as V1's getJobText, served entirely by V2 copies.
-      const text = extractJobText();
-      sendResponse({
-        text,
-        language: detectLanguage(text),
-        platform: detectPlatform(),
-        url: location.href,
-        h1Title: document.querySelector('h1')?.innerText?.trim() || '',
-        ogTitle: document.querySelector('meta[property="og:title"]')?.content?.trim() || '',
-        title: document.title || '',
+      // Async now: the description is expanded before it is read, so a collapsed
+      // LinkedIn post no longer returns just its first few lines.
+      extractJobTextExpanded().then((text) => {
+        sendResponse({
+          text,
+          language: detectLanguage(text),
+          platform: detectPlatform(),
+          url: location.href,
+          h1Title: document.querySelector('h1')?.innerText?.trim() || '',
+          ogTitle: document.querySelector('meta[property="og:title"]')?.content?.trim() || '',
+          title: document.title || '',
+        });
       });
-      return; // sync response
+      return true; // async response
     }
     // Every other action belongs to V1's listener in content.js.
   });
@@ -1348,7 +1475,15 @@
         font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
       }
       .jma-v2-cv-role .jma-v2-cv-block-label{border-bottom-style:dashed;font-size:13px}
-      .jma-v2-cv-block-body{white-space:pre-wrap;word-break:break-word}
+      /* Structure is emitted as real elements now (see _v2SetBlockBody), so
+         pre-wrap is no longer needed — it would double the spacing. */
+      .jma-v2-cv-block-body{word-break:break-word}
+      .jma-v2-cv-line{margin:2px 0}
+      .jma-v2-cv-ul{
+        margin:3px 0;padding-inline-start:20px;padding-inline-end:0;
+        list-style:disc outside;
+      }
+      .jma-v2-cv-ul li{margin:2px 0;line-height:1.55}
       .jma-v2-cv-plus-wrap{
         /* Floats just above the block (not top:2px inside it) so the label
            pill can never overlap the block's own body text — it's still

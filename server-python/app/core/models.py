@@ -175,6 +175,33 @@ class SyncMeta(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ScrapedJob(Base):
+    """The crowdsourced community jobs pool — one row per job page visited by a
+    user who opted in to anonymous sharing (POST /api/scrape-job). Deliberately
+    anonymous: no user_id, no FK. Previously a raw_jobs.json file next to
+    main.py, which Render wiped on every deploy because the container disk is
+    ephemeral — that is why the pool was always empty and /api/import-jobs
+    answered 404.
+
+    url is UNIQUE so the dedup is enforced by the database rather than by a
+    read-modify-write of the whole pool (which lost rows under concurrent
+    scrapes). scraped_at is indexed because every read is a time-window query.
+    """
+
+    __tablename__ = "scraped_jobs"
+    __table_args__ = (
+        Index("ix_scraped_jobs_scraped_at", "scraped_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    url: Mapped[str] = mapped_column(String(1024), unique=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    text: Mapped[str] = mapped_column(String, nullable=False)
+    scraped_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ReferralRequest(Base):
     __tablename__ = "referral_requests"
 

@@ -727,13 +727,47 @@ async function _finishQuestions(skipped) {
 
 // V2 works in semantic blocks; V1's builder works in [SECTION] markers.
 // This is the bridge — blocks + inserted answers → V1 marker text.
+// Bold the skill term inside an inserted line so added content is emphasised
+// exactly like the groomed content (the on-device polish returns plain text).
+function _v2BoldSkill(text, skill) {
+  const t = String(text || '').trim();
+  if (!t) return '';
+  if (t.includes('**')) return t;                    // already emphasised
+  const s = String(skill || '').trim();
+  if (!s) return t;
+  const re = new RegExp(`(?<![\\w*])(${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\\w*])`, 'i');
+  return re.test(t) ? t.replace(re, '**$1**') : `**${s}:** ${t}`;
+}
+
 function _v2BlocksToMarkerCv(blocks, placements) {
   const byType = { role: [], skills: [], education: [], languages: [], summary: [], projects: [], other: [] };
-  const addsFor = (id) => (placements || []).filter(p => p.blockId === id).map(p => `$ ${p.text}`);
+  const addsFor = (id) => (placements || []).filter(p => p.blockId === id);
 
   for (const b of blocks || []) {
-    const lines = [String(b.text || '').trim(), ...addsFor(b.id)].filter(Boolean);
-    const body = lines.join('\n');
+    const base = String(b.text || '').trim();
+    const adds = addsFor(b.id);
+    let body = base;
+
+    if (adds.length) {
+      if (b.type === 'skills') {
+        // Skills are a list, not bullets — merge inline so the addition reads
+        // as part of the existing list instead of a stray dotted line.
+        const extra = adds.map(p => _v2BoldSkill(p.text, p.skill).replace(/\.$/, '')).join(', ');
+        const lines = base.split('\n');
+        const last = (lines[lines.length - 1] || '').trim();
+        if (last) lines[lines.length - 1] = `${last.replace(/[,;]\s*$/, '')}, ${extra}`;
+        else lines.push(extra);
+        body = lines.join('\n');
+      } else {
+        // Role/other: match the bullet marker the block already uses so the new
+        // line sits flush with its siblings (V1's builder accepts $ • - *).
+        const m = base.match(/^\s*([$•\-*])\s+/m);
+        const marker = m ? m[1] : '$';
+        body = [base, ...adds.map(p => `${marker} ${_v2BoldSkill(p.text, p.skill)}`)]
+          .filter(Boolean).join('\n');
+      }
+    }
+
     const t = b.type === 'text' ? 'other' : (byType[b.type] ? b.type : 'other');
     byType[t].push({ label: b.label || '', body });
   }

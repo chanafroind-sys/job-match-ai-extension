@@ -8,7 +8,7 @@ import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -84,19 +84,116 @@ STATIC_PREMIUM_KEYS: set = {k.strip() for k in _PREMIUM_KEYS_ENV.split(",") if k
 _ADMIN_KEYS_ENV = os.getenv("ADMIN_KEYS", "")
 STATIC_ADMIN_KEYS: set = {k.strip() for k in _ADMIN_KEYS_ENV.split(",") if k.strip()}
 
+# ── Community jobs pool ───────────────────────────────────────────────────────
+# Backed by the scraped_jobs table, NOT by a file. The previous raw_jobs.json
+# implementation stored the pool on the container disk, which Render wipes on
+# every deploy and restart — so the pool was permanently near-empty and
+# /api/import-jobs answered 404 no matter how many pages users had contributed.
+# raw_jobs.json is still read once, at startup, purely to carry over whatever
+# rows an older deploy left behind.
+
 RAW_JOBS_FILE = Path(__file__).parent / "raw_jobs.json"
-MAX_RAW_JOBS = 10_000
+MAX_POOL_JOB_CHARS = 5000        # per-job text cap, matches what the extension sends
+MAX_POOL_FETCH = 2000            # hard ceiling on rows returned by one pool read
 
 
-def _load_raw_jobs() -> list:
+async def _pool_add_job(url: str, text: str, title: str,
+                        scraped_at: Optional[datetime] = None) -> str:
+    """Insert one scraped job. Returns "saved" or "duplicate".
+
+    Dedup is the url UNIQUE constraint rather than a read-modify-write of the
+    whole pool: concurrent scrapes used to clobber each other's writes.
+    scraped_at is only passed by the legacy-file migration, which has to keep
+    the original timestamps or every carried-over job would look brand new.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from app.core.db import async_session_factory
+    from app.core.models import ScrapedJob
+
+    async with async_session_factory() as db:
+        job = ScrapedJob(
+            url=url,
+            text=(text or "")[:MAX_POOL_JOB_CHARS],
+            title=(title or "")[:200],
+        )
+        if scraped_at is not None:
+            job.scraped_at = scraped_at
+        db.add(job)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            return "duplicate"
+    return "saved"
+
+
+async def _pool_fetch_since(cutoff: datetime, limit: int = MAX_POOL_FETCH) -> list[dict]:
+    """Newest-first jobs scraped at or after `cutoff`, shaped like the old
+    raw_jobs.json entries so downstream filtering/ranking is unchanged."""
+    from sqlalchemy import select
+
+    from app.core.db import async_session_factory
+    from app.core.models import ScrapedJob
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(ScrapedJob)
+            .where(ScrapedJob.scraped_at >= cutoff)
+            .order_by(ScrapedJob.scraped_at.desc())
+            .limit(limit)
+        )
+        rows = result.scalars().all()
+
+    return [{
+        "url": r.url,
+        "title": r.title or "",
+        "text": r.text or "",
+        "ts": r.scraped_at.isoformat() if r.scraped_at else "",
+    } for r in rows]
+
+
+async def _pool_count() -> int:
+    from sqlalchemy import func as sa_func, select
+
+    from app.core.db import async_session_factory
+    from app.core.models import ScrapedJob
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(sa_func.count()).select_from(ScrapedJob))
+        return int(result.scalar_one() or 0)
+
+
+async def _migrate_raw_jobs_file() -> None:
+    """One-shot carry-over of the legacy raw_jobs.json pool into the table.
+    Skipped entirely once the table has rows, so it costs one COUNT at boot."""
     try:
-        return json.loads(RAW_JOBS_FILE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+        legacy = json.loads(RAW_JOBS_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    if not isinstance(legacy, list) or not legacy:
+        return
+    if await _pool_count() > 0:
+        return
+
+    migrated = 0
+    for job in legacy:
+        url = (job.get("url") or "").strip()
+        if not url:
+            continue
+        ts = _parse_pool_ts(job.get("ts") or "")
+        if await _pool_add_job(url, job.get("text") or "", job.get("title") or "", ts) == "saved":
+            migrated += 1
+    print(f"[JMA:pool] migrated {migrated} legacy jobs from raw_jobs.json")
 
 
-def _save_raw_jobs(jobs: list) -> None:
-    RAW_JOBS_FILE.write_text(json.dumps(jobs, ensure_ascii=False), encoding="utf-8")
+def _parse_pool_ts(raw: str) -> Optional[datetime]:
+    """Legacy rows stored naive UTC isoformat strings; the column is tz-aware."""
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _quick_filter(jobs: list, cv_text: str) -> list:
@@ -1186,8 +1283,24 @@ class ScrapeJobRequest(BaseModel):
 class ImportJobsRequest(BaseModel):
     cvText: str
     minScore: int = 70
-    timeRange: str = "3days"  # "3days" | "since_last"
+    timeRange: str = "days"   # "days" (use `days`) | "since_last"
+    days: int = 3             # honoured when timeRange != "since_last"; clamped to 1..90
     shareJobsConsent: bool = False
+
+
+class JobsPoolRequest(BaseModel):
+    """LINE B — the client asks for the raw pool window and scores it locally
+    with matcher.js. No cvText: the CV never leaves the browser on this line."""
+
+    timeRange: str = "days"
+    days: int = 3
+    shareJobsConsent: bool = False
+
+
+class ExportJobsRequest(BaseModel):
+    """LINE B — already-scored rows coming back for xlsx formatting."""
+
+    rows: list[dict] = []
 
 RANK_SINGLE_JOB_PROMPT = """You are a strict but fair senior hiring manager. Score this single job posting against the candidate's CV.
 
@@ -1276,6 +1389,11 @@ async def lifespan(app: FastAPI):
     if not GUMROAD_ACCESS_TOKEN:
         print("INFO: GUMROAD_ACCESS_TOKEN not set — seller-side API features disabled")
     print(f"[JMA:startup] product={GUMROAD_PRODUCT_PERMALINK} upgrade_url={UPGRADE_URL}")
+    # Best-effort: a failure here must not stop the server from booting.
+    try:
+        await _migrate_raw_jobs_file()
+    except Exception as e:
+        print(f"[JMA:pool] legacy migration skipped: {type(e).__name__}: {e}")
     yield
 
 app = FastAPI(title="Job Match AI Server", lifespan=lifespan)
@@ -2855,30 +2973,84 @@ async def scrape_job(body: ScrapeJobRequest):
     if not url or not url.startswith("http"):
         raise HTTPException(status_code=400, detail="Invalid URL")
 
-    jobs = _load_raw_jobs()
-    existing_urls = {j["url"] for j in jobs}
-    if url in existing_urls:
-        return {"status": "duplicate"}
-
-    jobs.append({
-        "url": url,
-        "text": body.text[:5000],
-        "title": (body.title or "")[:200],
-        "ts": datetime.utcnow().isoformat(),
-    })
-
-    if len(jobs) > MAX_RAW_JOBS:
-        jobs = jobs[-MAX_RAW_JOBS:]
-
-    _save_raw_jobs(jobs)
-    return {"status": "saved"}
+    status = await _pool_add_job(url, body.text, body.title or "")
+    return {"status": status}
 
 
-@app.post("/api/import-jobs")
-async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = Header(None)):
-    """2-stage filtering of scraped jobs → Excel download. Gated on the user having
-    opted in to anonymous job-page sharing (not premium — anyone who contributes
-    scraped job pages gets access to the community pool in return)."""
+def _pool_cutoff(license_key: str, time_range: str, days: int) -> datetime:
+    """Resolve the requested window to an absolute tz-aware cutoff. Shared by
+    both import lines so "3 days" means the same thing in each."""
+    if time_range == "since_last":
+        raw = _load_usage().get(license_key, {}).get("last_import_ts", "")
+        parsed = _parse_pool_ts(raw)
+        if parsed:
+            return parsed
+        return datetime.now(timezone.utc) - timedelta(days=30)
+    return datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))
+
+
+async def _load_pool_window(license_key: str, time_range: str, days: int) -> list[dict]:
+    """Jobs in the requested window, or a 404 explaining which stage came up empty."""
+    if await _pool_count() == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="עדיין לא נאספו משרות. המשיכי לגלוש — כל משרה שתבקרי בה תיאסף אוטומטית.",
+        )
+
+    jobs = await _pool_fetch_since(_pool_cutoff(license_key, time_range, days))
+    if not jobs:
+        raise HTTPException(status_code=404, detail="לא נמצאו משרות חדשות בטווח הזמן שנבחר.")
+    return jobs
+
+
+def _mark_import_done(license_key: str) -> None:
+    usage = _load_usage()
+    usage.setdefault(license_key, {})["last_import_ts"] = datetime.now(timezone.utc).isoformat()
+    _save_usage(usage)
+
+
+def _build_jobs_xlsx(rows: list[dict]) -> BytesIO:
+    """Shared by both import lines — the AI line and the local-matcher line hand
+    back identically shaped rows, so they get an identical workbook."""
+    try:
+        import pandas as pd
+        from openpyxl.styles import Alignment, Font, PatternFill
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Excel generation unavailable on this server.")
+
+    df = pd.DataFrame(rows, columns=["Title", "URL", "Score", "Pro", "Con", "Date"])
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Matched Jobs")
+        ws = writer.sheets["Matched Jobs"]
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(fill_type="solid", fgColor="7C3AED")
+            cell.alignment = Alignment(horizontal="center")
+        for col in ws.columns:
+            max_len = max((len(str(c.value or "")) for c in col), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+    output.seek(0)
+    return output
+
+
+def _xlsx_response(output: BytesIO) -> StreamingResponse:
+    filename = f"JobMatchAI_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.post("/api/jobs-pool")
+async def jobs_pool(body: JobsPoolRequest, x_license_key: Optional[str] = Header(None)):
+    """LINE B (local matcher). Hands the raw pool window to the client so
+    matcher.js can score every job itself — no keyword pre-filter, no Claude
+    call, no per-job cost. The client, not the server, decides what matches.
+
+    Same consent gate as /api/import-jobs: you get the pool only if you feed it.
+    """
     license_key = x_license_key or ""
     await require_license(license_key)
 
@@ -2888,25 +3060,46 @@ async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = He
             detail="נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.",
         )
 
-    all_jobs = _load_raw_jobs()
-    if not all_jobs:
+    jobs = await _load_pool_window(license_key, body.timeRange, body.days)
+    _mark_import_done(license_key)
+    return {"jobs": jobs, "count": len(jobs)}
+
+
+@app.post("/api/export-jobs-xlsx")
+async def export_jobs_xlsx(body: ExportJobsRequest, x_license_key: Optional[str] = Header(None)):
+    """LINE B's download step. The rows were already scored on the client, so
+    this only formats them — no AI, no pool access."""
+    await require_license(x_license_key or "")
+    if not body.rows:
+        raise HTTPException(status_code=400, detail="אין משרות לייצוא.")
+
+    rows = [{
+        "Title": str(r.get("Title", ""))[:255],
+        "URL": str(r.get("URL", ""))[:1024],
+        "Score": int(r.get("Score", 0) or 0),
+        "Pro": str(r.get("Pro", ""))[:500],
+        "Con": str(r.get("Con", ""))[:500],
+        "Date": str(r.get("Date", ""))[:10],
+    } for r in body.rows[:1000]]
+    return _xlsx_response(_build_jobs_xlsx(rows))
+
+
+@app.post("/api/import-jobs")
+async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = Header(None)):
+    """LINE A (unchanged behaviour). 2-stage filtering of scraped jobs → Excel
+    download: keyword pre-filter, then per-job Claude scoring. Gated on the user
+    having opted in to anonymous job-page sharing (not premium — anyone who
+    contributes scraped job pages gets access to the community pool in return)."""
+    license_key = x_license_key or ""
+    await require_license(license_key)
+
+    if not body.shareJobsConsent:
         raise HTTPException(
-            status_code=404,
-            detail="עדיין לא נאספו משרות. המשיכי לגלוש — כל משרה שתבקרי בה תיאסף אוטומטית.",
+            status_code=403,
+            detail="נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.",
         )
 
-    # Time filter
-    if body.timeRange == "since_last":
-        usage = _load_usage()
-        cutoff = usage.get(license_key, {}).get("last_import_ts", "")
-        if not cutoff:
-            cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
-    else:
-        cutoff = (datetime.utcnow() - timedelta(days=3)).isoformat()
-
-    time_filtered = [j for j in all_jobs if (j.get("ts") or "") >= cutoff]
-    if not time_filtered:
-        raise HTTPException(status_code=404, detail="לא נמצאו משרות חדשות בטווח הזמן שנבחר.")
+    time_filtered = await _load_pool_window(license_key, body.timeRange, body.days)
 
     # Step 1: fast keyword filter — no AI, no cost
     step1 = _quick_filter(time_filtered, body.cvText)
@@ -2948,38 +3141,8 @@ async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = He
 
     ranked.sort(key=lambda x: x["Score"], reverse=True)
 
-    # Save last import timestamp
-    usage = _load_usage()
-    usage.setdefault(license_key, {})["last_import_ts"] = datetime.utcnow().isoformat()
-    _save_usage(usage)
-
-    # Generate Excel
-    try:
-        import pandas as pd
-        from openpyxl.styles import Alignment, Font, PatternFill
-
-        df = pd.DataFrame(ranked, columns=["Title", "URL", "Score", "Pro", "Con", "Date"])
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Matched Jobs")
-            ws = writer.sheets["Matched Jobs"]
-            for cell in ws[1]:
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = PatternFill(fill_type="solid", fgColor="7C3AED")
-                cell.alignment = Alignment(horizontal="center")
-            for col in ws.columns:
-                max_len = max((len(str(c.value or "")) for c in col), default=10)
-                ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
-        output.seek(0)
-    except ImportError:
-        raise HTTPException(status_code=500, detail="Excel generation unavailable on this server.")
-
-    filename = f"JobMatchAI_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
-    return StreamingResponse(
-        output,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+    _mark_import_done(license_key)
+    return _xlsx_response(_build_jobs_xlsx(ranked))
 
 
 if __name__ == "__main__":

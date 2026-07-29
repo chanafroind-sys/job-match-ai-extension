@@ -487,28 +487,60 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req.action === 'fetchJobDetails') {
-    // Fetch full HTML of each job page and extract text — no Claude cost, pure browser fetch
+    // Fetch full HTML of each job page and extract text — no Claude cost, pure browser fetch.
+    //
+    // This used to run DOMParser + querySelector. DOMParser does not exist in an
+    // MV3 service worker, so `new DOMParser()` threw on every call and the catch
+    // handed back '' — the enrichment step has been a no-op and ranking always
+    // fell back to the card snippet. Reimplemented without any DOM API.
+    //
+    // Block tags become newlines rather than spaces: matcher.js splits the job
+    // text into lines and routes each one through its requirements/advantages
+    // state machine, so a flattened blob scores as if the job listed nothing.
+    const HTML_ENTITIES = {
+      '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
+      '&#39;': "'", '&apos;': "'", '&rsquo;': '’', '&lsquo;': '‘',
+      '&ldquo;': '“', '&rdquo;': '”', '&ndash;': '–', '&mdash;': '—',
+      '&bull;': '•', '&middot;': '·', '&hellip;': '…',
+    };
+
+    function htmlToText(html) {
+      let s = html;
+      // Drop non-content subtrees wholesale.
+      s = s.replace(/<(script|style|noscript|svg|template|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+      s = s.replace(/<(nav|header|footer|aside)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+      s = s.replace(/<!--[\s\S]*?-->/g, ' ');
+      // Block-level boundaries → newline, so bullets and headers stay on their own lines.
+      s = s.replace(/<br\s*\/?>/gi, '\n');
+      s = s.replace(/<\/(p|div|li|ul|ol|tr|section|article|h[1-6]|dd|dt|blockquote)\s*>/gi, '\n');
+      s = s.replace(/<(li|tr)\b[^>]*>/gi, '\n');
+      s = s.replace(/<[^>]+>/g, '');
+      // Entities.
+      s = s.replace(/&[a-z#0-9]+;/gi, (m) => {
+        const lit = HTML_ENTITIES[m.toLowerCase()];
+        if (lit !== undefined) return lit;
+        const num = /^&#(\d+);$/.exec(m);
+        if (num) { try { return String.fromCodePoint(+num[1]); } catch { return ' '; } }
+        return ' ';
+      });
+      // Collapse horizontal whitespace only — never newlines.
+      s = s.replace(/[ \t ]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{3,}/g, '\n\n');
+      return s.trim();
+    }
+
+    // Prefer the slice of the page that actually reads like a job description:
+    // start at the first requirements-ish heading and keep what follows.
+    const DESC_ANCHOR_RE = /^\s*(?:requirements?|qualifications?|responsibilities|about the (?:role|job)|the role|what you'?ll (?:do|need)|we(?:'| a)re looking for|must have|nice to have|דרישות(?: התפקיד)?|תיאור התפקיד|מה נדרש|על התפקיד)\b/i;
+
     function extractJobTextFromHtml(html) {
       try {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        ['script','style','nav','header','footer','aside','[class*="cookie"]','[class*="banner"]','[class*="nav"]'].forEach(sel => {
-          try { doc.querySelectorAll(sel).forEach(el => el.remove()); } catch {}
-        });
-        const selectors = [
-          '[class*="job-description"]','[class*="jobDescription"]','[id*="job-description"]',
-          '[class*="position-description"]','[class*="vacancy-description"]',
-          '.job__description','#jobDescriptionText','.jobDescriptionContent',
-          '#content','.content','main','article',
-        ];
-        for (const sel of selectors) {
-          try {
-            const el = doc.querySelector(sel);
-            const text = el?.textContent?.trim();
-            if (text && text.length > 150) return text.replace(/\s+/g,' ').substring(0, 2500);
-          } catch {}
-        }
-        return (doc.body?.textContent?.trim() || '').replace(/\s+/g,' ').substring(0, 2500);
+        const text = htmlToText(html || '');
+        if (!text) return '';
+        const lines = text.split('\n');
+        const anchor = lines.findIndex(l => DESC_ANCHOR_RE.test(l));
+        // Keep ~25 lines of lead-in (title, company, location) before the anchor.
+        const sliced = anchor > 0 ? lines.slice(Math.max(0, anchor - 25)).join('\n') : text;
+        return sliced.substring(0, 7000);
       } catch { return ''; }
     }
 
