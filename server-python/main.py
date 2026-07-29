@@ -95,6 +95,7 @@ STATIC_ADMIN_KEYS: set = {k.strip() for k in _ADMIN_KEYS_ENV.split(",") if k.str
 RAW_JOBS_FILE = Path(__file__).parent / "raw_jobs.json"
 MAX_POOL_JOB_CHARS = 5000        # per-job text cap, matches what the extension sends
 MAX_POOL_FETCH = 2000            # hard ceiling on rows returned by one pool read
+MAX_SCRAPE_BATCH = 50            # per-request cap; the ranker collects at most 12
 
 
 async def _pool_add_job(url: str, text: str, title: str,
@@ -1279,6 +1280,13 @@ class ScrapeJobRequest(BaseModel):
     url: str
     text: str
     title: str = ""
+
+
+class ScrapeJobsBatchRequest(BaseModel):
+    """One page of jobs from the listings ranker, which has already fetched each
+    job's full text in order to score it."""
+
+    jobs: list[ScrapeJobRequest] = []
 
 class ImportJobsRequest(BaseModel):
     cvText: str
@@ -2975,6 +2983,26 @@ async def scrape_job(body: ScrapeJobRequest):
 
     status = await _pool_add_job(url, body.text, body.title or "")
     return {"status": status}
+
+
+@app.post("/api/scrape-jobs")
+async def scrape_jobs_batch(body: ScrapeJobsBatchRequest):
+    """Batch crowdsourced scraping — one call per ranked listings page instead of
+    one per job. Same contract as /api/scrape-job: no auth, no AI, dedup by URL.
+    Individual bad entries are counted and skipped, never fatal for the batch."""
+    saved = duplicate = skipped = 0
+    for item in body.jobs[:MAX_SCRAPE_BATCH]:
+        url = (item.url or "").strip()
+        if not url.startswith("http") or not (item.text or "").strip():
+            skipped += 1
+            continue
+        if await _pool_add_job(url, item.text, item.title or "") == "saved":
+            saved += 1
+        else:
+            duplicate += 1
+
+    print(f"[JMA:pool] batch received={len(body.jobs)} saved={saved} dup={duplicate} skipped={skipped}")
+    return {"saved": saved, "duplicate": duplicate, "skipped": skipped}
 
 
 def _pool_cutoff(license_key: str, time_range: str, days: int) -> datetime:
