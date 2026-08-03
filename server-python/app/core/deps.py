@@ -28,6 +28,8 @@ async def _backfill_email(db: AsyncSession, user: User, license_key: str) -> Non
     email address on every request."""
     if user.email:
         return
+    if license_key.startswith("byok:"):
+        return   # no Gumroad purchase behind this identity, so nothing to look up
     from main import verify_gumroad_license
 
     try:
@@ -44,11 +46,15 @@ async def _backfill_email(db: AsyncSession, user: User, license_key: str) -> Non
 
 async def get_current_user(
     x_license_key: Optional[str] = Header(None),
+    x_anthropic_key: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    from main import require_license
+    from main import require_auth
 
-    license_key = await require_license(x_license_key or "")
+    # Identity is whichever key paid for the request: the Gumroad license itself,
+    # or "byok:<hash>" for a caller on their own Claude key. Either way it hashes
+    # to a stable users row, so BYOK users keep their semantic map and history.
+    license_key = await require_auth(x_license_key, x_anthropic_key)
     key_hash = _hash_license_key(license_key)
 
     result = await db.execute(select(User).where(User.license_key_hash == key_hash))

@@ -8,13 +8,14 @@ import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 import httpx
-from anthropic import AsyncAnthropic
+from anthropic import APIConnectionError, APIStatusError, AsyncAnthropic
 from json_repair import repair_json
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -286,6 +287,46 @@ def inject_tracking_links(cv_text: str, app_id: str) -> str:
 anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 
+# ── Per-request Anthropic client (BYOK) ───────────────────────────────────────
+# Two ways to pay for an AI call:
+#   1. Gumroad subscription key  → the call runs on the server's ANTHROPIC_API_KEY.
+#   2. The user's own Claude key → the call runs on THEIR key and their credits.
+# Rather than threading a client argument through every prompt helper, the
+# resolved client for the current request lives in a ContextVar. asyncio copies
+# the context into every task spawned from the request (gather/create_task), so
+# parallel sub-calls inherit the right client automatically. require_auth() is
+# the only place that sets it, and it always runs before the first AI call.
+
+_request_client: ContextVar[Optional[AsyncAnthropic]] = ContextVar("_request_client", default=None)
+
+# Clients hold an httpx connection pool; building one per request would leak
+# sockets under load. Cache by key hash, bounded so a flood of bogus keys can't
+# grow it without limit.
+_byok_clients: dict[str, AsyncAnthropic] = {}
+_BYOK_CLIENT_CACHE_MAX = 200
+
+
+def _byok_client(api_key: str) -> AsyncAnthropic:
+    h = hashlib.sha256(api_key.encode()).hexdigest()
+    client = _byok_clients.get(h)
+    if client is None:
+        if len(_byok_clients) >= _BYOK_CLIENT_CACHE_MAX:
+            _byok_clients.clear()
+        client = AsyncAnthropic(api_key=api_key, max_retries=0)
+        _byok_clients[h] = client
+    return client
+
+
+def _ac() -> AsyncAnthropic:
+    """The Anthropic client for the current request — the caller's own key when
+    they brought one, otherwise the server's subscription key."""
+    return _request_client.get() or anthropic_client
+
+
+def using_own_key() -> bool:
+    return _request_client.get() is not None
+
+
 # ── Usage tracking ────────────────────────────────────────────────────────────
 
 def _load_usage() -> dict:
@@ -530,6 +571,136 @@ async def require_license(license_key: str) -> str:
     return license_key
 
 
+# ── Dual-key authorization ────────────────────────────────────────────────────
+# Every AI endpoint accepts either a Gumroad subscription key (billed to the
+# server) or the caller's own Claude API key (billed to them). Errors carry a
+# trailing "[jma:CODE]" token so the extension can react — pop the key screen,
+# point at the billing page — without parsing Hebrew prose.
+
+ERR_NO_KEY       = "AI_NO_KEY"
+ERR_KEY_INVALID  = "AI_KEY_INVALID"
+ERR_NO_CREDIT    = "AI_NO_CREDIT"
+ERR_RATE_LIMIT   = "AI_RATE_LIMIT"
+ERR_KEY_DENIED   = "AI_KEY_DENIED"
+ERR_AI_DOWN      = "AI_UNAVAILABLE"
+
+ANTHROPIC_KEY_PREFIX = "sk-ant-"
+
+
+def _coded(message: str, code: str) -> str:
+    return f"{message} [jma:{code}]"
+
+
+def _header_str(value) -> str:
+    """Header params default to a FastAPI sentinel object, not None, when an
+    endpoint is called directly (tests, internal reuse) instead of over HTTP."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _auth_error() -> HTTPException:
+    return HTTPException(status_code=401, detail=_coded(
+        "כדי להשתמש ביכולות ה-AI צריך מפתח אחד משניים: מפתח מנוי מ-Gumroad, "
+        "או מפתח Claude API אישי. אפשר להזין אותו בהגדרות ⚙️.",
+        ERR_NO_KEY))
+
+
+def ai_error(exc: Exception) -> HTTPException:
+    """Translate an Anthropic SDK failure into a user-facing HTTPException.
+
+    The wording differs between the two billing modes: when the user is on their
+    own key, only they can top it up, so the message has to say exactly that.
+    """
+    own = using_own_key()
+
+    if isinstance(exc, APIStatusError):
+        status = getattr(exc, "status_code", 0)
+        body = str(getattr(exc, "message", "") or exc)
+        low = body.lower()
+
+        if status == 401 or "authentication_error" in low or "invalid x-api-key" in low:
+            if own:
+                return HTTPException(status_code=401, detail=_coded(
+                    "מפתח ה-Claude API שהזנת נדחה על ידי Anthropic. ודא/י שהעתקת את המפתח "
+                    "המלא (מתחיל ב-sk-ant-) ושלא נמחק בקונסולה, ואז עדכן/י אותו בהגדרות ⚙️.",
+                    ERR_KEY_INVALID))
+            return HTTPException(status_code=503, detail=_coded(
+                "תקלה זמנית בשירות ה-AI של המערכת. נסי שוב בעוד רגע.", ERR_AI_DOWN))
+
+        if status == 400 and ("credit balance" in low or "insufficient" in low):
+            if own:
+                return HTTPException(status_code=402, detail=_coded(
+                    "נגמרו הקרדיטים בחשבון ה-Claude API שלך. היכנס/י ל-"
+                    "console.anthropic.com/settings/billing, טען/י קרדיט (מינימום $5), "
+                    "ואז נסה/י שוב — אין צורך להזין את המפתח מחדש. "
+                    "לחלופין אפשר לעבור למנוי Gumroad בהגדרות ⚙️.",
+                    ERR_NO_CREDIT))
+            return HTTPException(status_code=503, detail=_coded(
+                "מכסת ה-AI של המערכת נוצלה. נסי שוב מאוחר יותר או השתמשי במפתח Claude אישי.",
+                ERR_NO_CREDIT))
+
+        if status == 403:
+            return HTTPException(status_code=403, detail=_coded(
+                "למפתח ה-Claude API שלך אין הרשאה לפעולה הזו. בדק/י בקונסולה של Anthropic "
+                "שהמפתח פעיל ושאין עליו הגבלת הרשאות." if own else
+                "השירות חסם את הבקשה. נסי שוב מאוחר יותר.",
+                ERR_KEY_DENIED))
+
+        if status == 429:
+            return HTTPException(status_code=429, detail=_coded(
+                "חרגת ממגבלת הקצב של Claude API (בקשות לדקה). המתן/י דקה ונסה/י שוב. "
+                "חשבונות חדשים מתחילים במגבלה נמוכה שעולה אוטומטית עם השימוש." if own else
+                "השירות עמוס כרגע. נסי שוב בעוד דקה.",
+                ERR_RATE_LIMIT))
+
+        if status >= 500:
+            return HTTPException(status_code=503, detail=_coded(
+                "שירות ה-AI של Anthropic לא זמין כרגע. נסי שוב בעוד כמה דקות.", ERR_AI_DOWN))
+
+    if isinstance(exc, APIConnectionError):
+        return HTTPException(status_code=503, detail=_coded(
+            "לא הצלחנו להגיע לשירות ה-AI. בדקי את החיבור לאינטרנט ונסי שוב.", ERR_AI_DOWN))
+
+    return HTTPException(status_code=502, detail=_coded(
+        "קרתה תקלה בקריאה ל-AI. נסי שוב בעוד רגע.", ERR_AI_DOWN))
+
+
+async def require_auth(license_key: Optional[str],
+                       anthropic_key: Optional[str] = None) -> str:
+    """Authorize an AI request and bind the client that will pay for it.
+
+    Order is fixed by product decision: a Gumroad subscription wins, and only
+    when there is no usable subscription do we fall back to the caller's own
+    Claude key. A subscription that fails verification is NOT fatal as long as a
+    personal key is present — an expired card shouldn't strand a user who also
+    has their own key.
+
+    Returns an identity string for the request (the license key itself in
+    subscription mode, "byok:<hash>" otherwise).
+    """
+    lic = _header_str(license_key)
+    own = _header_str(anthropic_key)
+
+    if lic:
+        try:
+            return await require_license(lic)
+        except HTTPException:
+            if not own:
+                raise
+            print("[JMA:auth] license rejected, falling back to caller's own Claude key")
+
+    if own:
+        if not own.startswith(ANTHROPIC_KEY_PREFIX):
+            raise HTTPException(status_code=401, detail=_coded(
+                "מפתח ה-Claude API לא נראה תקין — מפתח אמיתי מתחיל ב-sk-ant- ומועתק "
+                "במלואו מ-console.anthropic.com/settings/keys.",
+                ERR_KEY_INVALID))
+        _request_client.set(_byok_client(own))
+        print(f"[JMA:auth] BYOK mode key=sk-ant-****{own[-4:]}")
+        return f"byok:{hashlib.sha256(own.encode()).hexdigest()[:16]}"
+
+    raise _auth_error()
+
+
 # ── Claude API ────────────────────────────────────────────────────────────────
 
 # async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-haiku-4-5-20251001") -> str:
@@ -551,13 +722,23 @@ async def require_license(license_key: str) -> str:
 #             if attempt < 3:
 #                 await asyncio.sleep(3)
 #     raise last_exc
+def _retryable(exc: Exception) -> bool:
+    """A bad key, an empty wallet or a denied permission will fail identically on
+    every retry — burning three attempts on those just makes the user wait 6
+    extra seconds for the same error. Only transient failures are worth retrying."""
+    if isinstance(exc, APIStatusError):
+        status = getattr(exc, "status_code", 0)
+        return status not in (400, 401, 403, 404, 413, 422)
+    return True
+
+
 async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-haiku-4-5-20251001",
                        check_truncation: bool = False) -> str:
     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
     last_exc: Exception | None = None
     for attempt in range(1, 4):
         try:
-            message = await anthropic_client.messages.create(
+            message = await _ac().messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
@@ -573,9 +754,11 @@ async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-
         except Exception as e:
             last_exc = e
             print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
+            if not _retryable(e):
+                raise ai_error(e)
             if attempt < 3:
                 await asyncio.sleep(3)
-    raise last_exc
+    raise ai_error(last_exc)
 
 async def call_claude_cached(
     system_blocks: list,
@@ -589,7 +772,7 @@ async def call_claude_cached(
     last_exc: Exception | None = None
     for attempt in range(1, 4):
         try:
-            message = await anthropic_client.messages.create(
+            message = await _ac().messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 system=system_blocks,
@@ -608,9 +791,11 @@ async def call_claude_cached(
         except Exception as e:
             last_exc = e
             print(f"[JMA:claude] attempt={attempt} ERROR: {type(e).__name__}: {e}")
+            if not _retryable(e):
+                raise ai_error(e)
             if attempt < 3:
                 await asyncio.sleep(3)
-    raise last_exc
+    raise ai_error(last_exc)
 
 
 async def _call_with_cached_prefix(
@@ -1621,13 +1806,11 @@ class ExtractProfileRequest(BaseModel):
     cvText: str
 
 @app.post("/api/extract-profile")
-async def extract_profile(body: ExtractProfileRequest, x_license_key: Optional[str] = Header(None)):
+async def extract_profile(body: ExtractProfileRequest,
+                          x_license_key: Optional[str] = Header(None),
+                          x_anthropic_key: Optional[str] = Header(None)):
     """Extract a structured skills/experience profile from raw CV text using Claude."""
-    license_key = x_license_key or ""
-    try:
-        await verify_gumroad_license(license_key)
-    except Exception:
-        raise HTTPException(status_code=403, detail="Invalid license")
+    await require_auth(x_license_key, x_anthropic_key)
 
     if not body.cvText or len(body.cvText.strip()) < 50:
         raise HTTPException(status_code=422, detail="CV text too short")
@@ -1947,6 +2130,7 @@ async def _stream_q_parse(token_iter):
 async def stream_questions_endpoint(
     body: StreamQuestionsRequest,
     x_license_key: Optional[str] = Header(None),
+    x_anthropic_key: Optional[str] = Header(None),
 ):
     """
     Single streaming call that:
@@ -1967,11 +2151,10 @@ async def stream_questions_endpoint(
     if not body.cvText or not body.jobText:
         return _sse_err("חסרים נתוני CV או משרה.")
 
-    license_key = x_license_key or ""
     try:
-        await verify_gumroad_license(license_key)
-    except Exception:
-        return _sse_err("רישיון לא תקף.")
+        await require_auth(x_license_key, x_anthropic_key)
+    except HTTPException as e:
+        return _sse_err(str(e.detail))
 
     cv_text  = body.cvText[:3000]
     job_text = body.jobText[:2500]
@@ -2033,7 +2216,7 @@ async def stream_questions_endpoint(
                 job_text=job_text,
             )
             try:
-                async with anthropic_client.messages.stream(
+                async with _ac().messages.stream(
                     model="claude-sonnet-4-6",
                     max_tokens=700,
                     system=sys_blocks,
@@ -2217,7 +2400,19 @@ def _apply_decision_override(analysis_text: str, strategy: dict) -> dict:
 
 
 @app.post("/api/stream-deep-analysis")
-async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optional[str] = Header(None)):
+async def stream_deep_analysis(body: DeepAnalysisRequest,
+                               x_license_key: Optional[str] = Header(None),
+                               x_anthropic_key: Optional[str] = Header(None)):
+    try:
+        await require_auth(x_license_key, x_anthropic_key)
+    except HTTPException as e:
+        detail = str(e.detail)
+        async def _auth_err():
+            yield f'data: {json.dumps({"error": detail})}\n\n'
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_auth_err(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     cv_text  = (body.cvText  or "")[:6000]
     job_text = (body.jobText or "")[:3000]
 
@@ -2250,7 +2445,7 @@ async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optiona
         strategy_sent = False
 
         try:
-            async with anthropic_client.messages.stream(
+            async with _ac().messages.stream(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1500,
                 system=sys_blocks,
@@ -2292,7 +2487,9 @@ async def stream_deep_analysis(body: DeepAnalysisRequest, x_license_key: Optiona
 
 
 @app.post("/api/analyze-stream")
-async def analyze_stream(body: AnalyzeStreamRequest, x_license_key: Optional[str] = Header(None)):
+async def analyze_stream(body: AnalyzeStreamRequest,
+                         x_license_key: Optional[str] = Header(None),
+                         x_anthropic_key: Optional[str] = Header(None)):
     """Stream iterative question-by-question analysis with prompt caching on the CV block."""
     if not body.cvText or not body.jobText:
         async def _empty():
@@ -2301,12 +2498,12 @@ async def analyze_stream(body: AnalyzeStreamRequest, x_license_key: Optional[str
         return StreamingResponse(_empty(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    license_key = x_license_key or ""
     try:
-        await verify_gumroad_license(license_key)
-    except Exception:
+        await require_auth(x_license_key, x_anthropic_key)
+    except HTTPException as e:
+        detail = str(e.detail)
         async def _auth_err():
-            yield 'data: {"error": "רישיון לא תקף."}\n\n'
+            yield f'data: {json.dumps({"error": detail})}\n\n'
             yield "data: [DONE]\n\n"
         return StreamingResponse(_auth_err(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -2358,7 +2555,7 @@ async def analyze_stream(body: AnalyzeStreamRequest, x_license_key: Optional[str
         # ── Phase 1: stream questions one-by-one ──────────────────────────
         try:
             buffer = ""
-            async with anthropic_client.messages.stream(
+            async with _ac().messages.stream(
                 model=resolved_model,
                 max_tokens=600,
                 system=sys_blocks,
@@ -2387,7 +2584,7 @@ async def analyze_stream(body: AnalyzeStreamRequest, x_license_key: Optional[str
 
         # ── Phase 2: stream narrative analysis ────────────────────────────
         try:
-            async with anthropic_client.messages.stream(
+            async with _ac().messages.stream(
                 model=resolved_model,
                 max_tokens=500,
                 system=sys_blocks,
@@ -2412,9 +2609,18 @@ class ScoreAnswerRequest(BaseModel):
 
 
 @app.post("/api/score-answer")
-async def score_answer(body: ScoreAnswerRequest, x_license_key: Optional[str] = Header(None)):
+async def score_answer(body: ScoreAnswerRequest,
+                       x_license_key: Optional[str] = Header(None),
+                       x_anthropic_key: Optional[str] = Header(None)):
     """Fast single-answer scorer used for real-time FAB score updates."""
     if not body.answer.strip():
+        return {"score_pct": 0}
+    # Background nicety, not a user-visible action: an unauthorized caller gets
+    # the neutral score the except-branch already returns rather than an error
+    # dialog on top of whatever they were doing.
+    try:
+        await require_auth(x_license_key, x_anthropic_key)
+    except HTTPException:
         return {"score_pct": 0}
     prompt = (
         f"Rate how well this answer demonstrates the required competency.\n\n"
@@ -2423,7 +2629,7 @@ async def score_answer(body: ScoreAnswerRequest, x_license_key: Optional[str] = 
         f'Reply JSON only: {{"score":<integer>}}'
     )
     try:
-        resp = await anthropic_client.messages.create(
+        resp = await _ac().messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=12,
             messages=[{"role": "user", "content": prompt}],
@@ -2454,8 +2660,50 @@ async def verify_license(body: VerifyLicenseRequest):
     }
 
 
+class VerifyAnthropicKeyRequest(BaseModel):
+    anthropicKey: str = ""
+
+
+@app.post("/api/verify-anthropic-key")
+async def verify_anthropic_key(body: VerifyAnthropicKeyRequest,
+                               x_anthropic_key: Optional[str] = Header(None)):
+    """Prove a personal Claude key works before the user relies on it.
+
+    Costs one Haiku token — the cheapest possible round trip — so that a typo, a
+    revoked key or an empty wallet surfaces in settings instead of halfway
+    through a CV generation. The key is never stored server-side.
+    """
+    key = (body.anthropicKey or x_anthropic_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail=_coded(
+            "לא הוזן מפתח Claude API.", ERR_KEY_INVALID))
+    if not key.startswith(ANTHROPIC_KEY_PREFIX):
+        raise HTTPException(status_code=401, detail=_coded(
+            "המפתח לא נראה תקין — מפתח Claude API מתחיל ב-sk-ant-. "
+            "העתק/י אותו במלואו מ-console.anthropic.com/settings/keys.",
+            ERR_KEY_INVALID))
+
+    client = _byok_client(key)
+    _request_client.set(client)   # so ai_error() words failures for a personal key
+    try:
+        await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[JMA:byok-verify] rejected: {type(e).__name__}: {e}")
+        raise ai_error(e)
+
+    return {"success": True, "keyMasked": f"sk-ant-****{key[-4:]}"}
+
+
 @app.post("/api/analyze")
-async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(None)):
+async def analyze(body: AnalyzeRequest,
+                  x_license_key: Optional[str] = Header(None),
+                  x_anthropic_key: Optional[str] = Header(None)):
     license_key = x_license_key or body.licenseKey or ""
     print(f"[JMA:analyze] cv_len={len(body.cvText)} job_len={len(body.jobText)} preflight={body.preflight} answers={len(body.answers)}")
 
@@ -2463,7 +2711,7 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
         # Two-pass preflight with CV cached in system prompt:
         # Pass 1 (fast): base score + gap_pct + full analysis fields
         # Pass 2 (fast): weighted questions using gap_pct from pass 1
-        await verify_gumroad_license(license_key)
+        await require_auth(license_key, x_anthropic_key)
 
         cv_text  = body.cvText[:3000]   # cache up to 3 k chars of CV
         job_text = body.jobText[:2500]
@@ -2544,7 +2792,7 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
         }
         return {"result": result, "preflight": True}
 
-    await require_license(license_key)
+    await require_auth(license_key, x_anthropic_key)
 
     answers_text = "\n".join(
         f"- {a.get('skill', '')}: {a.get('answer', '')}"
@@ -2564,12 +2812,17 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
             print(f"[JMA:analyze] attempt {attempt+1}/3")
             raw = await call_claude(prompt, max_tokens=1200)
             result = parse_json_response(raw)
-            increment_usage(license_key)
+            if not using_own_key():
+                increment_usage(license_key)
             print(f"[JMA:analyze] SUCCESS score={result.get('score','?') if isinstance(result,dict) else '?'}")
             return {"result": result}
         except json.JSONDecodeError as e:
             print(f"[JMA:analyze] attempt {attempt+1} JSON error: {e}")
             last_error = e
+        except HTTPException:
+            # call_claude already translated this into a message the user can act
+            # on (bad key, no credit, rate limit) — retrying would only repeat it.
+            raise
         except Exception as e:
             print(f"[JMA:analyze] attempt {attempt+1} error: {type(e).__name__}: {e}")
             last_error = e
@@ -2581,9 +2834,11 @@ async def analyze(body: AnalyzeRequest, x_license_key: Optional[str] = Header(No
 
 
 @app.post("/api/generate-cv")
-async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = Header(None)):
+async def generate_cv(body: GenerateCVRequest,
+                      x_license_key: Optional[str] = Header(None),
+                      x_anthropic_key: Optional[str] = Header(None)):
     license_key = x_license_key or body.licenseKey or ""
-    await require_license(license_key)
+    await require_auth(license_key, x_anthropic_key)
 
     # ── Cover letter (optional) — depends only on body.cvText/body.jobText, so it is
     # kicked off FIRST and awaited at the very end, running fully in parallel with the
@@ -2789,7 +3044,8 @@ async def generate_cv(body: GenerateCVRequest, x_license_key: Optional[str] = He
 
     cover_letter_text = await cover_letter_task if cover_letter_task else ""
 
-    increment_usage(license_key)
+    if not using_own_key():
+        increment_usage(license_key)
     return {"cvText": cv_final, "appId": app_id, "sections": sections, "coverLetterText": cover_letter_text}
 
 
@@ -2925,10 +3181,12 @@ async def track_click(app_id: str, target: str, url: str):
 
 
 @app.post("/api/rank-jobs")
-async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header(None)):
+async def rank_jobs(body: RankJobsRequest,
+                    x_license_key: Optional[str] = Header(None),
+                    x_anthropic_key: Optional[str] = Header(None)):
     license_key = x_license_key or body.licenseKey or ""
     print(f"[JMA:rank] jobs={len(body.jobs)} cv_len={len(body.cvText)}")
-    await require_license(license_key)
+    await require_auth(license_key, x_anthropic_key)
 
     def job_text(j, i):
         detail = j.get('fullText') or j.get('snippet') or ''
@@ -2963,9 +3221,12 @@ async def rank_jobs(body: RankJobsRequest, x_license_key: Optional[str] = Header
                     "pro": item.get('pro', ''),
                     "con": item.get('con', ''),
                 })
-            increment_usage(license_key)
+            if not using_own_key():
+                increment_usage(license_key)
             print(f"[JMA:rank] SUCCESS returned {len(result)} ranked jobs")
             return {"rankedJobs": result}
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"[JMA:rank] attempt {attempt+1} error: {type(e).__name__}: {e}")
             last_error = e
@@ -3072,15 +3333,19 @@ def _xlsx_response(output: BytesIO) -> StreamingResponse:
 
 
 @app.post("/api/jobs-pool")
-async def jobs_pool(body: JobsPoolRequest, x_license_key: Optional[str] = Header(None)):
+async def jobs_pool(body: JobsPoolRequest,
+                    x_license_key: Optional[str] = Header(None),
+                    x_anthropic_key: Optional[str] = Header(None)):
     """LINE B (local matcher). Hands the raw pool window to the client so
     matcher.js can score every job itself — no keyword pre-filter, no Claude
     call, no per-job cost. The client, not the server, decides what matches.
 
     Same consent gate as /api/import-jobs: you get the pool only if you feed it.
     """
-    license_key = x_license_key or ""
-    await require_license(license_key)
+    # The pool's per-user window and cooldown are keyed on whatever identity
+    # authorized the request, so a BYOK user gets their own window rather than
+    # sharing the empty-string bucket with every other keyless caller.
+    license_key = await require_auth(x_license_key, x_anthropic_key)
 
     if not body.shareJobsConsent:
         raise HTTPException(
@@ -3094,10 +3359,12 @@ async def jobs_pool(body: JobsPoolRequest, x_license_key: Optional[str] = Header
 
 
 @app.post("/api/export-jobs-xlsx")
-async def export_jobs_xlsx(body: ExportJobsRequest, x_license_key: Optional[str] = Header(None)):
+async def export_jobs_xlsx(body: ExportJobsRequest,
+                           x_license_key: Optional[str] = Header(None),
+                           x_anthropic_key: Optional[str] = Header(None)):
     """LINE B's download step. The rows were already scored on the client, so
     this only formats them — no AI, no pool access."""
-    await require_license(x_license_key or "")
+    await require_auth(x_license_key, x_anthropic_key)
     if not body.rows:
         raise HTTPException(status_code=400, detail="אין משרות לייצוא.")
 
@@ -3113,13 +3380,14 @@ async def export_jobs_xlsx(body: ExportJobsRequest, x_license_key: Optional[str]
 
 
 @app.post("/api/import-jobs")
-async def import_jobs(body: ImportJobsRequest, x_license_key: Optional[str] = Header(None)):
+async def import_jobs(body: ImportJobsRequest,
+                      x_license_key: Optional[str] = Header(None),
+                      x_anthropic_key: Optional[str] = Header(None)):
     """LINE A (unchanged behaviour). 2-stage filtering of scraped jobs → Excel
     download: keyword pre-filter, then per-job Claude scoring. Gated on the user
     having opted in to anonymous job-page sharing (not premium — anyone who
     contributes scraped job pages gets access to the community pool in return)."""
-    license_key = x_license_key or ""
-    await require_license(license_key)
+    license_key = await require_auth(x_license_key, x_anthropic_key)
 
     if not body.shareJobsConsent:
         raise HTTPException(

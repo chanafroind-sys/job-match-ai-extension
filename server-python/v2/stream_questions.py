@@ -21,17 +21,17 @@ both pipelines.
 import json
 from typing import Optional
 
-from fastapi import Header
+from fastapi import Header, HTTPException
 from fastapi.responses import StreamingResponse
 from json_repair import repair_json
 from pydantic import BaseModel
 
 # Shared infrastructure only — no V1 flow logic is imported.
 from main import (
-    anthropic_client,
     call_claude_cached,
     parse_json_response,
-    verify_gumroad_license,
+    require_auth,
+    _ac,
     _resolve_model,
 )
 from v2.router import router
@@ -219,6 +219,7 @@ async def _stream_q_parse(token_iter):
 async def stream_questions_endpoint(
     body: StreamQuestionsRequest,
     x_license_key: Optional[str] = Header(None),
+    x_anthropic_key: Optional[str] = Header(None),
 ):
     """
     Single streaming call that:
@@ -239,11 +240,10 @@ async def stream_questions_endpoint(
     if not body.cvText or not body.jobText:
         return _sse_err("חסרים נתוני CV או משרה.")
 
-    license_key = x_license_key or ""
     try:
-        await verify_gumroad_license(license_key)
-    except Exception:
-        return _sse_err("רישיון לא תקף.")
+        await require_auth(x_license_key, x_anthropic_key)
+    except HTTPException as e:
+        return _sse_err(str(e.detail))
 
     cv_text  = body.cvText[:3000]
     job_text = body.jobText[:2500]
@@ -305,7 +305,7 @@ async def stream_questions_endpoint(
                 job_text=job_text,
             )
             try:
-                async with anthropic_client.messages.stream(
+                async with _ac().messages.stream(
                     model="claude-sonnet-4-6",
                     max_tokens=700,
                     system=sys_blocks,
