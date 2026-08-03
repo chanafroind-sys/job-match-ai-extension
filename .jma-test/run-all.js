@@ -1,5 +1,5 @@
 const { execFileSync } = require('child_process');
-const SUITES = ['test-classify.js', 'test-seemore.js', 'test-ranking.js', 'test-htmltext.js', 'test-getjobtext.js', 'test-spa.js'];
+const SUITES = ['test-classify.js', 'test-seemore.js', 'test-ranking.js', 'test-htmltext.js', 'test-getjobtext.js', 'test-spa.js', 'test-poolmatch.js'];
 let failed = 0;
 for (const s of SUITES) {
   console.log(`\n─── ${s} ${'─'.repeat(Math.max(0, 50 - s.length))}`);

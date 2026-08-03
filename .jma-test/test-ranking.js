@@ -106,6 +106,32 @@ async function rankPage(storage, fetchedText = '') {
         scores4.length > 0 && scores4.every(s => s === directFull.score),
         `direct=${directFull.score} rendered=[${scores4.join(', ')}]`);
 
+  // ── 5. Pool contribution from the listings ranker ─────────────────────────
+  // Ranking already fetches every job's full text; with sharing consent those
+  // jobs are contributed to the community pool instead of being discarded.
+  const batchOf = r => r.log.messages.find(m => m.action === 'scrapeJobsBatch');
+
+  check('no pool contribution without consent (BASE has consent=false)',
+        !batchOf(r4), `batch=${JSON.stringify(batchOf(r4)?.jobs?.length ?? null)}`);
+
+  const r5 = await rankPage({ ...BASE, shareJobsConsent: true, jma_user_profile: PROFILE }, F.JD_BODY);
+  const batch5 = batchOf(r5);
+  check('consent + fetched text → scrapeJobsBatch emitted', !!batch5 && batch5.jobs.length > 0,
+        `jobs=${batch5?.jobs?.length ?? 0}`);
+  check('contributed jobs carry absolute url, text and title',
+        !!batch5 && batch5.jobs.every(j =>
+          /^https?:\/\//.test(j.url) && j.text.length >= 350 && typeof j.title === 'string'),
+        batch5 ? `first={url:${batch5.jobs[0].url.slice(0, 46)}…, text_len:${batch5.jobs[0].text.length}}` : 'no batch');
+  check('contributed text is the fetched body, not the card snippet',
+        !!batch5 && batch5.jobs.every(j => j.text.startsWith('About the job')),
+        batch5 ? `first_text="${batch5.jobs[0].text.slice(0, 30)}…"` : 'no batch');
+
+  // A login wall / CORS failure leaves fetchedText empty. Ranking still works off
+  // the card snippet, but a 60-char stub must never reach the pool.
+  const r6 = await rankPage({ ...BASE, shareJobsConsent: true, jma_user_profile: PROFILE }, '');
+  check('consent but no fetched text → nothing contributed', !batchOf(r6),
+        `batch=${batchOf(r6)?.jobs?.length ?? 'none'}, cards still ranked=${r6.doc.querySelectorAll('#jma-sb-body .jma-card').length}`);
+
   let fail = 0;
   for (const t of results) {
     console.log(`${t.ok ? '✓' : '✗'} ${t.name}\n    ${t.detail}`);

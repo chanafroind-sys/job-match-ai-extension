@@ -731,12 +731,20 @@ async function _finishQuestions(skipped) {
 // exactly like the groomed content (the on-device polish returns plain text).
 function _v2BoldSkill(text, skill) {
   const t = String(text || '').trim();
-  if (!t) return '';
-  if (t.includes('**')) return t;                    // already emphasised
+  if (!t || t.includes('**')) return t;              // already emphasised
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const mk = (x) => new RegExp(`(?<![\\w*])(${esc(x)})(?![\\w*])`, 'i');
   const s = String(skill || '').trim();
-  if (!s) return t;
-  const re = new RegExp(`(?<![\\w*])(${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\\w*])`, 'i');
-  return re.test(t) ? t.replace(re, '**$1**') : `**${s}:** ${t}`;
+  if (s) {
+    if (mk(s).test(t)) return t.replace(mk(s), '**$1**');
+    const generic = /^(development|developer|engineering|experience|frontend|backend|fullstack|skills?)$/i;
+    for (const tok of s.split(/[^\w.+#]+/).filter(w => w.length > 1 && !generic.test(w))) {
+      if (mk(tok).test(t)) return t.replace(mk(tok), '**$1**');
+    }
+  }
+  // Never prefix the question's topic as a label — it would assert a skill the
+  // answer may not have claimed (see the matching note in v2_content.js).
+  return t;
 }
 
 function _v2BlocksToMarkerCv(blocks, placements) {

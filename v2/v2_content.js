@@ -484,7 +484,7 @@
   // and this file never sends anything back. If a question card visibly
   // jumps or disappears on focus, that has to originate inside v2_popup.js/
   // v2_popup.html itself, not here.
-  let _v2LastActiveIdx = undefined;
+  let _v2LastHighlightKey = null; // last rendered highlight/label state
 
   window.addEventListener('message', (e) => {
     if (e.origin !== EXT_ORIGIN) return;
@@ -500,10 +500,14 @@
         ? `תשובה פעילה (${_v2ActiveAnswer.skill || 'שאלה ' + (d.idx + 1)}): "${_v2ActiveAnswer.text.slice(0, 60)}${_v2ActiveAnswer.text.length > 60 ? '…' : ''}"`
         : 'הקלידי תשובה בפאנל ואז לחצי + על הסעיף המתאים';
     }
-    if (d.idx !== _v2LastActiveIdx) {
-      _v2LastActiveIdx = d.idx;
-      _v2UpdateActiveHighlights();
-    }
+    // BUG FIX: this used to only re-run when the question INDEX changed. But a
+    // textarea is empty at focus time (idx changes → label renders empty) and
+    // typing keeps the same idx, so the "[+] הוסף" label never appeared for a
+    // freely typed answer — only for quick-answer buttons, which fill the
+    // textarea in the same tick as a card click. _v2UpdateActiveHighlights is
+    // now self-throttling (it no-ops when nothing would visibly change), so it
+    // is safe — and necessary — to call on every message.
+    _v2UpdateActiveHighlights();
   });
 
   // V2 addition (requirement 2): keep every '+' target inside the CV window
@@ -512,6 +516,10 @@
   // there. Re-run on every active-answer change so both sides update in the
   // same tick; also re-run once after (re)building the blocks so a window
   // opened/restored while an answer is already active shows the glow right away.
+  // Self-throttling: computes the target state first and returns early when it
+  // is identical to what's already rendered, so calling this on every keystroke
+  // costs one string compare and touches no DOM (the original flicker fix,
+  // without the idx-based throttle that suppressed free-text updates).
   function _v2UpdateActiveHighlights() {
     const paper = document.getElementById('jma-v2-cv-paper');
     if (!paper) return;
@@ -519,6 +527,10 @@
     const labelText = active
       ? `[+] הוסף "${(_v2ActiveAnswer.skill || _v2ActiveAnswer.text).slice(0, 24)}"`
       : '';
+    const key = `${active ? 1 : 0}|${labelText}`;
+    if (key === _v2LastHighlightKey) return;
+    _v2LastHighlightKey = key;
+
     paper.querySelectorAll('.jma-v2-cv-block').forEach(block => {
       const wrap = block.querySelector('.jma-v2-cv-plus-wrap');
       if (!wrap) return; // not an insertable block
@@ -724,7 +736,10 @@
     try { jobText = (await _v2GetRecentJobs()).find(j => j.url === location.href)?.jobText || ''; } catch {}
     _v2CaptureTailorContext(cvText, jobText, blocks, paper);
 
-    _v2UpdateActiveHighlights(); // reflect an already-active answer immediately
+    // Blocks were just (re)built, so the cached key no longer describes what's
+    // on screen — invalidate it before reflecting an already-active answer.
+    _v2LastHighlightKey = null;
+    _v2UpdateActiveHighlights();
   }
 
   // Display-only fallback when no DB semantic map exists. Renders the raw CV
@@ -1180,10 +1195,23 @@
   function _v2BoldSkill(text, skill) {
     const t = String(text || '').trim();
     if (!t || t.includes('**')) return t;
+    const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const mk = (x) => new RegExp(`(?<![\\w*])(${esc(x)})(?![\\w*])`, 'i');
     const s = String(skill || '').trim();
-    if (!s) return t;
-    const re = new RegExp(`(?<![\\w*])(${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\\w*])`, 'i');
-    return re.test(t) ? t.replace(re, '**$1**') : `**${s}:** ${t}`;
+    if (s) {
+      if (mk(s).test(t)) return t.replace(mk(s), '**$1**');
+      // Question topics are often compound ("Angular / Frontend Development").
+      // Bold whichever concrete term the answer actually mentions.
+      const generic = /^(development|developer|engineering|experience|frontend|backend|fullstack|skills?)$/i;
+      for (const tok of s.split(/[^\w.+#]+/).filter(w => w.length > 1 && !generic.test(w))) {
+        if (mk(tok).test(t)) return t.replace(mk(tok), '**$1**');
+      }
+    }
+    // BUG FIX: previously fell back to prefixing "**<question topic>:** ", which
+    // stamped the line with a skill the answer never claimed (e.g. an answer
+    // about TypeScript labelled "Angular / Frontend Development:"). Leave the
+    // text alone instead — the polish prompt already asks for its own emphasis.
+    return t;
   }
 
   function _v2CleanPolish(out) {
@@ -1203,13 +1231,29 @@
     const langRule = lang === 'hebrew'
       ? 'Write the result in Hebrew.'
       : 'Write the result in professional English.';
+    // TRUTHFULNESS: `skill` is the TOPIC THE QUESTION ASKED ABOUT — it is NOT a
+    // claim the candidate made. It used to be passed as "Emphasise the skill
+    // X", which made the model assert X even when the note only covered part of
+    // it (asked about "Angular / TypeScript", answered "I have TypeScript
+    // experience" → it wrote "Developed Angular applications"). The topic is
+    // now given as context only, with an explicit rule to claim nothing the
+    // note does not state.
+    const topic = skill ? `The question was about "${skill}", but that is NOT a claim — ` +
+      `it is only context. ` : '';
+    const truthRule =
+      `CRITICAL: state ONLY what the note itself claims. If the note covers just part of ` +
+      `the topic, write only that part. Never mention a technology, tool, framework or ` +
+      `outcome that is not explicitly in the note. Do not add invented benefits or results. ` +
+      `If the note is brief, keep the output brief.`;
     const prompt = blockType === 'skills'
-      ? `Extract the concise professional skill name(s) implied by this note, for a CV ` +
-        `skills list. Output ONLY the skill name(s), comma-separated, no sentence, no extra words.\n` +
+      ? `Extract the concise professional skill name(s) that the note EXPLICITLY claims, ` +
+        `for a CV skills list. ${topic}${truthRule}\n` +
+        `Output ONLY the skill name(s), comma-separated, no sentence, no extra words.\n` +
         `Note: ${rawText}`
       : `Rewrite this note as ONE polished, professional CV bullet point. ${langRule} ` +
         `Use past tense and a strong action verb, no first-person pronouns, no bullet symbol, ` +
-        `max 22 words, stay truthful to the note.${skill ? ` Emphasise the skill "${skill}".` : ''}\n` +
+        `max 22 words. ${topic}${truthRule} ` +
+        `Wrap the single most important technology named IN THE NOTE in **double asterisks**.\n` +
         `Note: ${rawText}`;
 
     let session = base;

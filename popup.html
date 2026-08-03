@@ -494,6 +494,35 @@
   }
   .premium-select:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
   .import-status { margin-top: 10px; font-size: 13px; color: var(--text-muted); text-align: center; min-height: 20px; }
+  /* ── Import mode selector (LINE A = server AI, LINE B = local matcher) ── */
+  .import-mode-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  .import-mode-option {
+    display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+    background: var(--bg-card); border: 1.5px solid var(--border);
+    border-radius: var(--border-radius); padding: 10px 12px;
+    transition: border-color 0.18s, box-shadow 0.18s;
+  }
+  .import-mode-option:has(input:checked) { border-color: var(--accent); box-shadow: var(--focus-ring); }
+  .import-mode-option input { margin-top: 3px; cursor: pointer; flex-shrink: 0; }
+  .import-mode-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+  .import-mode-desc { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin-top: 2px; }
+  /* ── Local-matcher results list ── */
+  .import-results { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .import-result-card {
+    background: var(--bg-card); border: 1.5px solid var(--border);
+    border-radius: var(--border-radius); padding: 10px 12px;
+  }
+  .import-result-head { display: flex; align-items: center; gap: 8px; }
+  .import-result-score {
+    flex-shrink: 0; font-size: 13px; font-weight: 700; color: var(--accent);
+    min-width: 42px; text-align: center;
+  }
+  .import-result-title {
+    font-size: 12px; font-weight: 600; color: var(--text-primary);
+    text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .import-result-title:hover { text-decoration: underline; }
+  .import-result-bullets { font-size: 11px; color: var(--text-muted); line-height: 1.6; margin-top: 5px; }
   .import-count-badge {
     display: inline-block; background: var(--success-bg);
     border: 1px solid var(--success-border); border-radius: 20px;
@@ -1032,13 +1061,33 @@
     <div class="premium-lock-box">
       <div class="premium-lock-icon">🔒</div>
       <div class="premium-lock-title">נדרש אישור שיתוף משרות</div>
-      <div class="premium-lock-text">כדי לגשת לייבוא משרות מותאמות אישית, יש לאשר בהגדרות שיתוף אנונימי של עמודי המשרות שאת מבקרת בהן — בתמורה תקבלי גם משרות שנאספו ממשתמשות אחרות ומותאמות אלייך.</div>
+      <div class="premium-lock-text">כדי לגשת לייבוא משרות מותאמות אישית, יש לאשר בהגדרות שיתוף אנונימי של משרות — גם מעמודים שאת מבקרת בהם וגם ממשרות בעמודי חיפוש שאת מדרגת. בתמורה תקבלי גם משרות שנאספו ממשתמשות אחרות ומותאמות אלייך.</div>
       <button id="btnGoConsentSettings" class="btn btn-primary" style="display:block;margin-top:6px">⚙️ פתח הגדרות</button>
     </div>
   </div>
 
   <!-- Active state (consent given) -->
   <div id="premiumActive" style="display:none">
+    <!-- שני קווי התאמה מקבילים — המשתמש בוחר באיזה להשתמש -->
+    <div class="import-mode-group">
+      <!-- קו א' מושבת זמנית — לא זמין ללחיצה. השאירי את ה-radio עצמו בקוד כדי
+           שהחזרה תדרוש רק הסרת disabled, לא בנייה מחדש של הבורר. -->
+      <label class="import-mode-option" id="importModeAiOption" style="opacity:0.5;cursor:not-allowed">
+        <input type="radio" name="importMode" value="ai" disabled>
+        <span>
+          <span class="import-mode-title">🤖 קו א' — סינון AI ב-2 שלבים (מושבת זמנית)</span>
+          <span class="import-mode-desc">סינון מילות מפתח בשרת, ואז דירוג של כל משרה שעברה ע"י Claude. איטי יותר ומוגבל ל-100 משרות, אבל מנומק.</span>
+        </span>
+      </label>
+      <label class="import-mode-option">
+        <input type="radio" name="importMode" value="local" checked>
+        <span>
+          <span class="import-mode-title">⚡ קו ב' — התאמה מקומית (matcher.js)</span>
+          <span class="import-mode-desc">בלי שלבי סינון: כל משרה מהימים שבחרת נבדקת ישירות ב-matcher.js על המחשב שלך. מהיר, בלי הגבלת כמות, והקורות חיים לא נשלחים לשרת.</span>
+        </span>
+      </label>
+    </div>
+
     <div class="premium-input-row">
       <span class="premium-input-label">התאמה מינימלית</span>
       <input type="number" id="minScoreInput" class="premium-small-input" min="0" max="100" value="70">
@@ -1047,15 +1096,23 @@
     <div class="premium-input-row">
       <span class="premium-input-label">טווח זמן</span>
       <select id="timeRangeSelect" class="premium-select">
-        <option value="3days">3 ימים אחרונים</option>
+        <option value="days">לפי מספר ימים</option>
         <option value="since_last">מאז הבקשה הקודמת</option>
       </select>
+    </div>
+    <div class="premium-input-row" id="daysRow">
+      <span class="premium-input-label">מספר ימים אחורה</span>
+      <input type="number" id="daysInput" class="premium-small-input" min="1" max="90" value="3">
     </div>
     <button class="btn btn-primary" id="btnImportJobs" style="font-size:14px;padding:12px;margin-top:4px">
       📥 ייבוא והתאמת משרות רחבה
     </button>
     <div class="import-status" id="importStatus"></div>
     <div class="error-box" id="importError" style="display:none"></div>
+    <div class="import-results" id="importResults"></div>
+    <button class="btn btn-secondary" id="btnDownloadImportXlsx" style="display:none;margin-top:10px">
+      📊 הורד את התוצאות כאקסל
+    </button>
   </div>
 
   <button class="btn btn-secondary" id="btnPremiumBack">← חזור</button>
@@ -1097,7 +1154,7 @@
     <div class="settings-label">🔄 שיתוף משרות קהילתי</div>
     <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:12px;color:var(--text-muted);line-height:1.5">
       <input type="checkbox" id="chkShareJobsData" style="margin-top:2px;cursor:pointer">
-      <span>האם את/ה מסכים/ה שנאסוף באופן אנונימי את עמודי המשרות שבהם את/ה מבקר/ת? בתמורה תקבל/י גישה לייבוא משרות שנאספו ממשתמשות אחרות ומותאמות אישית אליך.</span>
+      <span>האם את/ה מסכים/ה שנאסוף באופן אנונימי משרות משני מקורות: <b>(א)</b> עמודי משרות שבהם את/ה מבקר/ת, ו<b>(ב)</b> משרות מתוך עמודי חיפוש שאת/ה מדרג/ת בכפתור "דרג משרות בעמוד" — גם אם לא נכנסת אליהן. נשמרים הקישור, הכותרת ותיאור המשרה בלבד; לא נשמר שום פרט מזהה עלייך ולא היסטוריית הגלישה שלך. בתמורה תקבל/י גישה לייבוא משרות שנאספו ממשתמשות אחרות ומותאמות אישית אליך.</span>
     </label>
   </div>
 
@@ -1140,6 +1197,10 @@
 
 <script src="tracker.js"></script>
 <script src="docx-builder.js"></script>
+<!-- matcher.js defines window.JMA_Matcher — pure, no DOM/chrome deps. Loaded
+     here so the local-matcher import line (קו ב') can score the community pool
+     inside the popup, exactly the way content.js scores the current job page. -->
+<script src="matcher.js"></script>
 <script src="popup.js"></script>
 <script src="v2/v2-entry.js"></script>
 </body>

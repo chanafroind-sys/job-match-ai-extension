@@ -603,6 +603,19 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  // Batch variant, emitted by the listings ranker: one request for a whole page
+  // of jobs instead of a dozen round trips. Same fire-and-forget contract as
+  // scrapeJob — contributing to the pool must never block or fail the UI.
+  if (req.action === 'scrapeJobsBatch') {
+    fetch(`${BACKEND_URL}/api/scrape-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobs: req.jobs || [] }),
+    }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (req.action === 'importPremiumJobs') {
     chrome.storage.local.get(['licenseKey', 'cvText', 'shareJobsConsent'], async (stored) => {
       if (!stored.licenseKey || !stored.cvText) {
@@ -613,51 +626,103 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         sendResponse({ error: 'נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.' });
         return;
       }
+      sendResponse(await postForXlsx('/api/import-jobs', stored.licenseKey, {
+        cvText: stored.cvText,
+        minScore: req.minScore,
+        timeRange: req.timeRange,
+        days: req.days,
+        shareJobsConsent: true,
+      }));
+    });
+    return true;
+  }
+
+  // LINE B step 1 — the raw pool window. Scoring happens in the popup with
+  // matcher.js, so no cvText is sent and no AI runs on the server.
+  if (req.action === 'fetchJobsPool') {
+    chrome.storage.local.get(['licenseKey', 'shareJobsConsent'], async (stored) => {
+      if (!stored.licenseKey) {
+        sendResponse({ error: 'נדרש רישיון כדי להשתמש בפיצ\'ר זה.' });
+        return;
+      }
+      if (!stored.shareJobsConsent) {
+        sendResponse({ error: 'נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.' });
+        return;
+      }
       try {
-        const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), 180000); // 3 min for big batches
-        const resp = await fetch(`${BACKEND_URL}/api/import-jobs`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-license-key': stored.licenseKey,
-          },
-          body: JSON.stringify({
-            cvText: stored.cvText,
-            minScore: req.minScore,
-            timeRange: req.timeRange,
-            shareJobsConsent: true,
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(tid);
-
-        if (!resp.ok) {
-          let errMsg = `שגיאה ${resp.status}`;
-          try { const d = await resp.json(); errMsg = d.detail || errMsg; } catch {}
-          sendResponse({ error: errMsg });
-          return;
-        }
-
-        const buffer = await resp.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        // Convert to base64 in chunks to avoid stack overflow on large files
-        let binary = '';
-        const CHUNK = 8192;
-        for (let i = 0; i < bytes.length; i += CHUNK) {
-          binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
-        }
-        sendResponse({
-          dataUrl: `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${btoa(binary)}`,
-        });
+        const data = await backendPost('/api/jobs-pool', {
+          timeRange: req.timeRange,
+          days: req.days,
+          shareJobsConsent: true,
+        }, stored.licenseKey);
+        sendResponse({ jobs: data.jobs || [], count: data.count || 0 });
       } catch (err) {
-        sendResponse({
-          error: err.name === 'AbortError'
-            ? 'הייבוא לקח יותר מדי זמן. נסי שוב בעוד רגע.'
-            : friendlyError(err.message),
-        });
+        sendResponse({ error: friendlyError(err.message) });
       }
     });
     return true;
   }
+
+  // LINE B step 2 — format already-scored rows as xlsx.
+  if (req.action === 'exportJobsXlsx') {
+    chrome.storage.local.get(['licenseKey'], async (stored) => {
+      if (!stored.licenseKey) {
+        sendResponse({ error: 'נדרש רישיון כדי להשתמש בפיצ\'ר זה.' });
+        return;
+      }
+      sendResponse(await postForXlsx('/api/export-jobs-xlsx', stored.licenseKey, { rows: req.rows || [] }));
+    });
+    return true;
+  }
+
+  // Downloads are driven from here, not from a synthetic <a download> in the
+  // popup: clicking an anchor can dismiss an MV3 popup and cancel the transfer.
+  if (req.action === 'downloadFile') {
+    chrome.downloads.download({ url: req.dataUrl, filename: req.filename, saveAs: false })
+      .then(id => sendResponse({ ok: true, downloadId: id }))
+      .catch(err => sendResponse({ error: err.message || 'ההורדה נכשלה.' }));
+    return true;
+  }
 });
+
+/**
+ * POST a JSON body to an endpoint that answers with an .xlsx stream, and hand
+ * the popup a data: URL it can pass straight to chrome.downloads.
+ * Shared by both import lines.
+ */
+async function postForXlsx(path, licenseKey, body) {
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 180000); // 3 min for big batches
+    const resp = await fetch(`${BACKEND_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-license-key': licenseKey },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(tid);
+
+    if (!resp.ok) {
+      let errMsg = `שגיאה ${resp.status}`;
+      try { const d = await resp.json(); errMsg = d.detail || errMsg; } catch {}
+      return { error: errMsg };
+    }
+
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    // Convert to base64 in chunks to avoid stack overflow on large files
+    let binary = '';
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+    }
+    return {
+      dataUrl: `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${btoa(binary)}`,
+    };
+  } catch (err) {
+    return {
+      error: err.name === 'AbortError'
+        ? 'הייבוא לקח יותר מדי זמן. נסי שוב בעוד רגע.'
+        : friendlyError(err.message),
+    };
+  }
+}

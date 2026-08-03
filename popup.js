@@ -2990,8 +2990,12 @@ async function showPremiumScreen() {
   // Reset UI state
   document.getElementById('importStatus').textContent = '';
   document.getElementById('importError').style.display = 'none';
+  document.getElementById('importResults').textContent = '';
+  document.getElementById('btnDownloadImportXlsx').style.display = 'none';
+  _lastImportRows = [];
+  _syncDaysRow();
   const btn = document.getElementById('btnImportJobs');
-  if (btn) { btn.disabled = false; btn.textContent = '📥 ייבוא והתאמת משרות'; }
+  if (btn) { btn.disabled = false; btn.textContent = '📥 ייבוא והתאמת משרות רחבה'; }
   showScreen('premium');
 }
 
@@ -3002,48 +3006,203 @@ document.getElementById('btnGoConsentSettings').addEventListener('click', () => 
   showScreen('settings');
 });
 
-document.getElementById('btnImportJobs').addEventListener('click', async () => {
-  const minScore = parseInt(document.getElementById('minScoreInput').value, 10) || 70;
+// The premium screen runs two independent matching lines against the same
+// community pool, and the user picks which one on every run:
+//
+//   LINE A ("ai")    — POST /api/import-jobs. Server-side keyword pre-filter,
+//                      then a Claude call per surviving job. Capped at 100 jobs.
+//                      Unchanged from the original implementation.
+//   LINE B ("local") — POST /api/jobs-pool for the raw window, then every single
+//                      job goes straight through matcher.js in this popup. No
+//                      pre-filter, no cap, no AI cost, and the CV never leaves
+//                      the browser.
+//
+// Both produce the same six columns, so the xlsx is identical either way.
+
+// Rows from the last LINE B run, held for the xlsx download button.
+let _lastImportRows = [];
+
+function _importMode() {
+  // 'local' fallback, not 'ai': קו א' is currently disabled in the markup, so if
+  // nothing is checked for some reason this must not silently route into it.
+  return document.querySelector('input[name="importMode"]:checked')?.value || 'local';
+}
+
+function _importParams() {
   const timeRange = document.getElementById('timeRangeSelect').value;
+  return {
+    minScore: parseInt(document.getElementById('minScoreInput').value, 10) || 70,
+    timeRange,
+    days: Math.max(1, Math.min(parseInt(document.getElementById('daysInput').value, 10) || 3, 90)),
+  };
+}
+
+// "מספר ימים" only means something when the range isn't "since_last".
+function _syncDaysRow() {
+  const isDays = document.getElementById('timeRangeSelect').value !== 'since_last';
+  document.getElementById('daysRow').style.display = isDays ? 'flex' : 'none';
+}
+document.getElementById('timeRangeSelect').addEventListener('change', _syncDaysRow);
+
+// Downloads go through the background page's chrome.downloads call rather than a
+// synthetic <a download>: clicking an anchor in an MV3 popup can close the popup
+// and cancel the transfer before it starts.
+async function _downloadXlsx(dataUrl) {
+  const filename = `JobMatchAI_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const resp = await chrome.runtime.sendMessage({ action: 'downloadFile', dataUrl, filename });
+  if (resp?.error) throw new Error(resp.error);
+}
+
+function _renderImportResults(rows) {
+  const wrap = document.getElementById('importResults');
+  wrap.textContent = '';
+  for (const row of rows.slice(0, 50)) {
+    const card = document.createElement('div');
+    card.className = 'import-result-card';
+
+    const head = document.createElement('div');
+    head.className = 'import-result-head';
+
+    const score = document.createElement('span');
+    score.className = 'import-result-score';
+    score.textContent = `${row.Score}%`;
+
+    // Job titles come from other users' scraped pages — build the node rather
+    // than interpolating into innerHTML.
+    const link = document.createElement('a');
+    link.className = 'import-result-title';
+    link.href = row.URL;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = row.Title || row.URL;
+
+    head.append(score, link);
+    card.appendChild(head);
+
+    const reasons = [row.Pro, row.Con].filter(Boolean).join(' · ');
+    if (reasons) {
+      const bullets = document.createElement('div');
+      bullets.className = 'import-result-bullets';
+      bullets.textContent = reasons;
+      card.appendChild(bullets);
+    }
+    wrap.appendChild(card);
+  }
+}
+
+// LINE B — score the whole pool window locally with matcher.js.
+async function _runLocalImport({ minScore, timeRange, days }, statusEl) {
+  statusEl.textContent = 'טוען משרות מהמאגר...';
+  const pool = await chrome.runtime.sendMessage({ action: 'fetchJobsPool', timeRange, days });
+  if (!pool) throw new Error('השירות לא הגיב. נסי שוב בעוד רגע.');
+  if (pool.error) throw new Error(pool.error);
+
+  const jobs = pool.jobs || [];
+  if (!jobs.length) throw new Error('לא נמצאו משרות בטווח הזמן שנבחר.');
+
+  const stored = await chrome.storage.local.get(['jma_user_profile', 'cvText']);
+  const profile = stored.jma_user_profile
+    || (stored.cvText ? window.JMA_Matcher.profileFromCvText(stored.cvText) : null);
+  if (!profile) throw new Error('צריך להעלות קורות חיים בהגדרות לפני התאמה מקומית.');
+
+  statusEl.textContent = `בודק ${jobs.length} משרות מול הפרופיל שלך...`;
+  // Yield to the event loop so the status line above actually paints before the
+  // scoring loop takes over the main thread.
+  await new Promise(r => setTimeout(r, 0));
+
+  const rows = [];
+  for (const job of jobs) {
+    const jobText = job.text || '';
+    if (!jobText) continue;
+    const { score, bullets } = window.JMA_Matcher.computeScore(profile, jobText);
+    if (score < minScore) continue;
+    rows.push({
+      Title: job.title || '',
+      URL: job.url || '',
+      Score: score,
+      Pro: bullets[0] || '',
+      Con: bullets[bullets.length - 1] || '',
+      Date: (job.ts || '').slice(0, 10),
+    });
+  }
+
+  if (!rows.length) {
+    throw new Error(`נבדקו ${jobs.length} משרות, אף אחת לא עברה ${minScore}%. נסי להוריד את הסף.`);
+  }
+
+  rows.sort((a, b) => b.Score - a.Score);
+  return { rows, scanned: jobs.length };
+}
+
+document.getElementById('btnImportJobs').addEventListener('click', async () => {
+  const params = _importParams();
+  const mode = _importMode();
   const btn = document.getElementById('btnImportJobs');
   const statusEl = document.getElementById('importStatus');
   const errEl = document.getElementById('importError');
+  const dlBtn = document.getElementById('btnDownloadImportXlsx');
 
   btn.disabled = true;
-  btn.textContent = '⏳ מסנן ומדרג...';
-  statusEl.textContent = 'שלב 1 מתוך 2: סינון ראשוני לפי מילות מפתח...';
   errEl.style.display = 'none';
+  document.getElementById('importResults').textContent = '';
+  dlBtn.style.display = 'none';
+  _lastImportRows = [];
 
-  // Show stage 2 hint after a few seconds
-  const stageHint = setTimeout(() => {
-    statusEl.textContent = 'שלב 2 מתוך 2: דירוג עם AI — זה עלול לקחת דקה...';
-  }, 4000);
+  let stageHint;
+  try {
+    if (mode === 'local') {
+      btn.textContent = '⏳ מתאים מקומית...';
+      const { rows, scanned } = await _runLocalImport(params, statusEl);
+      _lastImportRows = rows;
+      _renderImportResults(rows);
+      statusEl.textContent = `✅ ${rows.length} משרות מתאימות מתוך ${scanned} שנבדקו`;
+      dlBtn.style.display = 'block';
+    } else {
+      btn.textContent = '⏳ מסנן ומדרג...';
+      statusEl.textContent = 'שלב 1 מתוך 2: סינון ראשוני לפי מילות מפתח...';
+      stageHint = setTimeout(() => {
+        statusEl.textContent = 'שלב 2 מתוך 2: דירוג עם AI — זה עלול לקחת דקה...';
+      }, 4000);
 
-  const resp = await chrome.runtime.sendMessage({
-    action: 'importPremiumJobs',
-    minScore,
-    timeRange,
-  });
+      const resp = await chrome.runtime.sendMessage({ action: 'importPremiumJobs', ...params });
+      // A crashed service worker resolves sendMessage with undefined — without
+      // this guard the old code threw on resp.error and failed silently.
+      if (!resp) throw new Error('השירות לא הגיב. נסי שוב בעוד רגע.');
+      if (resp.error) throw new Error(resp.error);
 
-  clearTimeout(stageHint);
-  btn.disabled = false;
-  btn.textContent = '📥 ייבוא והתאמת משרות';
-
-  if (resp.error) {
+      await _downloadXlsx(resp.dataUrl);
+      statusEl.textContent = '✅ הקובץ הורד!';
+    }
+  } catch (e) {
     statusEl.textContent = '';
-    errEl.textContent = resp.error;
+    errEl.textContent = e.message || 'הייבוא נכשל. נסי שוב.';
     errEl.style.display = 'block';
-    return;
+  } finally {
+    clearTimeout(stageHint);
+    btn.disabled = false;
+    btn.textContent = '📥 ייבוא והתאמת משרות רחבה';
   }
+});
 
-  // Trigger download
-  statusEl.textContent = '✅ הקובץ מוכן להורדה!';
-  const a = document.createElement('a');
-  a.href = resp.dataUrl;
-  a.download = `JobMatchAI_${new Date().toISOString().slice(0, 10)}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+document.getElementById('btnDownloadImportXlsx').addEventListener('click', async () => {
+  const dlBtn = document.getElementById('btnDownloadImportXlsx');
+  const errEl = document.getElementById('importError');
+  if (!_lastImportRows.length) return;
+
+  dlBtn.disabled = true;
+  dlBtn.textContent = '⏳ מכין קובץ...';
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'exportJobsXlsx', rows: _lastImportRows });
+    if (!resp) throw new Error('השירות לא הגיב. נסי שוב בעוד רגע.');
+    if (resp.error) throw new Error(resp.error);
+    await _downloadXlsx(resp.dataUrl);
+  } catch (e) {
+    errEl.textContent = e.message || 'ההורדה נכשלה.';
+    errEl.style.display = 'block';
+  } finally {
+    dlBtn.disabled = false;
+    dlBtn.textContent = '📊 הורד את התוצאות כאקסל';
+  }
 });
 
 // Points badge is always visible (shows "–" as a placeholder); only the number

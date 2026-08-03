@@ -389,48 +389,11 @@ async function loadJobState(url) {
 
   // Build a minimal profile stub from raw CV text for users without a jma_user_profile yet.
   // Accuracy is lower than the AI-extracted version but good enough as a fallback.
+  // The implementation now lives in matcher.js (loaded before this file, and also
+  // by the popup) so the page FAB and the popup's local-matcher import line score
+  // profile-less users identically instead of drifting apart.
   function _profileFromCvText(cvText) {
-    const lo = (cvText || '').toLowerCase();
-    const TECH_DOMAIN_LOCAL = {
-      java:'backend','c#':'backend','.net':'backend',python:'backend',ruby:'backend',
-      go:'backend',golang:'backend',rust:'backend',php:'backend',scala:'backend',
-      kotlin:'backend','node.js':'backend',nodejs:'backend',
-      react:'frontend','vue':'frontend',angular:'frontend','next.js':'frontend',
-      nextjs:'frontend',javascript:'frontend',typescript:'frontend',
-      tensorflow:'ai_ml_llm',pytorch:'ai_ml_llm','machine learning':'ai_ml_llm',
-      spark:'data_bi',sql:'data_bi',postgresql:'data_bi',pandas:'data_bi',
-      docker:'devops_cloud',kubernetes:'devops_cloud',aws:'devops_cloud',
-      azure:'devops_cloud',gcp:'devops_cloud',terraform:'devops_cloud',
-      swift:'mobile',flutter:'mobile','react native':'mobile',android:'mobile',
-    };
-    const totalMatch = lo.match(/(\d+)\+?\s*years?\s*(?:of\s*)?(?:professional\s*)?experience/i)
-                    || lo.match(/(\d+)\s*שנות?\s*ניסיון/i);
-    const totalYears = totalMatch ? parseFloat(totalMatch[1]) : 0;
-
-    const exp = { backend:{}, frontend:{}, ai_ml_llm:{}, data_bi:{}, devops_cloud:{}, mobile:{}, other_domains:{} };
-    const domainYears = {};
-
-    for (const [tech, domain] of Object.entries(TECH_DOMAIN_LOCAL)) {
-      const escaped = tech.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp('(?<![a-z0-9])' + escaped + '(?![a-z0-9])', 'i');
-      if (!re.test(lo)) continue;
-      // Try to find a year near the tech
-      const idx = lo.search(re);
-      const win = lo.slice(Math.max(0, idx - 150), idx + 150);
-      const ym = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?)/i);
-      const yrs = ym ? parseFloat(ym[1]) : (totalYears > 0 ? Math.round(totalYears * 0.5 * 10) / 10 : 1.0);
-      exp[domain][tech] = { industry_years: yrs, personal_years: 0, personal_weight: 0 };
-      domainYears[domain] = (domainYears[domain] || 0) + yrs;
-    }
-
-    return {
-      industry_summary: { total_years_industry: totalYears, domain_years: domainYears },
-      traits: [],
-      experience: exp,
-      tools_and_methods: {},
-      languages: {},
-      _isFallback: true,
-    };
+    return window.JMA_Matcher?.profileFromCvText(cvText) || null;
   }
 
   function _urlHash(url) {
@@ -1558,6 +1521,37 @@ wrap.addEventListener('click', async () => {
     });
   }
 
+  // The listings path already fetches each job's full page text in order to rank
+  // it, and then threw that away. Those are exactly the two fields the community
+  // pool stores (url + text), so contribute them instead of discarding them: one
+  // click on a search page feeds the pool what would otherwise take a dozen
+  // separate page visits.
+  //
+  // The bar is deliberately the same one _initJobFabInner applies to a visited
+  // page — a genuinely fetched body of >=350 chars carrying a requirements
+  // section. A card snippet or a login wall must never reach the pool, or the
+  // import lines end up scoring 60-character stubs.
+  function _contributeRankedJobsToPool(enrichedJobs) {
+    chrome.storage.local.get(['shareJobsConsent'], (settings) => {
+      if (settings.shareJobsConsent !== true) {
+        console.log('[JMA:rank] pool contribution skipped: no sharing consent.');
+        return;
+      }
+      const jobs = enrichedJobs
+        .filter(j => /^https?:\/\//i.test(j.href || ''))
+        .filter(j => (j.fetchedText || '').length >= 350 && _hasJobRequirementsSignal(j.fetchedText))
+        .map(j => ({
+          url: j.href,
+          text: j.fetchedText.substring(0, 5000),
+          title: j.title || '',
+        }));
+
+      console.log(`[JMA:rank] contributing ${jobs.length}/${enrichedJobs.length} jobs to the pool`);
+      if (!jobs.length) return;
+      chrome.runtime.sendMessage({ action: 'scrapeJobsBatch', jobs });
+    });
+  }
+
   function startRanking() {
     if (_rankingDone) return;
     console.log(`[JMA:rank] startRanking jobs_collected=${_collectedJobs.length}`);
@@ -1594,7 +1588,9 @@ wrap.addEventListener('click', async () => {
           const bestText = fetched.length > 200 ? fetched
                          : job.cardText && job.cardText.length > 60 ? job.cardText
                          : job.snippet || '';
-          return { ...job, fullText: bestText };
+          // fetchedText is kept separate from fullText: ranking happily falls back
+          // to a card snippet, but only a genuinely fetched page may reach the pool.
+          return { ...job, fullText: bestText, fetchedText: fetched };
         }).filter(j => (j.fullText || '').length > 15);
 
         console.log(`[JMA:rank] enrichedJobs=${enrichedJobs.length} (filtered from ${_collectedJobs.length})`);
@@ -1604,6 +1600,8 @@ wrap.addEventListener('click', async () => {
           showSidebarError('לא הצלחנו לאסוף מספיק מידע על המשרות בעמוד זה.');
           return;
         }
+
+        _contributeRankedJobsToPool(enrichedJobs);
 
         setSidebarStatus('<div class="jma-loading"><div class="jma-spinner"></div><div>מדרג משרות...</div><div style="font-size:11px;margin-top:6px;color:#484f58">חישוב מקומי — כמה שניות</div></div>');
 

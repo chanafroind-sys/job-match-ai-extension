@@ -1010,8 +1010,61 @@
 
   function _cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
+  /**
+   * Minimal profile stub built from raw CV text, for users who have no
+   * AI-extracted jma_user_profile yet. Less accurate than /api/extract-profile
+   * but good enough as a fallback, and it keeps computeScore usable offline.
+   *
+   * Lives here rather than in content.js because both the page FAB and the
+   * popup's local-matcher import line need it, and those run in separate JS
+   * contexts — matcher.js is the one file loaded by both.
+   */
+  function profileFromCvText(cvText) {
+    const lo = (cvText || '').toLowerCase();
+    const TECH_DOMAIN_LOCAL = {
+      java:'backend','c#':'backend','.net':'backend',python:'backend',ruby:'backend',
+      go:'backend',golang:'backend',rust:'backend',php:'backend',scala:'backend',
+      kotlin:'backend','node.js':'backend',nodejs:'backend',
+      react:'frontend','vue':'frontend',angular:'frontend','next.js':'frontend',
+      nextjs:'frontend',javascript:'frontend',typescript:'frontend',
+      tensorflow:'ai_ml_llm',pytorch:'ai_ml_llm','machine learning':'ai_ml_llm',
+      spark:'data_bi',sql:'data_bi',postgresql:'data_bi',pandas:'data_bi',
+      docker:'devops_cloud',kubernetes:'devops_cloud',aws:'devops_cloud',
+      azure:'devops_cloud',gcp:'devops_cloud',terraform:'devops_cloud',
+      swift:'mobile',flutter:'mobile','react native':'mobile',android:'mobile',
+    };
+    const totalMatch = lo.match(/(\d+)\+?\s*years?\s*(?:of\s*)?(?:professional\s*)?experience/i)
+                    || lo.match(/(\d+)\s*שנות?\s*ניסיון/i);
+    const totalYears = totalMatch ? parseFloat(totalMatch[1]) : 0;
+
+    const exp = { backend:{}, frontend:{}, ai_ml_llm:{}, data_bi:{}, devops_cloud:{}, mobile:{}, other_domains:{} };
+    const domainYears = {};
+
+    for (const [tech, domain] of Object.entries(TECH_DOMAIN_LOCAL)) {
+      const escaped = tech.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('(?<![a-z0-9])' + escaped + '(?![a-z0-9])', 'i');
+      if (!re.test(lo)) continue;
+      // Try to find a year near the tech
+      const idx = lo.search(re);
+      const win = lo.slice(Math.max(0, idx - 150), idx + 150);
+      const ym = win.match(/(\d+(?:\.\d+)?)\s*(?:\+)?\s*(?:years?|yrs?|שנות?)/i);
+      const yrs = ym ? parseFloat(ym[1]) : (totalYears > 0 ? Math.round(totalYears * 0.5 * 10) / 10 : 1.0);
+      exp[domain][tech] = { industry_years: yrs, personal_years: 0, personal_weight: 0 };
+      domainYears[domain] = (domainYears[domain] || 0) + yrs;
+    }
+
+    return {
+      industry_summary: { total_years_industry: totalYears, domain_years: domainYears },
+      traits: [],
+      experience: exp,
+      tools_and_methods: {},
+      languages: {},
+      _isFallback: true,
+    };
+  }
+
   // ── PUBLIC API ────────────────────────────────────────────────────────────
-  window.JMA_Matcher = { computeScore, VERSION: '5.6' };
+  window.JMA_Matcher = { computeScore, profileFromCvText, VERSION: '5.6' };
   // Internals exposed for the regression harness only (harmless in production)
   window.JMA_Matcher._parseJobSections = _parseJobSections;
   window.JMA_Matcher._extractRequirements = _extractRequirements;
