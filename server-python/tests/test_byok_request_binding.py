@@ -28,8 +28,15 @@ class _FakeMessages:
 
     async def create(self, **kwargs):
         self._owner.calls.append(kwargs)
+        # /api/extract-profile validates the shape it gets back, so answer it
+        # with a real-looking profile rather than the generic analysis blob.
+        blob = json.dumps(kwargs, default=str)
+        text = ('{"experience": {"backend": {"python": {"industry_years": 8}}}, '
+                '"industry_summary": {"total_years_industry": 8}}'
+                if "CANDIDATE CV" in blob or "profile" in blob.lower()
+                else '{"score": 71, "summary": "ok"}')
         return SimpleNamespace(
-            content=[SimpleNamespace(text='{"score": 71, "summary": "ok"}')],
+            content=[SimpleNamespace(text=text)],
             stop_reason="end_turn",
             usage=SimpleNamespace(cache_read_input_tokens=0, cache_creation_input_tokens=0),
         )
@@ -135,6 +142,65 @@ def test_streaming_no_key_reports_through_the_event_stream(clients):
     first = json.loads(resp.text.split("data: ", 1)[1].split("\n", 1)[0])
     assert main_module.ERR_NO_KEY in first["error"]
     assert clients.personal.calls == []
+
+
+class TestKeylessCvAnalysis:
+    """/api/extract-profile is deliberately open: a new user's first CV upload
+    has to produce a profile, or every later job match scores against nothing."""
+
+    CV = "Senior Backend Engineer with 8 years of Python, FastAPI and PostgreSQL experience. " * 3
+
+    @pytest.fixture(autouse=True)
+    def _fresh_limiter(self):
+        from app.core import rate_limit
+        rate_limit._hits.clear()
+        yield
+        rate_limit._hits.clear()
+
+    def test_runs_on_the_server_key_with_no_key_at_all(self, clients):
+        transport = TestClient(main_module.app)
+        with transport:
+            resp = transport.post("/api/extract-profile", json={"cvText": self.CV})
+
+        assert resp.status_code == 200, resp.text
+        assert len(clients.server.calls) == 1
+        assert clients.personal.calls == []
+
+    def test_a_personal_key_still_pays_for_itself(self, clients):
+        transport = TestClient(main_module.app)
+        with transport:
+            resp = transport.post("/api/extract-profile",
+                                  headers={"X-Anthropic-Key": OWN_KEY},
+                                  json={"cvText": self.CV})
+
+        assert resp.status_code == 200, resp.text
+        assert len(clients.personal.calls) == 1
+        assert clients.server.calls == []
+
+    def test_keyless_callers_are_rate_limited_per_ip(self, clients, monkeypatch):
+        monkeypatch.setattr(main_module, "ANON_PROFILE_MAX", 2)
+        transport = TestClient(main_module.app)
+        with transport:
+            for _ in range(2):
+                assert transport.post("/api/extract-profile",
+                                      json={"cvText": self.CV}).status_code == 200
+            blocked = transport.post("/api/extract-profile", json={"cvText": self.CV})
+
+        assert blocked.status_code == 429
+        assert main_module.ERR_RATE_LIMIT in blocked.json()["detail"]
+        assert len(clients.server.calls) == 2   # the blocked call never reached Claude
+
+    def test_the_limit_does_not_apply_to_callers_with_a_key(self, clients, monkeypatch):
+        monkeypatch.setattr(main_module, "ANON_PROFILE_MAX", 1)
+        transport = TestClient(main_module.app)
+        with transport:
+            for _ in range(3):
+                resp = transport.post("/api/extract-profile",
+                                      headers={"X-Anthropic-Key": OWN_KEY},
+                                      json={"cvText": self.CV})
+                assert resp.status_code == 200, resp.text
+
+        assert len(clients.personal.calls) == 3
 
 
 async def test_binding_reaches_sub_tasks(clients):

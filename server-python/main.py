@@ -586,6 +586,11 @@ ERR_AI_DOWN      = "AI_UNAVAILABLE"
 
 ANTHROPIC_KEY_PREFIX = "sk-ant-"
 
+# Cap for keyless CV analysis, which the server pays for. A real user uploads a
+# CV a handful of times ever; anything past this from one IP is not a job seeker.
+ANON_PROFILE_MAX = int(os.getenv("ANON_PROFILE_MAX", "8"))
+ANON_PROFILE_WINDOW_SECONDS = int(os.getenv("ANON_PROFILE_WINDOW_SECONDS", "3600"))
+
 
 def _coded(message: str, code: str) -> str:
     return f"{message} [jma:{code}]"
@@ -665,7 +670,8 @@ def ai_error(exc: Exception) -> HTTPException:
 
 
 async def require_auth(license_key: Optional[str],
-                       anthropic_key: Optional[str] = None) -> str:
+                       anthropic_key: Optional[str] = None,
+                       *, allow_server_key: bool = False) -> str:
     """Authorize an AI request and bind the client that will pay for it.
 
     Order is fixed by product decision: a Gumroad subscription wins, and only
@@ -674,8 +680,14 @@ async def require_auth(license_key: Optional[str],
     personal key is present — an expired card shouldn't strand a user who also
     has their own key.
 
+    allow_server_key opens one deliberate exception: CV analysis at upload time
+    runs on the server's key even for a caller with no key at all. Without it a
+    brand-new user gets no CV profile, so job matching scores nothing and the
+    extension looks broken before they have any reason to buy a subscription.
+    Callers that pass it MUST rate-limit — the endpoint is unauthenticated.
+
     Returns an identity string for the request (the license key itself in
-    subscription mode, "byok:<hash>" otherwise).
+    subscription mode, "byok:<hash>" otherwise, "anon" on the server key).
     """
     lic = _header_str(license_key)
     own = _header_str(anthropic_key)
@@ -697,6 +709,10 @@ async def require_auth(license_key: Optional[str],
         _request_client.set(_byok_client(own))
         print(f"[JMA:auth] BYOK mode key=sk-ant-****{own[-4:]}")
         return f"byok:{hashlib.sha256(own.encode()).hexdigest()[:16]}"
+
+    if allow_server_key:
+        print("[JMA:auth] anonymous — running on the server key")
+        return "anon"
 
     raise _auth_error()
 
@@ -1807,10 +1823,29 @@ class ExtractProfileRequest(BaseModel):
 
 @app.post("/api/extract-profile")
 async def extract_profile(body: ExtractProfileRequest,
+                          request: Request,
                           x_license_key: Optional[str] = Header(None),
                           x_anthropic_key: Optional[str] = Header(None)):
-    """Extract a structured skills/experience profile from raw CV text using Claude."""
-    await require_auth(x_license_key, x_anthropic_key)
+    """Extract a structured skills/experience profile from raw CV text using Claude.
+
+    The one AI endpoint that serves callers with no key at all, on the server's
+    own key (product decision): this runs once per CV upload, and its output is
+    what every later job match is scored against, so gating it would leave a new
+    user with an extension that silently scores nothing. Anonymous callers are
+    rate-limited by IP because there is no key to hold them to.
+    """
+    identity = await require_auth(x_license_key, x_anthropic_key, allow_server_key=True)
+
+    if identity == "anon":
+        from app.core.rate_limit import check_and_record
+
+        client_ip = request.client.host if request.client else "unknown"
+        if not check_and_record("extract_profile_anon", client_ip,
+                                ANON_PROFILE_MAX, ANON_PROFILE_WINDOW_SECONDS):
+            raise HTTPException(status_code=429, detail=_coded(
+                "בוצעו יותר מדי ניתוחי קורות חיים מהכתובת הזו. נסי שוב בעוד שעה, "
+                "או הזיני מפתח מנוי / מפתח Claude API אישי בהגדרות ⚙️ כדי להסיר את המגבלה.",
+                ERR_RATE_LIMIT))
 
     if not body.cvText or len(body.cvText.strip()) < 50:
         raise HTTPException(status_code=422, detail="CV text too short")

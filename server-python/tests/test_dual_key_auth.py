@@ -96,6 +96,26 @@ class TestResolutionOrder:
         assert exc.value.status_code == 401
         assert ERR_NO_KEY in exc.value.detail
 
+    async def test_server_key_fallback_serves_keyless_callers(self):
+        """CV analysis is the one endpoint the server funds for everyone."""
+        identity = await require_auth("", "", allow_server_key=True)
+
+        assert identity == "anon"
+        assert not using_own_key()
+        assert _ac() is main_module.anthropic_client
+
+    async def test_server_key_fallback_still_prefers_a_personal_key(self):
+        """The exception is about serving keyless users, not about spending the
+        server's credits on someone who brought their own key."""
+        identity = await require_auth("", FAKE_KEY, allow_server_key=True)
+
+        assert identity.startswith("byok:")
+        assert using_own_key()
+
+    async def test_server_key_fallback_still_rejects_a_malformed_key(self):
+        with pytest.raises(HTTPException):
+            await require_auth("", "not-a-key", allow_server_key=True)
+
     async def test_malformed_own_key_rejected_without_calling_anthropic(self):
         with pytest.raises(HTTPException) as exc:
             await require_auth("", "my-claude-key")
