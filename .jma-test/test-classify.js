@@ -32,12 +32,34 @@ const CASES = [
   { name: 'LinkedIn single job, description behind "See more"',
     url: 'https://www.linkedin.com/jobs/view/4055555555/',
     html: F.linkedinTruncated, expect: { fab: true, pill: false } },
+
+  // The FAB's gauge is scored locally by matcher.js, so it must not depend on
+  // any key — a keyless user has to be able to see it and click through to the
+  // prompt that asks for one.
+  { name: 'LinkedIn single job, personal Claude key instead of a subscription',
+    url: 'https://www.linkedin.com/jobs/view/4012345678/',
+    html: F.linkedinSingle, expect: { fab: true, pill: false },
+    storage: { licenseKey: undefined, anthropicKey: 'sk-ant-api03-test' } },
+
+  { name: 'LinkedIn single job, no key at all',
+    url: 'https://www.linkedin.com/jobs/view/4012345678/',
+    html: F.linkedinSingle, expect: { fab: true, pill: false },
+    storage: { licenseKey: undefined } },
+
+  // The CV is the one genuine prerequisite: local scoring has nothing to score
+  // against without it.
+  { name: 'LinkedIn single job, no CV uploaded',
+    url: 'https://www.linkedin.com/jobs/view/4012345678/',
+    html: F.linkedinSingle, expect: { fab: false, pill: false },
+    storage: { cvText: undefined } },
 ];
 
 (async () => {
   let pass = 0, fail = 0;
   for (const c of CASES) {
-    const r = await run({ url: c.url, html: c.html, storage: { ...STORAGE } });
+    const storage = { ...STORAGE, ...(c.storage || {}) };
+    for (const k of Object.keys(storage)) if (storage[k] === undefined) delete storage[k];
+    const r = await run({ url: c.url, html: c.html, storage });
     if (r.error) { console.log(`✗ ${c.name}\n    ${r.error}`); fail++; continue; }
     const ok = r.fab === c.expect.fab && r.pill === c.expect.pill;
     const desc = `FAB=${r.fab} pill=${r.pill} (classified "${r.classified}")`;

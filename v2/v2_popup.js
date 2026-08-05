@@ -144,7 +144,9 @@ function showScreen(id) {
 function showMainError(msg) {
   hideMainLoading();
   document.getElementById('mainLoading').style.display = 'none';
-  document.getElementById('mainErrorMsg').textContent = msg;
+  // The V2 panel is an iframe with no settings UI of its own, so a key problem
+  // is explained here and fixed in the popup — friendly() strips the [jma:CODE].
+  document.getElementById('mainErrorMsg').textContent = JMA_Auth.friendly(msg);
   document.getElementById('mainError').style.display = 'block';
 }
 
@@ -216,9 +218,9 @@ async function startFlow() {
 
   // ── 1. Load credentials (shared user config — read-only) ─────────────────
   const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls', 'userConstraints', 'enableTracking']);
-  if (!stored.licenseKey) { showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.'); return; }
+  if (!(await JMA_Auth.hasKey())) { showMainError(JMA_Auth.noKeyError()); return; }
   if (!stored.cvText)     { showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ כדי להוסיף.'); return; }
-  state.licenseKey      = stored.licenseKey;
+  state.licenseKey      = stored.licenseKey || '';
   state.cvText          = stored.cvText;
   state.cvHyperlinkUrls = stored.cvHyperlinkUrls || [];
   state.userConstraints = stored.userConstraints || '';
@@ -455,6 +457,9 @@ function showQuestionsScreen(questions, savedAnswers) {
 // typing while remaining questions are still streaming.
 async function streamQuestionsIntoScreen() {
   console.log('[JMA:V2:stream] streaming questions into screen...');
+  // Mirrors V1: check before drawing a loading skeleton the server will only
+  // reject. The V2 panel has no settings UI, so the message points at the popup.
+  if (!(await JMA_Auth.hasKey())) { showMainError(JMA_Auth.noKeyError()); return; }
   state.questions      = [];
   state.questionScores = {};
 
@@ -482,8 +487,7 @@ async function streamQuestionsIntoScreen() {
   qArea.appendChild(loader);
 
   // ── SSE fetch ─────────────────────────────────────────────────────────────
-  const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
-  const licenseKey = stored.licenseKey || state.licenseKey || '';
+  const stored = await chrome.storage.local.get(['cvText']);
 
   // Per-question card registry: id → {card, textEl, idx}
   const _cards = {};
@@ -531,7 +535,7 @@ async function streamQuestionsIntoScreen() {
     // delta 1: THE functional change — V2 endpoint instead of /api/stream-questions
     const resp = await fetch(`${BACKEND}/api/v2/stream-questions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
+      headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         cvText:    stored.cvText || state.cvText || '',
         jobText:   state.jobText || '',

@@ -482,8 +482,12 @@ async function _initJobFabInner() {
     }
   });
 
-  chrome.storage.local.get(['licenseKey', 'cvText', 'jma_recent_jobs'], (conf) => {
-    if (!conf.licenseKey || !conf.cvText) return;
+  chrome.storage.local.get(['cvText', 'jma_recent_jobs'], (conf) => {
+    // No key check here on purpose. The gauge is scored locally by matcher.js —
+    // free, offline, no API call — so requiring a key would hide the FAB from
+    // exactly the users who need it to discover that a key is needed. The ask
+    // happens when the user clicks through to an actual AI action.
+    if (!conf.cvText) return;
     if (location.href !== startUrl) return;              // navigated during the read
     if (document.getElementById('jma-fab-wrap')) return; // teardown + re-init raced us
 

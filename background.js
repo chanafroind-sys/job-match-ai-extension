@@ -1,3 +1,5 @@
+importScripts('jma-auth.js');
+
 const BACKEND_URL = 'https://job-match-ai-extension.onrender.com';
 
 // ── Click tracking via chrome.alarms polling ──────────────────────────────────
@@ -85,32 +87,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === CLICKS_ALARM) _pollClicks();
 });
 
+// Error wording lives in jma-auth.js so the popup, the in-page sidebar and this
+// worker all explain the same failure the same way. Errors the server tagged
+// with a [jma:CODE] pass through with their code intact — callers relay the raw
+// message so the UI can tell "enter a key" apart from "top up your credits".
 function friendlyError(msg) {
-  if (!msg) return 'קרתה תקלה לא צפויה. נסי שוב.';
-  const lo = msg.toLowerCase();
-  if (lo.includes('devices') || lo.includes('already activated')) {
-    return 'הרישיון כבר בשימוש במספר מקסימלי של מכשירים.';
-  }
-  if (
-    msg.includes('401') ||
-    msg.includes('403') ||
-    lo.includes('invalid') && lo.includes('license') ||
-    lo.includes('expired license') ||
-    lo.includes('license key')
-  ) {
-    return 'המפתח אינו בתוקף או שלא הוגדר. אנא הזן מפתח תקין בהגדרות ⚙️ כדי להמשיך.';
-  }
-  if (msg.includes('429') || lo.includes('monthly usage') || lo.includes('monthly limit')) {
-    return 'הגעת למגבלה החודשית (100 ניתוחים). המכסה מתחדשת ב-1 לחודש הבא.';
-  }
-  if (lo.includes('אין חיבור') || lo.includes('internet') || lo.includes('network') || lo.includes('cannot reach')) {
-    return 'אין חיבור לאינטרנט או שהשירות לא זמין. בדקי את החיבור ונסי שוב.';
-  }
-  if (lo.includes('מתעורר') || lo.includes('waking') || msg.includes('502') || msg.includes('503')) {
-    return 'האפליקציה מתעוררת — זה יכול לקחת עד דקה. נסי שוב בעוד רגע.';
-  }
-  if (lo.includes('לא הצלחנו') || lo.includes('מגבלה') || lo.includes('רישיון') || lo.includes('אימייל') || lo.includes('מגייס') || lo.includes('עובד')) return msg;
-  return 'משהו השתבש. נסי שוב בעוד רגע.';
+  return JMA_Auth.friendly(msg);
+}
+
+/** True when neither a Gumroad key nor a personal Claude key is configured. */
+async function _hasAnyKey() {
+  return JMA_Auth.hasKey();
 }
 
 async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 12000, timeoutMs = 90000) {
@@ -161,23 +148,25 @@ async function fetchWithRetry(endpoint, options, maxAttempts = 6, delayMs = 1200
   }
 }
 
+// licenseKey stays in the signature for callers that must authenticate with a
+// specific key rather than the stored one (verifying a key before saving it).
+// Everything else gets both stored keys from JMA_Auth.
 async function backendPost(endpoint, body, licenseKey, opts = {}) {
+  const headers = await JMA_Auth.headers({ 'Content-Type': 'application/json' });
+  if (licenseKey) headers['X-License-Key'] = licenseKey;
   return fetchWithRetry(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-license-key': licenseKey || '',
-    },
+    headers,
     body: JSON.stringify(body),
   }, opts.maxAttempts || 6, opts.delayMs || 12000, opts.timeoutMs || 90000);
 }
 
 async function backendGet(endpoint, licenseKey, opts = {}) {
+  const headers = await JMA_Auth.headers();
+  if (licenseKey) headers['X-License-Key'] = licenseKey;
   return fetchWithRetry(endpoint, {
     method: 'GET',
-    headers: {
-      'x-license-key': licenseKey || '',
-    },
+    headers,
   }, opts.maxAttempts || 6, opts.delayMs || 12000);
 }
 
@@ -229,6 +218,26 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  // Proves a personal Claude key works (one Haiku token) before the user leans
+  // on it, so a typo or an empty wallet surfaces in settings rather than
+  // halfway through generating a CV.
+  if (req.action === 'verifyAnthropicKey') {
+    backendPost('/api/verify-anthropic-key', { anthropicKey: req.anthropicKey }, null, {
+      maxAttempts: 2, delayMs: 4000,
+    })
+      .then(data => sendResponse({ result: data }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
+
+  // Opens the key screen in a tab. Used from the in-page sidebar, which has no
+  // way to open the extension popup itself.
+  if (req.action === 'openKeySetup') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('popup.html#keys') });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (req.action === 'analyzeJob') {
     backendPost('/api/analyze', {
       cvText: req.cvText,
@@ -237,7 +246,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       preflight: req.preflight || false,
     }, req.licenseKey)
       .then(data => sendResponse({ result: data.result }))
-      .catch(err => sendResponse({ error: friendlyError(err.message) }));
+      .catch(err => sendResponse({ error: err.message }));
     return true;
   }
 
@@ -264,7 +273,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       timeoutMs: 300000, maxAttempts: 2,
     })
       .then(data => sendResponse({ cvText: data.cvText, appId: data.appId, sections: data.sections || [], coverLetterText: data.coverLetterText || '' }))
-      .catch(err => sendResponse({ error: friendlyError(err.message) }));
+      .catch(err => sendResponse({ error: err.message }));
     return true;
   }
 
@@ -278,17 +287,17 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req.action === 'scoreAnswer') {
-    chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey || !(req.answer || '').trim()) { sendResponse({ score_pct: 0 }); return; }
+    (async () => {
+      if (!(await _hasAnyKey()) || !(req.answer || '').trim()) { sendResponse({ score_pct: 0 }); return; }
       try {
         const data = await backendPost('/api/score-answer', {
           question: req.question || '',
           skill: req.skill || '',
           answer: req.answer,
-        }, stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
+        }, null, { maxAttempts: 1, delayMs: 0 });
         sendResponse({ score_pct: data.score_pct ?? 50 });
       } catch { sendResponse({ score_pct: 50 }); }
-    });
+    })();
     return true;
   }
 
@@ -307,7 +316,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === 'getAdminStats') {
     chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      if (!stored.licenseKey) { sendResponse({ error: JMA_Auth.subscriptionOnlyError() }); return; }
       try {
         const data = await backendGet('/api/admin/stats', stored.licenseKey, { maxAttempts: 1, delayMs: 0 });
         sendResponse({ result: data });
@@ -320,7 +329,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === 'addRecruiter') {
     chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      if (!stored.licenseKey) { sendResponse({ error: JMA_Auth.subscriptionOnlyError() }); return; }
       try {
         const data = await backendPost('/api/recruiters', {
           full_name: req.fullName || '',
@@ -338,7 +347,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === 'addEmployee') {
     chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      if (!stored.licenseKey) { sendResponse({ error: JMA_Auth.subscriptionOnlyError() }); return; }
       try {
         const data = await backendPost('/api/employees', {
           full_name: req.fullName || '',
@@ -372,7 +381,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === 'draftRecruiterLetter') {
     chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      if (!stored.licenseKey) { sendResponse({ error: JMA_Auth.subscriptionOnlyError() }); return; }
       try {
         const data = await backendPost('/api/recruiter-letter', {
           jobTitle: req.jobTitle || '',
@@ -391,7 +400,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === 'logRecruiterEmailOpen') {
     chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      if (!stored.licenseKey) { sendResponse({ error: JMA_Auth.subscriptionOnlyError() }); return; }
       try {
         const data = await backendPost('/api/emails/log-open', {
           recruiter_id: req.recruiterId,
@@ -427,7 +436,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   if (req.action === 'confirmReferral') {
     chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey) { sendResponse({ error: friendlyError('license key') }); return; }
+      if (!stored.licenseKey) { sendResponse({ error: JMA_Auth.subscriptionOnlyError() }); return; }
       try {
         const data = await backendPost('/api/referrals', {
           job_url_hash: req.jobUrlHash || '',
@@ -454,8 +463,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === 'startJobPreflight') {
     const tabId = sender.tab?.id;
     sendResponse({ ok: true }); // immediate ack so content script doesn't wait
-    chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls'], async (stored) => {
-      if (!stored.licenseKey || !stored.cvText) return;
+    chrome.storage.local.get(['cvText', 'cvHyperlinkUrls'], async (stored) => {
+      // Silent background pass: with no key there is nothing to spend, so it
+      // just doesn't run. The user finds out when they start a real action.
+      if (!stored.cvText || !(await _hasAnyKey())) return;
 
       // Stage 1 is now handled locally in content.js via matcher.js (instant, zero network cost).
       // ── Stage 2: deep analysis — weighted questions + gap ─────────────────────
@@ -466,7 +477,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           answers: [],
           preflight: true,
           model: req.model || 'sonnet',
-        }, stored.licenseKey, { maxAttempts: 2, delayMs: 8000 });
+        }, null, { maxAttempts: 2, delayMs: 8000 });
         const result = data?.result || data || {};
         const cKey = _prefKey(req.url || '');
         await chrome.storage.local.set({
@@ -567,19 +578,20 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req.action === 'rankJobs') {
-    chrome.storage.local.get(['licenseKey', 'cvText'], async (stored) => {
-      if (!stored.licenseKey || !stored.cvText) {
-        sendResponse({ error: 'כדי לדרג משרות יש להגדיר קורות חיים ורישיון תחילה. פתחי את ה-extension.' });
+    chrome.storage.local.get(['cvText'], async (stored) => {
+      if (!stored.cvText) {
+        sendResponse({ error: 'כדי לדרג משרות יש להעלות קורות חיים תחילה. פתחי את ההגדרות ⚙️.' });
         return;
       }
+      if (!(await _hasAnyKey())) { sendResponse({ error: JMA_Auth.noKeyError() }); return; }
       try {
         const data = await backendPost('/api/rank-jobs', {
           cvText: stored.cvText,
           jobs: req.jobs,
-        }, stored.licenseKey);
+        }, null);
         sendResponse({ rankedJobs: data.rankedJobs });
       } catch (err) {
-        sendResponse({ error: friendlyError(err.message) });
+        sendResponse({ error: err.message });
       }
     });
     return true;
@@ -617,16 +629,17 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req.action === 'importPremiumJobs') {
-    chrome.storage.local.get(['licenseKey', 'cvText', 'shareJobsConsent'], async (stored) => {
-      if (!stored.licenseKey || !stored.cvText) {
-        sendResponse({ error: 'נדרשים רישיון וקורות חיים כדי להשתמש בפיצ\'ר זה.' });
+    chrome.storage.local.get(['cvText', 'shareJobsConsent'], async (stored) => {
+      if (!stored.cvText) {
+        sendResponse({ error: 'נדרשים קורות חיים כדי להשתמש בפיצ\'ר זה.' });
         return;
       }
+      if (!(await _hasAnyKey())) { sendResponse({ error: JMA_Auth.noKeyError() }); return; }
       if (!stored.shareJobsConsent) {
         sendResponse({ error: 'נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.' });
         return;
       }
-      sendResponse(await postForXlsx('/api/import-jobs', stored.licenseKey, {
+      sendResponse(await postForXlsx('/api/import-jobs', {
         cvText: stored.cvText,
         minScore: req.minScore,
         timeRange: req.timeRange,
@@ -640,11 +653,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // LINE B step 1 — the raw pool window. Scoring happens in the popup with
   // matcher.js, so no cvText is sent and no AI runs on the server.
   if (req.action === 'fetchJobsPool') {
-    chrome.storage.local.get(['licenseKey', 'shareJobsConsent'], async (stored) => {
-      if (!stored.licenseKey) {
-        sendResponse({ error: 'נדרש רישיון כדי להשתמש בפיצ\'ר זה.' });
-        return;
-      }
+    chrome.storage.local.get(['shareJobsConsent'], async (stored) => {
+      if (!(await _hasAnyKey())) { sendResponse({ error: JMA_Auth.noKeyError() }); return; }
       if (!stored.shareJobsConsent) {
         sendResponse({ error: 'נדרש אישור שיתוף משרות אנונימי בהגדרות התוסף כדי לגשת לייבוא משרות.' });
         return;
@@ -654,10 +664,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           timeRange: req.timeRange,
           days: req.days,
           shareJobsConsent: true,
-        }, stored.licenseKey);
+        }, null);
         sendResponse({ jobs: data.jobs || [], count: data.count || 0 });
       } catch (err) {
-        sendResponse({ error: friendlyError(err.message) });
+        sendResponse({ error: err.message });
       }
     });
     return true;
@@ -665,13 +675,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
 
   // LINE B step 2 — format already-scored rows as xlsx.
   if (req.action === 'exportJobsXlsx') {
-    chrome.storage.local.get(['licenseKey'], async (stored) => {
-      if (!stored.licenseKey) {
-        sendResponse({ error: 'נדרש רישיון כדי להשתמש בפיצ\'ר זה.' });
-        return;
-      }
-      sendResponse(await postForXlsx('/api/export-jobs-xlsx', stored.licenseKey, { rows: req.rows || [] }));
-    });
+    (async () => {
+      if (!(await _hasAnyKey())) { sendResponse({ error: JMA_Auth.noKeyError() }); return; }
+      sendResponse(await postForXlsx('/api/export-jobs-xlsx', { rows: req.rows || [] }));
+    })();
     return true;
   }
 
@@ -690,13 +697,13 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
  * the popup a data: URL it can pass straight to chrome.downloads.
  * Shared by both import lines.
  */
-async function postForXlsx(path, licenseKey, body) {
+async function postForXlsx(path, body) {
   try {
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), 180000); // 3 min for big batches
     const resp = await fetch(`${BACKEND_URL}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-license-key': licenseKey },
+      headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
       signal: controller.signal,
     });

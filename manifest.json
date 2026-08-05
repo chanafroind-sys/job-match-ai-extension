@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Match AI",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "ניתוח משרות חכם + קורות חיים מותאמים + מעקב הגשות",
   "permissions": [
     "activeTab", 
@@ -158,8 +158,9 @@
         "https://*.outbrain.com/*"
       ],
       "js": [
-        "matcher.js", 
-        "content.js", 
+        "jma-auth.js",
+        "matcher.js",
+        "content.js",
         "v2/v2_content.js"
       ],
       "run_at": "document_idle",

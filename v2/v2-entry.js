@@ -37,6 +37,15 @@
   // where we always want to (re)map even if the hash somehow matches).
   async function _v2EnsureSemanticMap(cvText, { force = false } = {}) {
     if (!cvText || cvText.trim().length < 50) return;
+    // The map is an AI call, so with no key there is nothing to send — skip
+    // quietly rather than firing a request that can only come back 401. Both
+    // callers below are background enrichment the user never asked for by name;
+    // failing them loudly would be noise, not information. V2's CV window
+    // already falls back to rendering the raw CV when no map exists.
+    if (!(await JMA_Auth.hasKey())) {
+      console.log('[JMA:V2] upload-time semantic-map: skipped — no AI key configured yet');
+      return;
+    }
     const hash = _v2HashText(cvText);
     if (!force) {
       const { [LAST_MAPPED_HASH_KEY]: lastHash } = await chrome.storage.local.get(LAST_MAPPED_HASH_KEY);
@@ -44,10 +53,9 @@
     }
     try {
       console.log('[JMA:V2] upload-time semantic-map: sending CV for structural mapping…');
-      const { licenseKey } = await chrome.storage.local.get('licenseKey');
       const resp = await fetch(`${V2_BACKEND}/api/v2/semantic-map`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey || '' },
+        headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ cvText }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -56,10 +64,23 @@
         console.log(`[JMA:V2] upload-time semantic-map: saved ${data.blocks?.length ?? 0} blocks to profile DB`);
       } else {
         console.warn(`[JMA:V2] upload-time semantic-map: NOT saved (HTTP ${resp.status}, saved=${data.saved ?? 'n/a'}, error=${data.error ?? 'none'})`);
+        // A key that exists but doesn't work (revoked, out of credit) is worth
+        // telling the user about — they just pressed Save and are looking at
+        // this screen. Everything else stays in the console.
+        _v2ShowSettingsNote(data.detail || '');
       }
     } catch (err) {
       console.warn('[JMA:V2] upload-time semantic-map call failed:', err);
     }
+  }
+
+  // Writes into V1's existing settings error box without touching popup.js.
+  function _v2ShowSettingsNote(detail) {
+    if (!detail || !JMA_Auth.errorCode(detail)) return;
+    const el = document.getElementById('settingsError');
+    if (!el || !document.getElementById('screen-settings')?.classList.contains('active')) return;
+    el.textContent = JMA_Auth.friendly(detail);
+    el.style.display = 'block';
   }
 
   // Fires alongside (not instead of) popup.js's own save handler — never
@@ -88,6 +109,25 @@
     const { cvText } = await chrome.storage.local.get('cvText');
     if (cvText) _v2EnsureSemanticMap(cvText);
   })();
+
+  // Third trigger: a key arriving. The Save listener above runs in PARALLEL with
+  // popup.js's own handler, which spends a round trip verifying the key before
+  // writing it — so on the very common "enter a key and upload a CV in one
+  // click" the listener reads storage before the key is there and skips. Waiting
+  // on the write itself is race-free, where a delay would only be a guess.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    const keyArrived = ['licenseKey', 'anthropicKey']
+      .some(k => changes[k] && changes[k].newValue && !changes[k].oldValue);
+    if (!keyArrived) return;
+    (async () => {
+      const { cvText } = await chrome.storage.local.get('cvText');
+      if (cvText) {
+        console.log('[JMA:V2] key configured — running the semantic map that was skipped');
+        _v2EnsureSemanticMap(cvText);
+      }
+    })();
+  });
 
   document.addEventListener('click', (e) => {
     if (e[BYPASS]) return; // Classic handoff — V1's listener takes it

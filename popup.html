@@ -557,6 +557,28 @@
     color: var(--success); font-size: 13px; margin-bottom: 12px; display: none;
   }
 
+  /* ── Key options (subscription vs. personal Claude key) ──── */
+  .key-option {
+    background: var(--bg-card); border: 1.5px solid var(--border);
+    border-radius: var(--border-radius); padding: 16px;
+    margin-bottom: 12px; text-align: right; box-shadow: var(--shadow-sm);
+  }
+  .key-option.is-active { border-color: var(--success); }
+  .key-option-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;
+  }
+  .key-option-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 12px; }
+  .key-option .license-input { margin-bottom: 8px; font-size: 13px; letter-spacing: 0; }
+  .key-option-link { font-size: 11px; color: var(--accent); text-decoration: none; }
+  .key-option-link:hover { text-decoration: underline; }
+  .key-option-status { font-size: 11px; color: var(--text-dim); min-height: 15px; margin-top: 6px; line-height: 1.5; }
+  .key-or {
+    display: flex; align-items: center; gap: 10px;
+    color: var(--text-dim); font-size: 11px; margin: 4px 0 12px;
+  }
+  .key-or::before, .key-or::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
   /* ── Ready screen ────────────────────────────────────────── */
   .ready-wrap { padding: 32px 24px; text-align: center; }
   .ready-icon { font-size: 56px; margin-bottom: 16px; }
@@ -755,19 +777,53 @@
   </div>
 </div>
 
-<!-- LICENSE SCREEN -->
+<!-- KEY SCREEN — shown on demand when an AI action has no key to run on -->
 <div class="screen" id="screen-license">
   <div class="license-wrap">
     <div class="license-icon">🔑</div>
-    <div class="license-title">הפעלת Job Match AI</div>
-    <div class="license-subtitle">הזן את מפתח הרישיון שקיבלת בעת הרכישה</div>
-    <input type="text" class="license-input" id="licenseKeyInput" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+    <div class="license-title">חיבור ליכולות ה-AI</div>
+    <div class="license-subtitle" id="keysSubtitle">
+      בחר/י איך לשלם על קריאות ה-AI — מנוי, או מפתח Claude API אישי.
+    </div>
+
     <div class="license-error" id="licenseError"></div>
     <div class="license-success" id="licenseSuccess"></div>
-    <button class="btn btn-primary" id="btnActivateLicense">🔓 הפעל רישיון</button>
-    <div style="margin-top:10px;font-size:11px;color:var(--text-dim)">
-      אין לך עדיין רישיון? <a href="https://expertdevai.gumroad.com/l/job-match-ai" target="_blank" id="linkBuyLicense" style="color:var(--accent);text-decoration:none">רכוש כאן ↗</a>
+
+    <div class="key-option" id="keyOptionLicense">
+      <div class="key-option-head">🎫 מפתח מנוי</div>
+      <div class="key-option-desc">
+        כל קריאות ה-AI רצות על המפתח שבשרת שלנו — אין צורך בחשבון Anthropic
+        וללא חיוב נוסף. כולל גם את מאגר המגייסים, הנקודות וההפניות.
+      </div>
+      <input type="text" class="license-input" id="licenseKeyInput"
+        placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+      <button class="btn btn-primary" id="btnActivateLicense">🔓 הפעל מנוי</button>
+      <div class="key-option-status" id="keysLicenseStatus"></div>
+      <div style="margin-top:8px">
+        <a href="https://expertdevai.gumroad.com/l/job-match-ai" target="_blank"
+           id="linkBuyLicense" class="key-option-link">אין לך מנוי? לרכישה ↗</a>
+      </div>
     </div>
+
+    <div class="key-or">או</div>
+
+    <div class="key-option" id="keyOptionAnthropic">
+      <div class="key-option-head">🤖 מפתח Claude API אישי</div>
+      <div class="key-option-desc">
+        קריאות ה-AI ירוצו על המפתח שלך ויחויבו מהקרדיטים בחשבון ה-Anthropic שלך.
+        המפתח נשמר רק בדפדפן שלך ונשלח לשרת רק כדי לבצע את הקריאה.
+      </div>
+      <input type="password" class="license-input" id="anthropicKeyInput"
+        placeholder="sk-ant-..." dir="ltr" autocomplete="off" spellcheck="false">
+      <button class="btn btn-primary" id="btnSaveAnthropicKey">💾 שמור ובדוק מפתח</button>
+      <div class="key-option-status" id="keysAnthropicStatus"></div>
+      <div style="margin-top:8px">
+        <a href="https://console.anthropic.com/settings/keys" target="_blank"
+           class="key-option-link">איך מוציאים מפתח Claude API? ↗</a>
+      </div>
+    </div>
+
+    <button class="btn btn-secondary" id="btnKeysBack" style="margin-top:6px">← חזור</button>
   </div>
 </div>
 
@@ -1135,19 +1191,47 @@
     <div class="settings-label">📄 קורות חיים</div>
     <div class="upload-area" id="uploadArea">
       <div class="upload-icon">📄</div>
-      <div class="upload-text" id="uploadText">לחץ או גרור קובץ קורות חיים</div>
+      <div class="upload-text" id="uploadText">לחץ או גרור קובץ קורות חיים - קובץ WORD</div>
       <div class="upload-hint">.docx, .pdf, .txt נתמכים</div>
     </div>
     <input type="file" id="cvFileInput" accept=".docx,.pdf,.txt,.doc">
     <div class="success-msg" id="uploadSuccess"></div>
+    <div id="cvProfileStatus" class="key-option-status" style="margin-top:8px"></div>
   </div>
 
   <div class="settings-section" style="margin-top:14px">
-    <div class="settings-label">🔑 מפתח רישיון</div>
-    <input type="text" class="license-input" id="licenseKeySettings"
-      placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" autocomplete="off" spellcheck="false"
-      style="width:100%;box-sizing:border-box;margin-bottom:6px">
-    <div id="licenseSettingsStatus" style="font-size:11px;color:#888;min-height:16px"></div>
+    <div class="settings-label">🔑 מפתחות AI</div>
+    <div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">
+      מספיק אחד מהשניים. אם מוגדרים שניהם — המנוי קודם, והמפתח האישי משמש כגיבוי.
+    </div>
+
+    <div class="key-option" id="settingsOptionLicense">
+      <div class="key-option-head">🎫 מפתח מנוי</div>
+      <input type="text" class="license-input" id="licenseKeySettings"
+        placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" autocomplete="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box">
+      <div id="licenseSettingsStatus" class="key-option-status"></div>
+      <div style="margin-top:6px;display:flex;gap:12px">
+        <a href="https://expertdevai.gumroad.com/l/job-match-ai" target="_blank"
+           class="key-option-link">רכישת מנוי ↗</a>
+        <a href="#" id="btnClearLicenseKey" class="key-option-link"
+           style="color:var(--text-dim)">מחק מפתח</a>
+      </div>
+    </div>
+
+    <div class="key-option" id="settingsOptionAnthropic">
+      <div class="key-option-head">🤖 מפתח Claude API אישי</div>
+      <input type="password" class="license-input" id="anthropicKeySettings"
+        placeholder="sk-ant-..." dir="ltr" autocomplete="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box">
+      <div id="anthropicSettingsStatus" class="key-option-status"></div>
+      <div style="margin-top:6px;display:flex;gap:12px">
+        <a href="https://console.anthropic.com/settings/keys" target="_blank"
+           class="key-option-link">איך מוציאים מפתח Claude API? ↗</a>
+        <a href="#" id="btnClearAnthropicKey" class="key-option-link"
+           style="color:var(--text-dim)">מחק מפתח</a>
+      </div>
+    </div>
   </div>
 <!-- שדה אישור שיתוף משרות לקבלת גישה מותאמת אישית -->
   <div class="settings-section" style="margin-top:14px">
@@ -1158,7 +1242,7 @@
     </label>
   </div>
 
-  <div class="settings-section" id="premiumConstraintsSection" style="margin-top:14px;display:none">
+  <div class="settings-section" id="premiumConstraintsSection" style="margin-top:14px">
     <div class="settings-label">✏️ הוראות אישיות לקורות חיים</div>
     <div class="constraint-checks">
       <label class="constraint-check-row">
@@ -1195,6 +1279,7 @@
   <button class="btn btn-secondary" id="btnSettingsBack">← חזור</button>
 </div>
 
+<script src="jma-auth.js"></script>
 <script src="tracker.js"></script>
 <script src="docx-builder.js"></script>
 <!-- matcher.js defines window.JMA_Matcher — pure, no DOM/chrome deps. Loaded

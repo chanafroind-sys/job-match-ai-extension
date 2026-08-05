@@ -574,13 +574,18 @@
   //   'ok'         → blocks present, render them
   //   'unmapped'   → 200 but no DB row yet → user must re-save CV once
   //   'missing'    → 404 → cv-blocks endpoint not deployed yet → deploy needed
+  //   'nokey'      → no AI key configured, so no map was ever computed
   //   'error'      → any other failure (network, 5xx, auth)
   async function _v2GetCvBlocks() {
-    const stored = await chrome.storage.local.get(['licenseKey']);
+    // The map is keyed to whichever key identifies the user, so with no key
+    // there is no row to read — answering locally beats a guaranteed 401, and
+    // lets the fallback explain the real reason instead of blaming the server.
+    if (!(await JMA_Auth.hasKey())) return { status: 'nokey', blocks: null };
+
     let resp;
     try {
       resp = await fetch(`${BACKEND}/api/v2/cv-blocks`, {
-        headers: { 'X-License-Key': stored.licenseKey || '' },
+        headers: await JMA_Auth.headers(),
       });
     } catch (err) {
       console.warn('[JMA:V2] cv-blocks network error:', err);
@@ -676,6 +681,7 @@
       const reason = {
         missing:  'השרת עדיין לא עודכן — המיפוי החכם (כפתורי + לפי תפקיד) יופעל אחרי deploy לשרת ושמירה מחדש של הקו"ח.',
         unmapped: 'המיפוי החכם עדיין לא חושב — פתחי ⚙️ הגדרות ושמרי מחדש את הקו"ח (פעם אחת) כדי להפעיל כפתורי + לפי תפקיד.',
+        nokey:    'המיפוי החכם דורש מפתח AI — פתחי ⚙️ הגדרות והזיני מפתח מנוי או מפתח Claude API אישי, ואז שמרי מחדש את הקו"ח. בינתיים מציגים את הקו"ח כמו שהוא.',
         error:    'לא הצלחנו לקבל את מבנה הקו"ח מהשרת (ייתכן שהוא מתעורר) — מציגים את הקו"ח, נסי שוב מאוחר יותר להפעלת הכפתורים.',
       }[status] || 'מציגים את הקו"ח; המיפוי החכם אינו זמין כרגע.';
       _v2RenderRawCvFallback(paper, cvText, reason);
@@ -828,13 +834,23 @@
   }
 
   async function _v2CallTailor(path, payload) {
-    const { licenseKey } = await chrome.storage.local.get('licenseKey');
     const resp = await fetch(`${BACKEND}/api/v2/${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey || '' },
+      headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) {
+      // Key problems arrive with a message the user can act on. Carry it through
+      // instead of "HTTP 401", and open the key screen where the fix lives —
+      // this panel is injected into the page and has no settings UI of its own.
+      let detail = '';
+      try { detail = (await resp.json()).detail || ''; } catch {}
+      if (JMA_Auth.needsKeySetup(detail)) {
+        _v2SetHint(JMA_Auth.friendly(detail));
+        chrome.runtime.sendMessage({ action: 'openKeySetup' });
+      }
+      throw new Error(detail || `HTTP ${resp.status}`);
+    }
     return resp.json();
   }
 

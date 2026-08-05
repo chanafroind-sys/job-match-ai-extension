@@ -228,6 +228,58 @@ function showScreen(id) {
   document.getElementById('screen-' + id).classList.add('active');
 }
 
+// ── Keys ──────────────────────────────────────────────────────────────────────
+// A user runs AI either on a Gumroad subscription (server's Claude key) or on a
+// personal Claude key (their credits). Nothing is asked for at startup; the key
+// screen appears the moment an action actually needs one, and lives permanently
+// in settings.
+
+// Where the user should land after finishing the key screen.
+let _keysReturnScreen = 'ready';
+
+/** Fills both cards with the current state, then shows the screen. */
+async function showKeysScreen(message, returnScreen) {
+  const keys = await JMA_Auth.getKeys();
+  _keysReturnScreen = returnScreen || 'ready';
+
+  const err = document.getElementById('licenseError');
+  const ok = document.getElementById('licenseSuccess');
+  err.style.display = message ? 'block' : 'none';
+  err.textContent = message ? JMA_Auth.friendly(message) : '';
+  ok.style.display = 'none';
+
+  document.getElementById('licenseKeyInput').value = '';
+  document.getElementById('anthropicKeyInput').value = '';
+  document.getElementById('keysLicenseStatus').textContent =
+    keys.licenseKey ? `✅ מוגדר: ${_maskLicense(keys.licenseKey)}` : '';
+  document.getElementById('keysAnthropicStatus').textContent =
+    keys.anthropicKey ? `✅ מוגדר: ${_maskAnthropic(keys.anthropicKey)}` : '';
+  document.getElementById('keyOptionLicense')
+    .classList.toggle('is-active', keys.mode === 'license');
+  document.getElementById('keyOptionAnthropic')
+    .classList.toggle('is-active', keys.mode === 'byok');
+
+  showScreen('license');
+}
+
+function _maskLicense(k) {
+  return k.length > 8 ? `${k.slice(0, 4)}-****-****-${k.slice(-4)}` : '****';
+}
+
+function _maskAnthropic(k) {
+  return `sk-ant-****${k.slice(-4)}`;
+}
+
+/**
+ * Gate an AI action. Returns false (and opens the key screen) when there's no
+ * key to run it on, so the caller can simply bail.
+ */
+async function requireKeys(returnScreen) {
+  if (await JMA_Auth.hasKey()) return true;
+  await showKeysScreen(JMA_Auth.noKeyError(), returnScreen);
+  return false;
+}
+
 // Score ring animation
 function animateScore(score, color) {
   const circle = document.getElementById('scoreCircle');
@@ -394,33 +446,91 @@ const CONSTRAINT_MAP = {
 // Called once after a new CV is saved. Sends the text to the backend, which uses
 // Claude to produce a structured jma_user_profile JSON, then stores it locally.
 // The FAB matcher reads jma_user_profile instead of raw cvText, giving accurate scoring.
+// The CV profile is what the FAB scores every job against, so it must exist the
+// moment a CV is saved — with or without a key. matcher.js builds one locally
+// for free (marked _isFallback); the AI extraction is an upgrade on top of it,
+// not a prerequisite. Returns { ok, error, local }.
 async function _extractAndSaveProfile(cvText) {
-  const { licenseKey } = await chrome.storage.local.get(['licenseKey']);
-  if (!licenseKey || !cvText) return false;
+  if (!cvText) return { ok: false, error: '', local: false };
 
+  // Step 1 — always, offline, instant. Without this a keyless user saves a CV
+  // and gets no FAB at all, because there is nothing to compare a job to.
+  let local = false;
+  try {
+    const stub = window.JMA_Matcher?.profileFromCvText(cvText);
+    if (stub) {
+      await chrome.storage.local.set({ jma_user_profile: stub });
+      local = true;
+      console.log('[JMA] local CV profile saved (no AI needed)');
+    }
+  } catch (e) {
+    console.warn('[JMA] local profile build failed:', e.message);
+  }
+
+  // Step 2 — refine with Claude. No key check: this is the one AI call the
+  // server funds for everyone, because its output is what every later job match
+  // is scored against. If it fails, the local profile from step 1 still stands.
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
   try {
     const resp = await fetch(`${BACKEND}/api/extract-profile`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
+      headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ cvText }),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) {
+      // Keep the server's message: "HTTP 402" tells the user nothing, while the
+      // detail says exactly which key failed and what to do about it.
+      let detail = '';
+      try { detail = (await resp.json()).detail || ''; } catch {}
+      throw new Error(detail || `HTTP ${resp.status}`);
+    }
     const data = await resp.json();
-    if (!data.profile) throw new Error('empty profile');
+    if (!data.profile) throw new Error('לא הצלחנו לנתח את קורות החיים. נסי שוב.');
     await chrome.storage.local.set({ jma_user_profile: data.profile });
     console.log('[JMA] profile extracted and saved', data.profile);
-    return true;
+    return { ok: true, error: '', local: false };
   } catch (e) {
-    console.warn('[JMA] profile extraction failed:', e.message);
-    return false;
+    // The local profile from step 1 is still in place, so the extension stays
+    // usable — this is a downgrade in accuracy, not a broken save.
+    console.warn('[JMA] AI profile extraction failed, keeping local profile:', e.message);
+    return { ok: local, error: e.message, local };
   }
+}
+
+/**
+ * Retry the AI analysis for a CV still carrying the rough local profile — the
+ * server was asleep, offline, or rate-limited when it was saved. Fire-and-forget
+ * on popup open, so a one-off failure heals itself instead of quietly degrading
+ * every match score from then on.
+ */
+async function _upgradeLocalProfileIfPossible() {
+  const { jma_user_profile: profile, cvText } = await chrome.storage.local.get(['jma_user_profile', 'cvText']);
+  if (!cvText || !profile || !profile._isFallback) return;
+  console.log('[JMA] retrying AI CV analysis for a locally-analysed profile…');
+  await _extractAndSaveProfile(cvText);
 }
 
 // Settings screen
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'isPremium', 'userConstraints', 'shareJobsConsent', 'jma_is_admin']);
+  const data = await chrome.storage.local.get(['cvText', 'cvName', 'licenseKey', 'licenseValid', 'anthropicKey', 'isPremium', 'userConstraints', 'shareJobsConsent', 'jma_is_admin', 'jma_user_profile']);
   document.getElementById('chkShareJobsData').checked = !!data.shareJobsConsent;
+
+  // Which analysis the saved CV actually got. Without this the difference is
+  // invisible — the local one works silently, so a user would never learn that
+  // a key buys them a materially better one.
+  const profileEl = document.getElementById('cvProfileStatus');
+  if (!data.cvText) {
+    profileEl.textContent = '';
+  } else if (data.jma_user_profile && !data.jma_user_profile._isFallback) {
+    profileEl.textContent = '🤖 נותח ב-AI — ההתאמות והציונים מדויקים';
+    profileEl.style.color = '#4caf50';
+  } else {
+    // Not a key problem — the CV analysis runs for everyone. Reaching here means
+    // the server was unreachable when the CV was saved; it retries on open.
+    profileEl.textContent = '📊 ניתוח מקומי בסיסי בלבד — ניתוח ה-AI לא הצליח (ייתכן שהשרת ישן). ' +
+                            'נסי לשמור שוב את הקו"ח כדי לשפר את דיוק הציונים.';
+    profileEl.style.color = 'var(--text-muted)';
+  }
   document.getElementById('adminImportSection').style.display = data.jma_is_admin ? 'block' : 'none';
   if (data.jma_is_admin) loadAdminStatsSummary();
   if (data.cvName) {
@@ -431,27 +541,42 @@ async function loadSettings() {
   const keyInput = document.getElementById('licenseKeySettings');
   keyInput.value = '';
   if (data.licenseKey) {
-    const k = data.licenseKey;
-    const masked = k.length > 8 ? k.slice(0, 4) + '-****-****-' + k.slice(-4) : '****';
-    statusEl.textContent = `נוכחי: ${masked}${data.isPremium ? ' ⭐ פרימיום' : ' (בסיסי)'}`;
+    statusEl.textContent = `נוכחי: ${_maskLicense(data.licenseKey)}${data.isPremium ? ' ⭐ פרימיום' : ' (בסיסי)'}`;
     statusEl.style.color = data.licenseValid ? '#4caf50' : '#e53935';
   } else {
-    statusEl.textContent = 'לא הוגדר מפתח רישיון';
-    statusEl.style.color = '#e53935';
+    statusEl.textContent = 'לא הוגדר מפתח מנוי';
+    statusEl.style.color = 'var(--text-dim)';
   }
+
+  const anthStatusEl = document.getElementById('anthropicSettingsStatus');
+  const anthInput = document.getElementById('anthropicKeySettings');
+  anthInput.value = '';
+  if (data.anthropicKey) {
+    anthStatusEl.textContent = data.licenseKey
+      ? `נוכחי: ${_maskAnthropic(data.anthropicKey)} — משמש כגיבוי כשהמנוי אינו זמין`
+      : `נוכחי: ${_maskAnthropic(data.anthropicKey)} — קריאות ה-AI מחויבות מהחשבון שלך`;
+    anthStatusEl.style.color = '#4caf50';
+  } else {
+    anthStatusEl.textContent = 'לא הוגדר מפתח Claude API אישי';
+    anthStatusEl.style.color = 'var(--text-dim)';
+  }
+  document.getElementById('settingsOptionLicense')
+    .classList.toggle('is-active', !!data.licenseKey);
+  document.getElementById('settingsOptionAnthropic')
+    .classList.toggle('is-active', !data.licenseKey && !!data.anthropicKey);
+
+  // Always visible. These are local writing preferences, not a paid feature —
+  // hiding them behind a configured key made them vanish for anyone who hadn't
+  // entered one yet, which is now a normal state rather than an impossible one.
   const constraintsSection = document.getElementById('premiumConstraintsSection');
   const constraintsInput = document.getElementById('userConstraintsInput');
-  if (data.licenseKey) {
-    constraintsSection.style.display = 'block';
-    const text = data.userConstraints || '';
-    constraintsInput.value = text;
-    // Derive checkbox states from what sentences are present in the textarea
-    Object.entries(CONSTRAINT_MAP).forEach(([id, sentence]) => {
-      document.getElementById(id).checked = text.includes(sentence);
-    });
-  } else {
-    constraintsSection.style.display = 'none';
-  }
+  constraintsSection.style.display = 'block';
+  const text = data.userConstraints || '';
+  constraintsInput.value = text;
+  // Derive checkbox states from what sentences are present in the textarea
+  Object.entries(CONSTRAINT_MAP).forEach(([id, sentence]) => {
+    document.getElementById(id).checked = text.includes(sentence);
+  });
 }
 
 document.getElementById('uploadArea').addEventListener('click', () => {
@@ -485,6 +610,21 @@ function showSettingsError(msg) {
   el.textContent = msg;
   el.style.display = 'block';
 }
+
+document.getElementById('btnClearLicenseKey').addEventListener('click', async (e) => {
+  e.preventDefault();
+  if (!confirm('למחוק את מפתח המנוי? קריאות ה-AI יעברו למפתח ה-Claude האישי אם הוגדר.')) return;
+  await chrome.storage.local.remove(['licenseKey', 'licenseValid', 'isPremium', 'jma_is_premium']);
+  state.licenseKey = '';
+  await loadSettings();
+});
+
+document.getElementById('btnClearAnthropicKey').addEventListener('click', async (e) => {
+  e.preventDefault();
+  if (!confirm('למחוק את מפתח ה-Claude API האישי?')) return;
+  await chrome.storage.local.remove(['anthropicKey', 'anthropicKeyValid']);
+  await loadSettings();
+});
 
 // Two-way sync: checkbox ↔ textarea
 Object.entries(CONSTRAINT_MAP).forEach(([id, sentence]) => {
@@ -526,54 +666,81 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
     toSave.userConstraints = constraintsInput.value.trim();
   }
 
+  // Both key fields are verified before saving — an unverified key sitting in
+  // storage would only surface as a failure in the middle of a real action.
   const newKey = document.getElementById('licenseKeySettings').value.trim();
   if (newKey) {
-    btn.textContent = '⏳ מאמת מפתח...';
+    btn.textContent = '⏳ מאמת מפתח מנוי...';
     statusEl.textContent = 'מאמת...';
     statusEl.style.color = '#888';
 
-    const res = await chrome.runtime.sendMessage({ action: 'verifyLicense', licenseKey: newKey });
+    const error = await saveLicenseKey(newKey);
 
-    if (res.error) {
+    if (error) {
       btn.textContent = '💾 שמור הגדרות';
       btn.disabled = false;
-      statusEl.textContent = '❌ ' + res.error;
+      statusEl.textContent = '❌ ' + JMA_Auth.friendly(error);
       statusEl.style.color = '#e53935';
-      errEl.textContent = res.error;
+      errEl.textContent = JMA_Auth.friendly(error);
       errEl.style.display = 'block';
       return;
     }
 
-    toSave.licenseKey = newKey;
-    toSave.licenseValid = true;
-    toSave.isPremium = !!(res.result && res.result.isPremium);
-    toSave.jma_is_premium = toSave.isPremium;
-    state.licenseKey = newKey;
-    _applyUpgradeUrl(res.result);
-    statusEl.textContent = `✅ אומת: ${newKey.slice(0, 4)}-****-****-${newKey.slice(-4)}${toSave.isPremium ? ' ⭐ פרימיום' : ' (בסיסי)'}`;
+    statusEl.textContent = `✅ אומת: ${_maskLicense(newKey)}`;
     statusEl.style.color = '#4caf50';
     document.getElementById('licenseKeySettings').value = '';
   }
 
-  if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
+  const anthStatusEl = document.getElementById('anthropicSettingsStatus');
+  const newAnthKey = document.getElementById('anthropicKeySettings').value.trim();
+  if (newAnthKey) {
+    btn.textContent = '⏳ בודק מפתח Claude...';
+    anthStatusEl.textContent = 'בודק מול Anthropic...';
+    anthStatusEl.style.color = '#888';
 
-  // If a new CV was uploaded, wait for profile extraction before declaring success.
-  let extractFailed = false;
-  if (toSave.cvText) {
-    btn.textContent = '🔍 מנתח קורות חיים...';
-    const ok = await _extractAndSaveProfile(toSave.cvText);
-    extractFailed = !ok;
+    const error = await saveAnthropicKey(newAnthKey);
+
+    if (error) {
+      btn.textContent = '💾 שמור הגדרות';
+      btn.disabled = false;
+      anthStatusEl.textContent = '❌ ' + JMA_Auth.friendly(error);
+      anthStatusEl.style.color = '#e53935';
+      errEl.textContent = JMA_Auth.friendly(error);
+      errEl.style.display = 'block';
+      return;
+    }
+
+    anthStatusEl.textContent = `✅ אומת: ${_maskAnthropic(newAnthKey)}`;
+    anthStatusEl.style.color = '#4caf50';
+    document.getElementById('anthropicKeySettings').value = '';
   }
 
-  if (extractFailed) {
+  if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
+
+  // If a new CV was uploaded, analyse it before declaring success. This never
+  // asks for a key: the local analysis always runs, and the AI one is a bonus
+  // when a key happens to be configured.
+  let extractResult = { ok: true, error: '', local: false };
+  if (toSave.cvText) {
+    btn.textContent = '🔍 מנתח קורות חיים...';
+    extractResult = await _extractAndSaveProfile(toSave.cvText);
+  }
+
+  if (!extractResult.ok) {
     btn.textContent = '⚠️ נשמר, אך ניתוח הקו"ח נכשל';
+    if (extractResult.error) showSettingsError(JMA_Auth.friendly(extractResult.error));
     setTimeout(async () => {
       btn.textContent = '💾 שמור הגדרות';
       btn.disabled = false;
       await loadSettings();
     }, 3000);
   } else {
-    btn.textContent = '✅ שינויים נשמרו';
+    // No race with the key fields above: they are saved (and verified) earlier
+    // in this same handler, so _extractAndSaveProfile already saw the new key
+    // and ran the AI analysis. `local` here genuinely means "no key at all".
+    // Saying which analysis ran matters: the local one is rougher, and the user
+    // should know a key would sharpen it — without being blocked on entering one.
+    btn.textContent = extractResult.local ? '✅ נשמר (ניתוח מקומי)' : '✅ שינויים נשמרו';
     setTimeout(async () => {
       btn.textContent = '💾 שמור הגדרות';
       btn.disabled = false;
@@ -675,7 +842,7 @@ document.getElementById('btnSubmitRecruiter').addEventListener('click', async ()
   btn.textContent = originalText;
 
   if (resp?.error) {
-    errEl.textContent = resp.error;
+    errEl.textContent = JMA_Auth.friendly(resp.error);
     errEl.style.display = 'block';
     return;
   }
@@ -740,7 +907,7 @@ document.getElementById('btnSubmitEmployee').addEventListener('click', async () 
   btn.textContent = originalText;
 
   if (resp?.error) {
-    errEl.textContent = resp.error;
+    errEl.textContent = JMA_Auth.friendly(resp.error);
     errEl.style.display = 'block';
     return;
   }
@@ -774,10 +941,16 @@ document.getElementById('btnGoSettings').addEventListener('click', () => {
 });
 
 function showMainError(msg) {
+  // A missing or rejected key isn't something to read and dismiss — the fix is
+  // a form, so send the user straight to it with the reason attached.
+  if (JMA_Auth.needsKeySetup(msg)) {
+    showKeysScreen(msg, 'main');
+    return;
+  }
   hideMainLoading();
   document.getElementById('mainLoading').style.display = 'none';
   document.getElementById('mainResult').style.display = 'none';
-  document.getElementById('mainErrorMsg').textContent = msg;
+  document.getElementById('mainErrorMsg').textContent = JMA_Auth.friendly(msg);
   document.getElementById('mainError').style.display = 'block';
 }
 
@@ -925,7 +1098,7 @@ document.getElementById('btnConfirmReferral').addEventListener('click', async ()
   if (resp?.error) {
     btn.disabled = false;
     btn.textContent = '🤝 בקש/י הפניה';
-    alert(resp.error);
+    alert(JMA_Auth.friendly(resp.error));
     return;
   }
 
@@ -989,7 +1162,7 @@ document.getElementById('btnSendToRecruiter').addEventListener('click', async ()
   document.getElementById('rlLoading').style.display = 'none';
 
   if (resp?.error) {
-    document.getElementById('rlError').textContent = resp.error;
+    document.getElementById('rlError').textContent = JMA_Auth.friendly(resp.error);
     document.getElementById('rlError').style.display = 'block';
     return;
   }
@@ -1038,7 +1211,7 @@ document.getElementById('btnRlConfirm').addEventListener('click', async () => {
   btn.textContent = '✅ פתח מייל ב-Gmail ושלח/י';
 
   if (resp?.error) {
-    errEl.textContent = resp.error;
+    errEl.textContent = JMA_Auth.friendly(resp.error);
     errEl.style.display = 'block';
     if (resp.error.includes('נקודות')) {
       const goEarn = document.createElement('button');
@@ -1131,10 +1304,12 @@ async function startFlow() {
   showMainLoading('טוען...');
 
   // ── 1. Load credentials ───────────────────────────────────────────────────
+  // 'main' as the return screen means finishing the key form resumes this
+  // analysis, rather than dropping the user back at the start.
+  if (!(await requireKeys('main'))) return;
   const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'cvHyperlinkUrls', 'userConstraints', 'enableTracking']);
-  if (!stored.licenseKey) { showMainError('לא נמצא רישיון פעיל. חזרי למסך הראשי.'); return; }
   if (!stored.cvText)     { showMainError('עוד לא הועלו קורות חיים. לחצי על ⚙️ כדי להוסיף.'); return; }
-  state.licenseKey      = stored.licenseKey;
+  state.licenseKey      = stored.licenseKey || '';
   state.cvText          = stored.cvText;
   state.cvHyperlinkUrls = stored.cvHyperlinkUrls || [];
   state.userConstraints = stored.userConstraints || '';
@@ -1495,6 +1670,11 @@ function _appendQuestionsOptions(container) {
 async function streamQuestionsIntoScreen() {
   console.log('[JMA:stream] streaming questions into screen...');
   console.log(state);
+  // Reached directly from a FAB click (the popup opens straight on the question
+  // stream, skipping startFlow), so the key check has to be here too — otherwise
+  // the user watches a loading skeleton just to be told the same thing by the
+  // server a round trip later.
+  if (!(await requireKeys('questions'))) return;
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
   state.questions      = [];
   state.questionScores = {};
@@ -1523,8 +1703,7 @@ async function streamQuestionsIntoScreen() {
   qArea.appendChild(loader);
 
   // ── SSE fetch ─────────────────────────────────────────────────────────────
-  const stored = await chrome.storage.local.get(['licenseKey', 'cvText']);
-  const licenseKey = stored.licenseKey || state.licenseKey || '';
+  const stored = await chrome.storage.local.get(['cvText']);
 
   // Per-question card registry: id → {card, textEl, idx}
   const _cards = {};
@@ -1568,7 +1747,7 @@ async function streamQuestionsIntoScreen() {
   try {
     const resp = await fetch(`${BACKEND}/api/stream-questions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
+      headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         cvText:    stored.cvText || state.cvText || '',
         jobText:   state.jobText || '',
@@ -1873,10 +2052,10 @@ async function startDeepAnalysisOverlay(answers) {
   armFailOpen();
 
   try {
-    const stored = await chrome.storage.local.get(['licenseKey', 'cvText', ANSWER_BANK_KEY]);
+    const stored = await chrome.storage.local.get(['cvText', ANSWER_BANK_KEY]);
     const resp = await fetch(`${BACKEND}/api/stream-deep-analysis`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-License-Key': stored.licenseKey || state.licenseKey || '' },
+      headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         cvText:  stored.cvText || state.cvText || '',
         jobText: state.jobText || '',
@@ -1978,8 +2157,7 @@ async function runStreamingAnalysis(answers) {
   document.getElementById('mainLoading').style.display = 'none';
   document.getElementById('mainError').style.display = 'none';
 
-  const stored = await chrome.storage.local.get(['licenseKey', 'cvText', 'userConstraints']);
-  const licenseKey = stored.licenseKey || state.licenseKey || '';
+  const stored = await chrome.storage.local.get(['cvText', 'userConstraints']);
   const BACKEND = 'https://job-match-ai-extension.onrender.com';
 
   const streamQuestions = document.getElementById('streamQuestions');
@@ -2002,7 +2180,7 @@ async function runStreamingAnalysis(answers) {
   try {
     const resp = await fetch(`${BACKEND}/api/analyze-stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-License-Key': licenseKey },
+      headers: await JMA_Auth.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         cvText: stored.cvText || state.cvText || '',
         jobText: state.jobText || '',
@@ -2891,10 +3069,31 @@ async function showTrackerScreen() {
   });
 }
 
-// ── License screen ────────────────────────────────────────────────────────────
-async function checkLicense() {
-  const data = await chrome.storage.local.get(['licenseKey', 'licenseValid']);
-  return !!(data.licenseKey && data.licenseValid);
+// ── Key screen ────────────────────────────────────────────────────────────────
+
+/** Verify a Gumroad key and store it. Returns an error string, or '' on success. */
+async function saveLicenseKey(key) {
+  const res = await chrome.runtime.sendMessage({ action: 'verifyLicense', licenseKey: key });
+  if (res.error) return res.error;
+
+  const isPrem = !!(res.result && res.result.isPremium);
+  state.licenseKey = key;
+  _applyUpgradeUrl(res.result);
+  await chrome.storage.local.set({
+    licenseKey: key,
+    licenseValid: true,
+    isPremium: isPrem,
+    jma_is_premium: isPrem,
+  });
+  return '';
+}
+
+/** Verify a personal Claude key against the API and store it. */
+async function saveAnthropicKey(key) {
+  const res = await chrome.runtime.sendMessage({ action: 'verifyAnthropicKey', anthropicKey: key });
+  if (res.error) return res.error;
+  await chrome.storage.local.set({ anthropicKey: key, anthropicKeyValid: true });
+  return '';
 }
 
 document.getElementById('btnActivateLicense').addEventListener('click', async () => {
@@ -2905,7 +3104,7 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
   okEl.style.display = 'none';
 
   if (!key) {
-    errEl.textContent = 'נא להזין מפתח רישיון.';
+    errEl.textContent = 'נא להזין מפתח מנוי.';
     errEl.style.display = 'block';
     return;
   }
@@ -2914,32 +3113,87 @@ document.getElementById('btnActivateLicense').addEventListener('click', async ()
   btn.textContent = '⏳ מאמת...';
   btn.disabled = true;
 
-  const res = await chrome.runtime.sendMessage({ action: 'verifyLicense', licenseKey: key });
+  const error = await saveLicenseKey(key);
 
-  btn.textContent = '🔓 הפעל רישיון';
+  btn.textContent = '🔓 הפעל מנוי';
   btn.disabled = false;
 
-  if (res.error) {
-    errEl.textContent = res.error;
+  if (error) {
+    errEl.textContent = JMA_Auth.friendly(error);
     errEl.style.display = 'block';
     return;
   }
 
-  state.licenseKey = key;
-  _applyUpgradeUrl(res.result);
-  const isPrem = !!(res.result && res.result.isPremium);
-  await chrome.storage.local.set({
-    licenseKey: key,
-    licenseValid: true,
-    isPremium: isPrem,
-    jma_is_premium: isPrem,
-  });
-  okEl.textContent = '✅ רישיון אומת בהצלחה! כעת הגדר את קורות החיים שלך ⬇️';
+  document.getElementById('licenseKeyInput').value = '';
+  document.getElementById('keysLicenseStatus').textContent = `✅ מוגדר: ${_maskLicense(key)}`;
+  document.getElementById('keyOptionLicense').classList.add('is-active');
+  okEl.textContent = '✅ המנוי הופעל! אפשר להמשיך.';
   okEl.style.display = 'block';
-  setTimeout(async () => {
+  setTimeout(() => _leaveKeysScreen(), 900);
+});
+
+document.getElementById('btnSaveAnthropicKey').addEventListener('click', async () => {
+  const key = document.getElementById('anthropicKeyInput').value.trim();
+  const errEl = document.getElementById('licenseError');
+  const okEl = document.getElementById('licenseSuccess');
+  errEl.style.display = 'none';
+  okEl.style.display = 'none';
+
+  if (!key) {
+    errEl.textContent = 'נא להזין מפתח Claude API.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btnSaveAnthropicKey');
+  btn.textContent = '⏳ בודק מול Anthropic...';
+  btn.disabled = true;
+
+  const error = await saveAnthropicKey(key);
+
+  btn.textContent = '💾 שמור ובדוק מפתח';
+  btn.disabled = false;
+
+  if (error) {
+    errEl.textContent = JMA_Auth.friendly(error);
+    errEl.style.display = 'block';
+    return;
+  }
+
+  document.getElementById('anthropicKeyInput').value = '';
+  document.getElementById('keysAnthropicStatus').textContent = `✅ מוגדר: ${_maskAnthropic(key)}`;
+  document.getElementById('keyOptionAnthropic').classList.add('is-active');
+  okEl.textContent = '✅ המפתח נבדק ונשמר. קריאות ה-AI יחויבו מחשבון ה-Anthropic שלך.';
+  okEl.style.display = 'block';
+  setTimeout(() => _leaveKeysScreen(), 900);
+});
+
+async function _leaveKeysScreen() {
+  const target = _keysReturnScreen || 'ready';
+  // A CV saved before this key existed carries only the rough local profile.
+  // Sharpen it in the background from whichever screen the user came in on —
+  // it no-ops unless the stored profile is actually a local fallback.
+  _upgradeLocalProfileIfPossible();
+  if (target === 'settings') {
     await loadSettings();
     showScreen('settings');
-  }, 900);
+    return;
+  }
+  if (target === 'premium') { await showPremiumScreen(); return; }
+  // Returning to 'main'/'questions' means an action was interrupted mid-flow —
+  // resume it now that there's a key, instead of dropping the user on a stale
+  // screen with no sign of what they were doing.
+  if (target === 'questions') { await streamQuestionsIntoScreen(); return; }
+  if (target === 'main') { startFlow(); return; }
+  await showReadyScreen();
+}
+
+document.getElementById('btnKeysBack').addEventListener('click', () => {
+  // Back always lands somewhere safe — it never re-runs the action that was
+  // interrupted, since the user chose not to supply a key.
+  if (_keysReturnScreen === 'settings') { loadSettings(); showScreen('settings'); return; }
+  if (_keysReturnScreen === 'premium') { showPremiumScreen(); return; }
+  showReadyScreen();
 });
 
 // ── Ready screen ───────────────────────────────────────────────────────────────
@@ -2958,7 +3212,12 @@ async function showReadyScreen() {
     document.getElementById('readyNoCv').style.display = 'flex';
   }
 
-  document.getElementById('readyWarning').textContent = '';
+  // Not a gate — the analysis button still works and asks for a key at the
+  // moment it needs one. This is just so a new user isn't surprised.
+  const keys = await JMA_Auth.getKeys();
+  document.getElementById('readyWarning').textContent = keys.hasAny
+    ? ''
+    : 'עוד לא הוגדר מפתח AI. אפשר להגדיר בהגדרות ⚙️, או להתחיל ולהגדיר בדרך.';
 
   showScreen('ready');
 }
@@ -3175,7 +3434,15 @@ document.getElementById('btnImportJobs').addEventListener('click', async () => {
     }
   } catch (e) {
     statusEl.textContent = '';
-    errEl.textContent = e.message || 'הייבוא נכשל. נסי שוב.';
+    if (JMA_Auth.needsKeySetup(e.message)) {
+      // Same rule as the analysis flow: a missing key is a form, not a notice.
+      btn.disabled = false;
+      btn.textContent = '📥 ייבוא והתאמת משרות רחבה';
+      clearTimeout(stageHint);
+      await showKeysScreen(e.message, 'premium');
+      return;
+    }
+    errEl.textContent = JMA_Auth.friendly(e.message) || 'הייבוא נכשל. נסי שוב.';
     errEl.style.display = 'block';
   } finally {
     clearTimeout(stageHint);
@@ -3197,7 +3464,7 @@ document.getElementById('btnDownloadImportXlsx').addEventListener('click', async
     if (resp.error) throw new Error(resp.error);
     await _downloadXlsx(resp.dataUrl);
   } catch (e) {
-    errEl.textContent = e.message || 'ההורדה נכשלה.';
+    errEl.textContent = JMA_Auth.friendly(e.message) || 'ההורדה נכשלה.';
     errEl.style.display = 'block';
   } finally {
     dlBtn.disabled = false;
@@ -3247,8 +3514,10 @@ document.getElementById('btnOpenAdminConsole').addEventListener('click', () => {
 });
 
 (async () => {
-  const licensed = await checkLicense();
-  if (!licensed) { showScreen('license'); return; }
+  // No key gate on open: keys are configured in settings, and any action that
+  // actually needs one asks for it at that moment (see requireKeys).
+  // popup.html#keys is how the in-page sidebar sends the user here.
+  if (location.hash === '#keys') { await showKeysScreen('', 'ready'); return; }
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -3270,6 +3539,7 @@ document.getElementById('btnOpenAdminConsole').addEventListener('click', () => {
     state.licenseKey = storageData.licenseKey || '';
     state.cvText = storageData.cvText || '';
     loadPointsBalance(); // fire-and-forget, doesn't block the rest of init
+    _upgradeLocalProfileIfPossible(); // same — no-ops unless a key was added later
 
     const saved = await loadJobState(tabUrl);
     console.log('[JMA:init] Raw data loaded from storage for this URL:', saved);
