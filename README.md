@@ -457,7 +457,7 @@ On a search-results page with multiple job cards, a separate floating button ope
 Each AI-identified gap becomes a weighted question that streams in token-by-token; answered via a single click (✅ / 📚 / ❌) or free text — either path recomputes a live score bar without a page reload.
 
 <p align="center">
-  <img src="assets/questions-flow.gif" alt="Competency question flow with live score updates" width="640" />
+  <img src="icons/questions-flow.gif" alt="Competency question flow with live score updates" width="640" />
 </p>
 
 <!-- TODO(visual — GIF, ~5s): Open the extension sidebar on a freshly scored job (so questions are
@@ -471,7 +471,7 @@ Each AI-identified gap becomes a weighted question that streams in token-by-toke
 While the candidate is choosing CV options, a separate floating panel streams a live Hebrew strengths/gaps analysis directly on the job page itself, color-coded as it completes.
 
 <p align="center">
-  <img src="assets/deep-analysis-overlay.png" alt="In-page deep analysis overlay panel" width="640" />
+  <img src="icons/deep-analysis-overlay.png" alt="In-page deep analysis overlay panel" width="640" />
 </p>
 
 <!-- TODO(visual — screenshot): Right after answering competency questions and clicking "Continue",
@@ -484,7 +484,7 @@ While the candidate is choosing CV options, a separate floating panel streams a 
 Generated CV edits are shown as an approvable diff, not a black-box overwrite — every AI-suggested change can be individually accepted or rejected before the document is built, with a model selector (Sonnet / Fable) and live monthly quota badges.
 
 <p align="center">
-  <img src="assets/diff-approve.png" alt="Line and word-level diff approval screen" width="640" />
+  <img src="icons/diff-approve.png" alt="Line and word-level diff approval screen" width="640" />
 </p>
 
 <!-- TODO(visual — screenshot): On the CV-result screen after generation, capture the diff/approve
