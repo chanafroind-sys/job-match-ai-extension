@@ -28,7 +28,7 @@
 </p> -->
 
 <p align="center">
-  <img src="assets/hero-demo.gif" alt="Job Match AI — end-to-end demo" width="800" />
+  <img src="icons/hero-demo.gif" alt="Job Match AI — end-to-end demo" width="800" />
 </p>
 
 <!-- TODO(visual — hero GIF):
@@ -429,7 +429,7 @@ A privacy-preserving "warm intro" system layered on top of the same points econo
 The floating action button appears only on pages that pass a bilingual job-signal heuristic (so it never shows up on non-job pages), fills instantly from the local matcher, then snaps to the AI-graded score once the backend responds. Hovering it after the initial reveal brings back the reason-bullet pills.
 
 <p align="center">
-  <img src="assets/fab-scoring.png" alt="FAB match score on a live job posting" width="640" />
+  <img src="icons/fab-scoring.png" alt="FAB match score on a live job posting" width="640" />
 </p>
 
 <!-- TODO(visual — screenshot): Capture a full-page screenshot of a real job listing (e.g. a LinkedIn
@@ -443,7 +443,7 @@ The floating action button appears only on pages that pass a bilingual job-signa
 On a search-results page with multiple job cards, a separate floating button opens a ranked sidebar scoring every visible listing against the candidate's CV in one batched call.
 
 <p align="center">
-  <img src="assets/ranking-sidebar.png" alt="Job-ranking sidebar on a search results page" width="640" />
+  <img src="icons/ranking-sidebar.png" alt="Job-ranking sidebar on a search results page" width="640" />
 </p>
 
 <!-- TODO(visual — screenshot): On a job search-results page with several visible listings (LinkedIn
