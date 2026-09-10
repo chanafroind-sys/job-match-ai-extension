@@ -11,13 +11,21 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Manifest--V3-Chrome-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Manifest V3" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Claude-Anthropic-D97706?style=flat-square&logo=anthropic&logoColor=white" alt="Anthropic" />
+  <img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="Postgres" />
+  <img src="https://img.shields.io/badge/Frontend-Vanilla--JS-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="No framework" />
+  <img src="https://img.shields.io/badge/License-Proprietary-lightgrey?style=flat-square" alt="License" />
+</p>
+<!-- <p align="center">
   <img alt="Manifest V3" src="https://img.shields.io/badge/Chrome_Extension-Manifest_V3-4285F4?logo=googlechrome&logoColor=white" />
   <img alt="FastAPI" src="https://img.shields.io/badge/Backend-FastAPI_%2F_Python_3.11-009688?logo=fastapi&logoColor=white" />
   <img alt="Anthropic" src="https://img.shields.io/badge/LLM-Claude_(Sonnet_%2F_Haiku_%2F_Fable)-D97757" />
   <img alt="Postgres" src="https://img.shields.io/badge/DB-PostgreSQL_%2B_SQLAlchemy_async-336791?logo=postgresql&logoColor=white" />
   <img alt="No framework" src="https://img.shields.io/badge/Frontend-Vanilla_JS%2C_zero_build_step-yellow" />
   <img alt="License" src="https://img.shields.io/badge/License-Proprietary-lightgrey" />
-</p>
+</p> -->
 
 <p align="center">
   <img src="assets/hero-demo.gif" alt="Job Match AI — end-to-end demo" width="800" />
