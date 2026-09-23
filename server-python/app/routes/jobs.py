@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
+from app.core.db import get_db
 
 from app.models.job_pool import DailyJobPool
 from app.services.job_aggregator import run_daily_aggregation
