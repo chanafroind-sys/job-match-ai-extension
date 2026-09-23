@@ -1673,6 +1673,9 @@ app.include_router(employees_router)
 from app.routes.admin import router as admin_router  # noqa: E402
 app.include_router(admin_router)
 
+from app.routes.jobs import router as jobs_router
+app.include_router(jobs_router)
+
 
 @app.get("/health")
 async def health():
