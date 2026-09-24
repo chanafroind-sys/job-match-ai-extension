@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.db import DATABASE_URL  # noqa: E402
 from app.core.models import Base  # noqa: E402
+import app.models.job_pool  # noqa: E402,F401  (registers daily_job_pool on Base.metadata)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
