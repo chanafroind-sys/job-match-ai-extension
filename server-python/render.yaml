@@ -19,6 +19,24 @@ services:
           name: job-match-ai-db
           property: connectionString
 
+  # Daily refresh of daily_job_pool (app/services/job_aggregator.py). Runs
+  # the sync directly against the DB — no dependency on the web service
+  # being awake. 03:00 UTC = 06:00 Israel (summer) / 05:00 (winter).
+  - type: cron
+    name: job-match-ai-job-pool-sync
+    runtime: python
+    rootDir: server-python
+    schedule: "0 3 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/run_job_pool_sync.py
+    envVars:
+      - key: RAPIDAPI_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: job-match-ai-db
+          property: connectionString
+
 databases:
   - name: job-match-ai-db
     plan: free
