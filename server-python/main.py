@@ -3487,3 +3487,7 @@ if __name__ == "__main__":
 # חיבור נתיבי V2 לשרת הקיים - גרסה מתוקנת
 from v2.router import router as v2_router
 app.include_router(v2_router)
+
+# Daily Matches (daily_matches/) — isolated module, mounted the same way as V2
+from daily_matches.router import router as daily_matches_router  # noqa: E402
+app.include_router(daily_matches_router)

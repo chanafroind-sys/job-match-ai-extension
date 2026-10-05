@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily Matches preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Side-panel-sized frame for the real daily/*.js and dm-styles.css.
+     Serve the repo root (python -m http.server 5500) and open
+     /.jma-test/preview/daily-preview.html?state=deck|ready|building|paywall|end|disabled -->
+<style>html { background: #DEE1E6; } body { width: 380px; height: 720px; margin: 16px auto; box-shadow: 0 6px 24px rgba(15,23,42,.18); }</style>
+</head>
+<body>
+<main id="dm-app"></main>
+<script>
+  // Cache-busted, in order: an edited file always shows up on reload.
+  (function () {
+    var v = '?t=' + Date.now();
+    var css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = '../../daily/dm-styles.css' + v;
+    document.head.appendChild(css);
+    var files = ['preview-stub.js', '../../jma-auth.js', '../../daily/dm-docx.js', '../../daily/dm-api.js',
+      '../../daily/dm-cv-library.js', '../../daily/dm-apply.js', '../../daily/dm-app.js'];
+    (function next(i) {
+      if (i >= files.length) return;
+      var s = document.createElement('script');
+      s.src = files[i] + v;
+      s.onload = function () { next(i + 1); };
+      document.body.appendChild(s);
+    })(0);
+  })();
+</script>
+</body>
+</html>

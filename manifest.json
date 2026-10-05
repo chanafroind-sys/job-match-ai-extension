@@ -10,8 +10,12 @@
     "tabs",
     "alarms",
     "notifications",
-    "downloads"
+    "downloads",
+    "sidePanel"
   ],
+  "side_panel": {
+    "default_path": "daily/daily.html"
+  },
   "host_permissions": [
     "https://job-match-ai-extension.onrender.com/*",
     "https://*.linkedin.com/*",
