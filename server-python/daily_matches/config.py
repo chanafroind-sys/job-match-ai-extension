@@ -120,6 +120,10 @@ def _to_il(now: datetime) -> datetime:
         return utc.astimezone(timezone(offset))
 
 
+def to_israel(now: datetime | None = None) -> datetime:
+    return _to_il(now or utcnow())
+
+
 def match_day(now: datetime | None = None) -> date:
     """The quota day: the calendar day in Israel."""
     return _to_il(now or utcnow()).date()

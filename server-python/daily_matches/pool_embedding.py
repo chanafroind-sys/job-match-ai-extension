@@ -17,8 +17,8 @@ from daily_matches.text_prep import job_embedding_text, sha256
 logger = logging.getLogger(__name__)
 
 
-async def embed_pool(session) -> dict:
-    since = config.utcnow() - config.ACTIVE_WINDOW
+async def embed_pool(session, now=None) -> dict:
+    since = (now or config.utcnow()) - config.ACTIVE_WINDOW
     jobs = (await session.execute(
         select(DailyJobPool.id, DailyJobPool.title, DailyJobPool.company, DailyJobPool.category,
                DailyJobPool.seniority, DailyJobPool.description)

@@ -392,7 +392,7 @@
     const text = root.JMA_Auth ? root.JMA_Auth.friendly(message) : message;
     if (code === 'LICENSE_REQUIRED') return refresh();
     if (code === 'DM_DISABLED') return setView('disabled');
-    if (code === 'DM_POOL_EMPTY' || code === 'DM_NOT_READY') {
+    if (code === 'DM_POOL_EMPTY' || code === 'DM_POOL_PREPARING' || code === 'DM_NOT_READY') {
       return showError({ title: 'המאגר של היום עדיין לא מוכן', message: text, retry: 'reload' });
     }
     return showError({ code, title: 'לא הצלחנו לבנות את החפיסה', message: text, retry: code === 'DM_NO_CV' ? null : 'build' });

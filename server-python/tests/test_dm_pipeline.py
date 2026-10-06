@@ -183,6 +183,13 @@ class TestRun:
         await _seed_and_embed(db)
         assert (await _collect(_cvs(BACKEND_CV), SUBSCRIBER))[-1]["type"] == "done"
 
+    async def test_synced_but_not_embedded_says_preparing(self, db, env):
+        seed_jobs(db, standard_pool())
+        await db.commit()
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert events[-1]["code"] == "DM_POOL_PREPARING" and "[jma:DM_POOL_PREPARING]" in events[-1]["message"]
+        assert (await db.execute(select(DmRun.status))).scalar() == "failed"  # retryable
+
     async def test_too_short_cv(self, db, env):
         await _seed_and_embed(db)
         events = await _collect(_cvs("Python"), SUBSCRIBER)

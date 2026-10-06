@@ -226,6 +226,9 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
                     DailyJobPool.id.in_([c.job_id for c in candidates])))
                 jobs = {j.id: j for j in rows.scalars()}
                 candidates = [c for c in candidates if c.job_id in jobs]
+            if not candidates and counts["active"] > counts["embedded"]:
+                # Jobs are in, vectors aren't yet: the status call starts that in the background.
+                raise DmError("DM_POOL_PREPARING", "מאגר המשרות של היום בהכנה. נסה/י שוב בעוד כמה דקות.", 503)
             if not candidates:
                 raise DmError("DM_POOL_EMPTY", "מאגר המשרות של היום עדיין לא מוכן. נסה/י שוב בעוד כמה שעות.", 503)
             emit({"type": "candidates", "pool": counts["active"], "embedded": counts["embedded"],

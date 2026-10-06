@@ -129,6 +129,7 @@ async def status(request: Request,
     last = None
     if access.subject and access.kind == "locked" and not today:
         last = await _latest_done_run(db, access.subject)
+    pool = await store.pool_counts(db, config.utcnow() - config.ACTIVE_WINDOW)
     return {
         "enabled": True,
         "entitlement": access.kind,
@@ -137,7 +138,7 @@ async def status(request: Request,
         "today": _run_json(today) if today else None,
         "last_run": _run_json(last) if last else None,
         "next_reset_at": config.next_reset().isoformat(),
-        "pool": await store.pool_counts(db, config.utcnow() - config.ACTIVE_WINDOW),
+        "pool": pool,
     }
 
 
