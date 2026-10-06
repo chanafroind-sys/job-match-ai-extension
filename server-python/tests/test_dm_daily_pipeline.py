@@ -139,7 +139,9 @@ async def test_script_prints_the_host_but_never_the_password(monkeypatch, capsys
     monkeypatch.setattr(script, "run_pipeline", skipped)
     assert await script.main([]) == 0
     out = capsys.readouterr().out
-    assert "ep-x.c-9.us-east-1.aws.neon.tech" in out and "s3cret" not in out and "neondb_owner" not in out
+    assert "database: ep-x...neon.tech" in out  # enough to tell Neon from Render
+    assert "s3cret" not in out and "neondb_owner" not in out and "us-east-1" not in out
+    assert script.describe_database("postgresql://u:p@dpg-abc123-a.oregon-postgres.render.com/db") == "dpg-ab...render.com"
 
     async def broken(session, **kw):
         raise PipelineError("table dm_job_embeddings is missing")

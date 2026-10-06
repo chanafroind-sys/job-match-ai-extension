@@ -31,14 +31,24 @@ from daily_matches.daily_pipeline import (  # noqa: E402
 from daily_matches.embeddings import EmbeddingUnavailable  # noqa: E402
 
 
+def describe_database(url: str) -> str:
+    """Enough to tell Neon from Render's Postgres in a run log, which is
+    public on a public GitHub repo: the provider domain and the host's first
+    characters. Never the credentials, never the full host."""
+    host = urlparse(url.replace("+asyncpg", "")).hostname
+    if not host:
+        return url.split(":", 1)[0]  # e.g. sqlite+aiosqlite in local runs
+    labels = host.split(".")
+    return f"{labels[0][:6]}...{'.'.join(labels[-2:])}"
+
+
 async def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true", help="run now, ignoring the hour and today's run")
     parser.add_argument("--no-verify", action="store_true", help="skip the cross-check against the web service")
     args = parser.parse_args(argv)
 
-    # The host only, never the credentials: enough to see which database this is.
-    print(f"[pipeline] database host: {urlparse(DATABASE_URL.replace('+asyncpg', '')).hostname}")
+    print(f"[pipeline] database: {describe_database(DATABASE_URL)}")
     try:
         async with async_session_factory() as session:
             report = await run_pipeline(session, force=args.force)

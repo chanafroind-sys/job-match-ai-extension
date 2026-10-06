@@ -1,0 +1,66 @@
+# Daily job pipeline: collect today's jobs into daily_job_pool, then embed
+# them for Daily Matches (server-python/scripts/run_daily_pipeline.py).
+#
+# GitHub schedules in UTC and Israel moves between UTC+3 and UTC+2, so this
+# fires at 03:00 and 04:00 UTC. The script acts only from 06:00 Israel time and
+# only once per Israel day, which makes it 06:00 all year. A failed run makes
+# GitHub email the repo owner.
+#
+# Needs two repository secrets (Settings → Secrets and variables → Actions):
+#   DATABASE_URL    the same value as the Render web service's DATABASE_URL
+#   VOYAGE_API_KEY  the same value as the Render web service's VOYAGE_API_KEY
+name: Daily job pipeline
+
+on:
+  schedule:
+    - cron: "0 3,4 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run now, whatever the hour (sync + embed)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Decided before installing anything, so the early winter firing costs seconds.
+      - name: Check the time in Israel
+        id: gate
+        run: |
+          echo "Israel time: $(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M')"
+          if [ "$(TZ=Asia/Jerusalem date +%-H)" -lt 6 ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "Before 06:00 in Israel: nothing to do."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          python-version: "3.11"  # server-python/runtime.txt; the pinned asyncpg and pandas need it
+          cache: pip
+          cache-dependency-path: server-python/requirements.txt
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        working-directory: server-python
+        run: pip install -r requirements.txt
+
+      - name: Collect and embed today's jobs
+        if: steps.gate.outputs.run == 'true'
+        working-directory: server-python
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+        run: python scripts/run_daily_pipeline.py ${{ inputs.force && '--force' || '' }}
