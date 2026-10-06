@@ -37,6 +37,8 @@ from daily_matches.text_prep import (
 logger = logging.getLogger(__name__)
 
 TERMINAL_EVENTS = {"done", "already", "error"}
+# main.ai_error codes that mean the server's own Anthropic account refused the call.
+SERVER_KEY_FAILURES = ("AI_NO_CREDIT", "AI_KEY_INVALID", "AI_KEY_DENIED")
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 # Tests point this at their own engine; production uses the app's factory.
@@ -277,8 +279,15 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             await _mark_failed(session, run_id, reserved_install, "DM_NOT_READY")
             emit(error_event("DM_NOT_READY", "ההתאמות היומיות לא זמינות כרגע. נסה/י שוב מאוחר יותר. [jma:DM_NOT_READY]"))
         except HTTPException as exc:  # main.ai_error: already "message [jma:CODE]"
+            detail = str(exc.detail)
             await _mark_failed(session, run_id, reserved_install, "AI_ERROR")
-            emit(error_event("AI_ERROR", str(exc.detail)))
+            if any(f"[jma:{code}]" in detail for code in SERVER_KEY_FAILURES):
+                # Daily Matches always runs on the server's key, so main.ai_error's
+                # advice to use a personal Claude key doesn't apply here.
+                logger.error("[DM] Anthropic refused the server key: %s", detail)
+                detail = ("שירות ה-AI של ההתאמות היומיות לא זמין כרגע. הריצה לא נספרה, "
+                          "ואפשר לנסות שוב מאוחר יותר. [jma:AI_UNAVAILABLE]")
+            emit(error_event("AI_ERROR", detail))
         except asyncio.CancelledError:
             await asyncio.shield(_mark_failed(session, run_id, reserved_install, "CANCELLED"))
             raise

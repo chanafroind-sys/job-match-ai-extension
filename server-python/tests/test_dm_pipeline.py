@@ -226,6 +226,26 @@ class TestTrialRuns:
         assert (await _collect(_cvs(BACKEND_CV), access))[-1]["type"] == "done"
 
 
+class TestServerKeyFailures:
+    async def test_no_credit_does_not_suggest_a_personal_key(self, db, env):
+        await _seed_and_embed(db)
+        broke = FakeClaude(fail_when=lambda text: True, error_factory=lambda: _no_credit())
+        env["monkeypatch"].setattr(main_module, "_ac", lambda: broke)
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        message = events[-1]["message"]
+        assert events[-1]["type"] == "error" and "[jma:AI_UNAVAILABLE]" in message
+        assert "Claude" not in message and "לא נספרה" in message
+        assert (await db.execute(select(DmRun.status))).scalar() == "failed"  # the day isn't used up
+
+
+def _no_credit():
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    body = {"type": "error", "error": {"type": "invalid_request_error",
+                                       "message": "Your credit balance is too low to access the Anthropic API."}}
+    return APIStatusError("Your credit balance is too low to access the Anthropic API.",
+                          response=httpx.Response(400, request=request, json=body), body=body)
+
+
 class TestRetention:
     async def test_purge(self, db, env):
         await _seed_and_embed(db)
