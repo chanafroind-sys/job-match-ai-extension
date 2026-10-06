@@ -28,7 +28,7 @@ concurrency:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120  # a first backfill on a Voyage account without a card is slow
     steps:
       # Decided before installing anything, so the early winter firing costs seconds.
       - name: Check the time in Israel
@@ -42,10 +42,10 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.gate.outputs.run == 'true'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.gate.outputs.run == 'true'
         with:
           python-version: "3.11"  # server-python/runtime.txt; the pinned asyncpg and pandas need it

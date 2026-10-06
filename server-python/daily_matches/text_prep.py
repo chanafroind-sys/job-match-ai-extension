@@ -131,7 +131,9 @@ def job_header(title: str, company: str, category: str, seniority: str) -> str:
 
 def job_embedding_text(title: str, company: str, category: str, seniority: str,
                        description: str | None) -> str:
-    return f"{job_header(title, company, category, seniority)}\n\n{focus_excerpt(description, 6000)}".strip()
+    # ~2,500 chars (~600 tokens) of requirements is what retrieval needs; more
+    # mostly adds tokens, which count against Voyage's per-minute limits.
+    return f"{job_header(title, company, category, seniority)}\n\n{focus_excerpt(description, 2500)}".strip()
 
 
 def job_llm_text(title: str, company: str, category: str, seniority: str,
