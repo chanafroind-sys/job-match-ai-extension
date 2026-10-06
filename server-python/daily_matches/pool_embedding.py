@@ -36,6 +36,10 @@ async def embed_pool(session, now=None) -> dict:
     report = {"model": config.EMBED_TAG, "active_jobs": len(jobs), "to_embed": len(todo), "embedded": 0}
     for i in range(0, len(todo), config.EMBED_BATCH_TEXTS):
         chunk = todo[i:i + config.EMBED_BATCH_TEXTS]
+        # Release the connection while Voyage works: on a rate-limited account a
+        # chunk can take minutes, and Neon closes a connection idle that long.
+        # The next statement checks out a fresh one (the engine pre-pings).
+        await session.commit()
         vectors = await embeddings.embed_texts([text for _, text, _ in chunk], "document")
         await store.upsert_job_embeddings(session, [
             {"job_id": job_id, "model": config.EMBED_TAG, "content_hash": digest, "embedding": vec}

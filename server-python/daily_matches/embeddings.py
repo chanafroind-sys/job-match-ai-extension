@@ -5,12 +5,17 @@ the postings this CV should apply to", and Voyage prepends a different
 instruction for each side. Voyage vectors come back unit-length, so cosine
 similarity and dot product rank identically.
 
-Rate limits depend on the Voyage account: an account without a payment method
-gets far lower per-minute limits than one with a card (where the free tokens
-still apply). Instead of assuming either, the client adapts. A 429 halves the
-request size and waits as long as Voyage asks (Retry-After) or a growing
-pause, then carries on, so a large first backfill just takes longer instead of
-failing. Only a long run of consecutive 429s gives up.
+Rate limits depend on the Voyage account: one without a payment method allows
+only a few requests per minute (about 3, seen in production), one with a card
+2,000 (and the free tokens still apply). Instead of assuming either, the
+client adapts:
+  - the first 429 sets a pause between requests (Retry-After, else 20 s) that
+    stays for the rest of the call: the limit is usually on requests, so
+    spacing them out is what helps;
+  - a request that is refused even after that pause is too big for the
+    per-minute token limit, so it is halved;
+  - three successes in a row double the size again, up to the normal batch.
+Only a long run of consecutive 429s gives up.
 """
 import asyncio
 import logging
@@ -23,7 +28,8 @@ from daily_matches import config
 logger = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_RATE_LIMITS = 10
-RATE_LIMIT_PAUSES_S = (20, 40, 60)  # used when Voyage sends no Retry-After
+DEFAULT_PAUSE_S = 20.0  # between requests once Voyage pushes back without a Retry-After
+GROW_AFTER_SUCCESSES = 3
 SERVER_ERROR_RETRIES = 3
 
 # Swapped out by tests.
@@ -100,23 +106,33 @@ async def embed_texts(texts: list[str], input_type: str) -> list[list[float]]:
     if not key:
         raise EmbeddingUnavailable("VOYAGE_API_KEY is not set")
     out: list[list[float]] = []
-    max_texts = config.EMBED_BATCH_TEXTS
-    limited = 0
+    size = config.EMBED_BATCH_TEXTS
+    pause = 0.0        # learned spacing between requests; 0 until Voyage pushes back
+    refusals = 0       # consecutive 429s
+    successes = 0      # consecutive successes since the last size change
     async with httpx.AsyncClient(transport=_transport) as client:
         while len(out) < len(texts):
-            batch = _next_batch(texts, len(out), max_texts)
+            if pause:
+                await _sleep(pause)
+            batch = _next_batch(texts, len(out), size)
             try:
                 out.extend(await _post(client, key, batch, input_type))
-                limited = 0
             except _RateLimited as rl:
-                limited += 1
-                if limited > MAX_CONSECUTIVE_RATE_LIMITS:
+                refusals += 1
+                successes = 0
+                if refusals > MAX_CONSECUTIVE_RATE_LIMITS:
                     raise EmbeddingUnavailable(
-                        f"Voyage kept rate-limiting ({limited} times in a row); "
-                        "an account without a payment method has very low per-minute limits")
-                max_texts = max(1, len(batch) // 2)
-                pause = rl.retry_after or RATE_LIMIT_PAUSES_S[min(limited, len(RATE_LIMIT_PAUSES_S)) - 1]
-                logger.warning("[DM] Voyage rate limit: waiting %ss, next request %d texts (%d/%d done)",
-                               pause, max_texts, len(out), len(texts))
-                await _sleep(pause)
+                        f"Voyage kept rate-limiting ({refusals - 1} times in a row); "
+                        "an account without a payment method allows only a few requests per minute")
+                if pause and refusals > 1:
+                    size = max(1, len(batch) // 2)  # refused even when spaced out: too many tokens
+                pause = max(pause, rl.retry_after or DEFAULT_PAUSE_S)
+                logger.warning("[DM] Voyage rate limit: %ss between requests, next %d texts (%d/%d done)",
+                               pause, size, len(out), len(texts))
+                continue
+            refusals = 0
+            successes += 1
+            if successes >= GROW_AFTER_SUCCESSES and size < config.EMBED_BATCH_TEXTS:
+                size = min(config.EMBED_BATCH_TEXTS, size * 2)
+                successes = 0
     return out

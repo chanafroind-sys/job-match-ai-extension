@@ -208,6 +208,7 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
                 else:
                     missing.append(cv)
             if missing:
+                await session.commit()  # no connection held while Voyage works (it can wait out a rate limit)
                 vectors = await embeddings.embed_texts([redact_contacts(cv.text) for cv in missing], "query")
                 for cv, vec in zip(missing, vectors):
                     cv_rows[cv.alias] = await store.save_cv_embedding(session, access.subject, cv.hash, vec)
@@ -234,7 +235,8 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             emit({"type": "candidates", "pool": counts["active"], "embedded": counts["embedded"],
                   "candidates": len(candidates)})
 
-            # Stage 2
+            # Stage 2 — the job rows are loaded; release the connection during the LLM calls.
+            await session.commit()
             prompt_cvs = [reasoning.CvForPrompt(cv.alias, cv.ref, cv.label, redact_contacts(cv.text))
                           for cv in prepared]
             prompt_jobs = [reasoning.JobForPrompt(c.job_id, job_llm_text(

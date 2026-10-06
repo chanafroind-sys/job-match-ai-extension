@@ -45,24 +45,27 @@ async def test_plain_run_keeps_order(voyage):
     assert voyage["requests"] == [64, 36] and voyage["pauses"] == []
 
 
-async def test_429_shrinks_requests_until_they_fit(voyage):
-    voyage["limit"] = 10  # an account that only accepts small requests
+async def test_request_limit_is_met_by_spacing_not_shrinking(voyage):
+    voyage["refusals"] = 1  # one refusal, then every request is welcome
     vectors = await embeddings.embed_texts(TEXTS, "document")
-    assert len(vectors) == 100 and [v[0] for v in vectors] == [float(len(t)) for t in TEXTS]
-    assert voyage["requests"][:4] == [64, 32, 16, 8]
-    assert all(n <= 10 for n in voyage["requests"][4:])
+    assert len(vectors) == 100
+    assert voyage["requests"] == [64, 64, 36]  # same size again, just later
+    assert voyage["pauses"] == [20.0, 20.0]  # and spaced from then on
+
+
+async def test_too_many_tokens_shrinks_only_when_spacing_did_not_help(voyage):
+    voyage["limit"] = 10  # an account whose per-minute tokens fit ~10 texts
+    vectors = await embeddings.embed_texts(TEXTS, "document")
+    assert [v[0] for v in vectors] == [float(len(t)) for t in TEXTS]
+    assert voyage["requests"][:5] == [64, 64, 32, 16, 8]
+    sizes_after = voyage["requests"][5:]
+    assert max(sizes_after) <= 16 and 16 in sizes_after  # grows back after successes, never past what failed
 
 
 async def test_waits_as_long_as_voyage_asks(voyage):
     voyage["refusals"], voyage["retry_after"] = 2, 7
     await embeddings.embed_texts(TEXTS[:5], "query")
-    assert voyage["pauses"] == [7.0, 7.0]
-
-
-async def test_growing_pause_without_retry_after(voyage):
-    voyage["refusals"] = 4
-    await embeddings.embed_texts(TEXTS[:5], "query")
-    assert voyage["pauses"] == [20, 40, 60, 60]
+    assert set(voyage["pauses"]) == {7.0}
 
 
 async def test_gives_up_after_too_many_refusals_in_a_row(voyage):

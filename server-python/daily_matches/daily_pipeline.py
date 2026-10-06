@@ -65,6 +65,9 @@ async def run_pipeline(session, *, now: datetime | None = None, force: bool = Fa
 
     todays_run_from = config.il_day_start_utc(now) + timedelta(hours=RUN_HOUR_IL)
     last_sync = config.as_utc((await session.execute(select(func.max(DailyJobPool.scraped_at)))).scalar())
+    # Collecting takes about a minute of network calls; don't hold a connection
+    # through it (Neon closes idle ones).
+    await session.commit()
     if force or last_sync is None or last_sync < todays_run_from:
         sync = await run_daily_aggregation(session)
         report["sync"] = {k: sync.get(k) for k in ("fetched", "upserted", "purged_stale", "duration_sec", "errors")}

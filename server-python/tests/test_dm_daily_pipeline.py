@@ -104,6 +104,25 @@ async def test_database_without_the_migration_is_rejected(world):
     assert world["syncs"] == []  # nothing fetched into the wrong database
 
 
+async def test_no_database_connection_held_during_network_work(db, world, monkeypatch):
+    """Neon closes connections idle for minutes; a rate-limited Voyage backfill
+    held one open and died with "connection is closed" (2026-10-06)."""
+    seen = []
+
+    async def embed(texts, input_type):
+        seen.append(("embed", db.in_transaction()))
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+    monkeypatch.setattr(embeddings, "embed_texts", embed)
+    real_collect = agg.collect_jobs
+
+    async def collect(companies=None):
+        seen.append(("collect", db.in_transaction()))
+        return await real_collect(companies)
+    monkeypatch.setattr(agg, "collect_jobs", collect)
+    await _run(db, world, SUMMER_0605)
+    assert seen and all(open_tx is False for _, open_tx in seen), seen
+
+
 def _web(jobs):
     return httpx.MockTransport(lambda request: httpx.Response(200, json=[{"id": str(i)} for i in range(jobs)]))
 
