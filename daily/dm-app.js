@@ -1,10 +1,14 @@
 // Daily Matches — the side panel: build today's deck, browse it, apply.
 //
-// Views: loading · disabled · error · nocv · ready · building · deck · apply ·
-// end · saved · paywall · library · profile. Everything renders into
+// Views: loading · disabled · error · nocv · ready · building · deck · quiet ·
+// apply · end · saved · paywall · library · profile. Everything renders into
 // #dm-app from state; clicks are delegated through data-act attributes. Every
 // string from the server or a job board is escaped before it reaches
 // innerHTML: job text is third-party content inside a privileged page.
+//
+// A deck holds only new jobs that scored 60 or more: strong ones (70+) first,
+// then "worth a look" (60-69). A day with none says so (quiet) instead of
+// showing weak matches.
 (function (root) {
   'use strict';
 
@@ -18,8 +22,11 @@
   const state = {
     view: 'loading', status: null, cards: [], idx: 0, run: null, readOnly: false,
     cvs: [], cvSel: {}, build: null, applying: null, error: null, prevView: null,
-    pendingApply: false, saved: [], busy: false, notice: '',
+    pendingApply: false, saved: [], busy: false, notice: '', level: null, newFocus: [],
   };
+  const LEVELS = [['junior', 'ג׳וניור', '0-2 שנים'], ['mid', 'מיד', '2-5 שנים'], ['senior', 'סניור', '5+ שנים'],
+    ['lead', 'ליד / ניהול', '']];
+  const MAX_ANALYZED = 40; // server-python/daily_matches/config.py MAX_ANALYZED
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, ch => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -56,7 +63,7 @@
   async function applySubLabel(card) {
     const ats = card.job && card.job.ats;
     const label = cvLabel(card, selectedCv(card));
-    if (ats === 'lever') {
+    if (DM.apply.canAutofill(ats)) {
       const profile = await DM.apply.getProfile();
       return `${profile ? '⚡ מילוי אוטומטי + צירוף קו״ח' : '⚡ מילוי אוטומטי (אחרי אישור פרטים)'} · ${label}`;
     }
@@ -72,7 +79,7 @@
 
   function render() {
     const views = {
-      loading, disabled, error: errorView, nocv, ready, building, deck, apply: applyView,
+      loading, disabled, error: errorView, nocv, ready, building, deck, quiet, apply: applyView,
       end, saved: savedView, paywall, library, profile,
     };
     app().innerHTML = (views[state.view] || loading)();
@@ -104,20 +111,44 @@
       <button type="button" class="btn btn-primary" data-act="library">הוספת קורות חיים</button></div></div>`;
   }
 
+  // A version's categories as chips: read-only, or toggles in the library.
+  function focusChips(v, editable) {
+    const chosen = v.focus || [];
+    const shown = DM.cvLibrary.effectiveFocus(v);
+    if (editable) {
+      return `<div class="fchips" role="group" aria-label="תחומים ל${esc(v.label)}">${DM.cvLibrary.CATEGORIES.map(c => {
+        const on = shown.includes(c);
+        return `<button type="button" class="fchip${on ? ' is-on' : ''}" data-act="toggle-focus" data-id="${esc(v.id)}" data-cat="${esc(c)}" aria-pressed="${on}"><bdi dir="ltr">${esc(c)}</bdi></button>`;
+      }).join('')}</div>${!chosen.length && shown.length ? '<p class="dm-fine">זוהו אוטומטית מתוך הקובץ. לחיצה על תחום מעדכנת.</p>' : ''}`;
+    }
+    if (!shown.length) return '<span class="dm-fine">כל התחומים</span>';
+    return shown.map(c => `<span class="chip"><bdi dir="ltr">${esc(c)}</bdi></span>`).join('') +
+      (chosen.length ? '' : '<span class="dm-fine">(זוהה אוטומטית)</span>');
+  }
+
   function ready() {
     const s = state.status || {};
     const trial = s.entitlement === 'trial';
     const pool = s.pool || {};
-    const versions = state.cvs.map(v => `<li class="cv-row"><span aria-hidden="true">📄</span><span class="cv-row-name">${esc(v.label)}</span><span class="dm-muted cv-row-meta">${v.needsExtraction ? 'PDF · ייקרא בהרצה הראשונה' : `${fmtInt((v.text || '').length)} תווים`}</span></li>`).join('');
-    const poolNote = pool.embedded ? `${fmtInt(pool.active)} משרות פעילות במאגר של היום` : 'מאגר המשרות של היום עדיין מתעדכן';
+    const n = state.cvs.length;
+    const versions = state.cvs.map(v => `<li class="cvv"><div class="cvv-top"><span aria-hidden="true">📄</span><span class="cv-row-name">${esc(v.label)}</span><span class="dm-fine cv-row-meta">${v.needsExtraction ? 'PDF · ייקרא בהרצה הראשונה' : v.hasFile ? '⬇️ קובץ להורדה' : 'בלי קובץ להורדה'}</span></div><div class="cvv-focus">${focusChips(v, false)}</div></li>`).join('');
+    const poolNote = !pool.embedded ? 'מאגר המשרות של היום עדיין מתעדכן.'
+      : pool.fresh != null ? `${fmtInt(pool.fresh)} משרות חדשות נכנסו למאגר ב-3 הימים האחרונים.`
+        : `${fmtInt(pool.active)} משרות פעילות במאגר של היום.`;
+    const levels = LEVELS.map(([k, label, sub]) => `<button type="button" class="lvl${state.level === k ? ' is-on' : ''}" data-act="set-level" data-level="${k}" aria-pressed="${state.level === k}">${label}${sub ? `<small>${sub}</small>` : ''}</button>`).join('');
     return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
       ${state.notice ? `<p class="dm-notice">${esc(state.notice)}</p>` : ''}
       <div class="dm-card-plain"><h2 class="dm-h2">${trial ? 'הרצה אחת עלינו 🎁' : 'החפיסה של היום מחכה'}</h2>
-        <p class="dm-muted">${esc(poolNote)}. נבחר את המשרות הקרובות ביותר לקורות החיים שלך, וננתח לעומק עד 15 מהן: ציון, דרישות, פערים ואיזו גרסה להגיש.</p>
+        <p class="dm-muted">${esc(poolNote)} נבדוק רק משרות שעוד לא ראית, בתחומים של גרסאות הקו״ח שלך, ננתח לעומק עד ${MAX_ANALYZED} מהן, ונציג רק את אלה שבאמת מתאימות.</p>
         <button type="button" class="btn btn-primary dm-cta" data-act="build">בניית החפיסה של היום</button>
-        <p class="dm-fine">${trial ? 'ניסיון חינם חד-פעמי. ריצה שנכשלת לא נספרת.' : 'פעם ביום · מתאפס בחצות (שעון ישראל) · ריצה שנכשלת לא נספרת'}</p></div>
-      <div class="dm-card-plain"><div class="dm-row"><h2 class="dm-h2">גרסאות קורות החיים</h2><button type="button" class="link-btn" data-act="library">ניהול</button></div>
-        <ul class="cv-list">${versions}</ul><p class="dm-fine">כל משרה מקבלת המלצה איזו גרסה להגיש. אפשר להחזיק עד ${DM.cvLibrary.MAX_VERSIONS} גרסאות, למשל Backend ו-Data.</p></div>
+        <p class="dm-fine">${trial ? 'ניסיון חינם חד-פעמי. ריצה שנכשלת או שלא מצאה כלום לא נספרת.' : 'פעם ביום · מתאפס בחצות (שעון ישראל) · ריצה שנכשלת לא נספרת'}</p></div>
+      <div class="dm-card-plain"><div class="dm-row"><h2 class="dm-h2">📄 גרסאות הקו״ח שלי <span class="dm-fine">(${n}/${DM.cvLibrary.MAX_VERSIONS})</span></h2><button type="button" class="link-btn" data-act="library">עריכה</button></div>
+        <ul class="cv-list">${versions}</ul>
+        ${n < 2 ? `<p class="dm-tip">💡 אפשר להעלות גרסה לכל כיוון, למשל Backend, ‏Full Stack + LLM או DevOps. לכל משרה נבחר את הגרסה המתאימה ונכין אותה להורדה.</p>` : ''}
+        ${n < DM.cvLibrary.MAX_VERSIONS ? '<button type="button" class="btn btn-secondary" data-act="library">➕ הוספת גרסת קו״ח</button>' : ''}</div>
+      <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2>
+        <div class="lvls" role="group" aria-label="רמת ניסיון">${levels}</div>
+        <p class="dm-fine">${state.level ? 'משרות ברמה שלא מתאימה לך לא ייכנסו לחפיסה.' : 'בלי בחירה נבדוק משרות בכל הרמות.'}</p></div>
       <button type="button" class="link-btn dm-link" data-act="profile">פרטים למילוי טפסים</button>
     </div>`;
   }
@@ -125,13 +156,14 @@
   function building() {
     const b = state.build || {};
     const step = (key, title, sub, extra = '') => `<li class="bd-step is-${b[key] || 'wait'}"><span class="bd-dot" aria-hidden="true"></span><div class="bd-body"><div class="bd-st">${title}</div><div class="bd-sd">${esc(sub)}</div>${extra}</div></li>`;
-    const total = b.total || 15;
+    const total = b.total || 0;
     const cells = Array.from({ length: total }, (_, i) => `<span class="bd-cell${i < (b.done || 0) ? ' is-done' : ''}"></span>`).join('');
+    const grid = total ? `<div class="bd-grid" style="grid-template-columns:repeat(${Math.min(total, 20)},1fr)" aria-hidden="true">${cells}</div>` : '';
     return `${topBar(esc(b.title || 'בונים את החפיסה של היום'))}<div class="dm-body bd">
       <ol class="bd-steps">
-        ${step('s1', 'מחפשים את המשרות הקרובות אליך', b.s1text || 'חיפוש וקטורי במאגר של היום')}
-        ${step('s2', `ניתוח לעומק של ${total} משרות`, b.s2text || 'דרישות, פערים ואיזו גרסה להגיש', `<div class="bd-grid" style="grid-template-columns:repeat(${total},1fr)" aria-hidden="true">${cells}</div>`)}
-        ${step('s3', 'מסדרים את החפיסה לפי ציון', b.s3text || 'משרות מתחת לסף לא נכנסות')}
+        ${step('s1', 'מחפשים משרות חדשות בתחומים שלך', b.s1text || 'רק משרות שעוד לא ראית')}
+        ${step('s2', total ? `ניתוח לעומק של ${total} משרות` : 'ניתוח לעומק של כל משרה', b.s2text || 'כל משרה בנפרד: דרישות, פערים ואיזו גרסה להגיש', grid)}
+        ${step('s3', 'מסננים לפי ציון', b.s3text || 'רק משרות עם ציון 60 ומעלה נכנסות לחפיסה')}
       </ol>
       <div class="bd-skel" aria-hidden="true"><span style="width:60%"></span><span style="width:40%"></span><span style="width:85%"></span><span style="width:70%"></span></div>
       <p class="dm-fine dm-centered">אפשר לסגור את החלונית. החפיסה תחכה כאן כשתחזור/י.<br>ריצה שנכשלת לא נספרת, ואפשר לנסות שוב.</p></div>`;
@@ -147,17 +179,29 @@
 
   const STATUS_ICON = { met: ['✓', 'מתקיימת'], partial: ['◐', 'חלקית'], missing: ['✕', 'חסרה'] };
   const ACTION_RIBBON = { applied: ['✓ הוגש', 's-applied'], saved: ['🔖 נשמר', 's-saved'], skipped: ['דולג', 's-skipped'] };
+  const MODEL_NAME = { 'claude-sonnet-5-5': 'Sonnet 5.5' };
+
+  function postedLabel(iso) {
+    const t = Date.parse(iso || '');
+    if (!t) return '';
+    const days = Math.floor((Date.now() - t) / 86400000);
+    return days <= 0 ? 'פורסמה היום' : days === 1 ? 'פורסמה אתמול' : `פורסמה לפני ${days} ימים`;
+  }
+
+  const hasCvFile = (cvId) => !!(state.cvs.find(v => v.id === cvId) || {}).hasFile;
 
   function cardHtml(card, i, n) {
     const a = card.analysis;
     const job = card.job || {};
     const score = card.match_score;
     const [vl, vc] = score == null ? ['ללא ניתוח', 'verdict-ok'] : verdict(score);
+    const posted = postedLabel(job.published_at);
     const chips = [
+      card.tier === 'maybe' && '<span class="chip chip-maybe">👀 שווה הצצה</span>',
       job.category && `<span class="chip"><bdi dir="ltr">${esc(job.category)}</bdi></span>`,
       job.seniority && job.seniority !== 'Unknown' && `<span class="chip"><bdi dir="ltr">${esc(job.seniority)}</bdi></span>`,
-      job.is_new && '<span class="chip chip-new">חדש</span>',
-      job.ats === 'lever' && '<span class="chip chip-auto">⚡ מילוי אוטומטי</span>',
+      posted && `<span class="chip chip-new">${posted}</span>`,
+      DM.apply.canAutofill(job.ats) && '<span class="chip chip-auto">⚡ מילוי אוטומטי</span>',
       job.ats === 'workday' && '<span class="chip chip-lock">🔐 Workday</span>',
     ].filter(Boolean).join('');
     const ribbon = ACTION_RIBBON[card.user_action];
@@ -169,8 +213,10 @@
       const reqs = a.requirements || [];
       const hard = reqs.some(r => r.status === 'missing' && r.importance === 'must');
       const compare = scores.length > 1 ? `<button type="button" class="link-btn" data-act="cmp" aria-expanded="false">השוואת גרסאות</button>` : '';
-      body = `
-        <div class="dm-cv"><div class="dm-cv-row"><span class="dm-cv-ico" aria-hidden="true">📄</span><div class="dm-cv-main"><div class="dm-cv-k">${sel === card.best_cv_id ? 'מומלץ להגיש עם' : 'נבחר להגשה'}</div><div class="dm-cv-v"><strong>${esc(cvLabel(card, sel))}</strong>${selScore != null ? ` · התאמה ${selScore}` : ''}</div></div>${compare}</div>
+      const dl = `<button type="button" class="cv-dl" data-act="dl-cv" title="הורדת הגרסה הזו"${hasCvFile(sel) ? '' : ' hidden'}>⬇️ הורדה</button>`;
+      const alt = a.compare ? `<p class="dm-alt">🧪 ${esc(MODEL_NAME[a.compare.model] || a.compare.model)}: <b>${esc(a.compare.match_score)}</b>${a.compare.fit_summary_he ? ` · ${esc(a.compare.fit_summary_he)}` : ''}</p>` : '';
+      body = `${alt}
+        <div class="dm-cv"><div class="dm-cv-row"><span class="dm-cv-ico" aria-hidden="true">📄</span><div class="dm-cv-main"><div class="dm-cv-k">${sel === card.best_cv_id ? 'מומלץ להגיש עם' : 'נבחר להגשה'}</div><div class="dm-cv-v"><strong>${esc(cvLabel(card, sel))}</strong>${selScore != null ? ` · התאמה ${selScore}` : ''}</div></div>${dl}${compare}</div>
           ${a.cv_choice_reason_he ? `<p class="dm-cv-reason">${esc(a.cv_choice_reason_he)}</p>` : ''}
           <div class="dm-cv-cmp" hidden>${scores.map(s => `<label class="dm-cv-opt"><input type="radio" name="cv-${card.id}" value="${esc(s.cv_id)}"${s.cv_id === sel ? ' checked' : ''}><span>${esc(s.label)}${s.cv_id === card.best_cv_id ? '<em>מומלץ</em>' : ''}</span><span class="bar"><i style="width:${Math.max(0, Math.min(100, s.score))}%"></i></span><b>${s.score}</b></label>`).join('')}</div></div>
         ${a.fit_summary_he ? `<section><h3 class="dm-sec-h">🤖 ניתוח ההתאמה</h3><p class="dm-ai">${esc(a.fit_summary_he)}</p></section>` : ''}
@@ -189,10 +235,20 @@
       </article></div>`;
   }
 
+  function deckSummary() {
+    const strong = state.cards.filter(c => c.tier !== 'maybe').length;
+    const maybe = state.cards.length - strong;
+    const parts = [`${strong} התאמות חזקות`];
+    if (maybe) parts.push(`${maybe} שווה הצצה`);
+    const run = state.run || {};
+    if (run.candidates) parts.push(`מתוך ${fmtInt(run.candidates)} משרות חדשות שנבדקו`);
+    return parts.join(' · ');
+  }
+
   function deck() {
     const n = state.cards.length;
     return `<div class="dm" tabindex="-1">
-      <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(todayLabel())}${state.run && state.run.pool_size ? ` · ${fmtInt(state.run.pool_size)} משרות נסרקו` : ''}</div></div>
+      <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}</div></div>
         <div class="dm-nav"><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
       <div class="dm-progress" aria-hidden="true">${state.cards.map(() => '<span class="dm-seg"></span>').join('')}</div>
       <div class="dm-track" id="dmTrack" role="region" aria-roledescription="קרוסלה" aria-label="משרות שהותאמו לך">${state.cards.map((c, i) => cardHtml(c, i, n)).join('')}</div>
@@ -223,13 +279,17 @@
         r.left && r.left.length ? ['is-info', `נשארו לך: ${r.left.join(', ')}. אנחנו לא ממציאים תשובות.`] : null,
         ['is-you', 'עבר/י על הטופס ולחץ/י Submit בעצמך'],
       ].filter(Boolean);
-      return `<div class="dm-body ap">${head}<div class="ap-box"><h3 class="ap-h">⚡ מילוי אוטומטי ב-Lever</h3><ol class="ap-list">${items.map(([cls, t]) => `<li class="ap-i ${cls}">${esc(t)}</li>`).join('')}</ol></div>${rule}${done}</div>`;
+      return `<div class="dm-body ap">${head}<div class="ap-box"><h3 class="ap-h">⚡ מילוי אוטומטי ב-${esc(ATS_NAME[job.ats] || 'טופס ההגשה')}</h3><ol class="ap-list">${items.map(([cls, t]) => `<li class="ap-i ${cls}">${esc(t)}</li>`).join('')}</ol></div>${rule}${done}</div>`;
     }
     const signin = ap.mode === 'signin';
     const title = signin ? '🔐 Workday דורש חשבון באתר החברה' : `📎 הכל מוכן להגשה ב-${esc(ATS_NAME[job.ats] || 'אתר החברה')}`;
     const note = signin
       ? 'אנחנו לא יוצרים חשבונות ולא מזינים סיסמאות. אחרי שתתחבר/י בעצמך, הכל מוכן כאן:'
-      : (job.ats === 'lever' ? 'כדי למלא אוטומטית צריך קודם לאשר את הפרטים למילוי טפסים. בינתיים:' : 'מילוי אוטומטי לאתר הזה עדיין לא זמין. בינתיים: גרור/י את הקובץ לטופס והעתק/י את הפרטים.');
+      : !DM.apply.canAutofill(job.ats)
+        ? 'מילוי אוטומטי לאתר הזה עדיין לא זמין. בינתיים: גרור/י את הקובץ לטופס והעתק/י את הפרטים.'
+        : ap.reason === 'form_not_found' ? 'לא מצאנו את טופס ההגשה בעמוד (אולי צריך ללחוץ שם קודם על Apply). בינתיים:'
+          : ap.reason ? 'המילוי האוטומטי לא הצליח בעמוד הזה. בינתיים:'
+            : 'כדי למלא אוטומטית צריך קודם לאשר את הפרטים למילוי טפסים. בינתיים:';
     const profile = ap.profile || {};
     const rows = [['שם מלא', profile.fullName], ['אימייל', profile.email], ['טלפון', profile.phone], ['LinkedIn', profile.linkedin]]
       .filter(([, v]) => v).map(([k, v]) => `<div class="cp-row"><span class="cp-k">${k}</span><bdi dir="ltr" class="cp-v">${esc(v)}</bdi><button type="button" class="cp-btn" data-act="copy" data-copy="${esc(v)}">העתקה</button></div>`).join('');
@@ -249,6 +309,22 @@
       ${state.readOnly ? '<button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי</button>' : ''}</div>`;
   }
 
+  // A finished run with no cards: nothing new in the person's fields, or
+  // nothing new that scored 60.
+  function quiet() {
+    const run = state.run || {};
+    const analyzed = run.candidates || 0;
+    const head = analyzed
+      ? ['היום אין התאמות חזקות', `בדקנו לעומק ${fmtInt(analyzed)} משרות חדשות בתחומים שלך, ואף אחת לא הגיעה לציון 60. עדיף לא להציג אותן מאשר לשלוח אותך להגיש למשרות שלא באמת מתאימות.`]
+      : ['אין משרות חדשות בתחומים שלך', 'מאז החפיסה הקודמת לא נכנסו למאגר משרות חדשות בתחומים שבחרת.'];
+    return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
+      <div class="dm-card-plain"><div class="dm-big" aria-hidden="true">🌤️</div><h2 class="dm-h2">${head[0]}</h2><p class="dm-muted">${head[1]}</p>
+        <p class="dm-fine">המאגר מתעדכן כל בוקר ב-6:00. אפשר גם להרחיב את התחומים או להוסיף גרסת קו״ח.</p></div>
+      <div class="dm-stack"><button type="button" class="btn ${analyzed ? 'btn-primary' : 'btn-secondary'}" data-act="library">עריכת התחומים והגרסאות</button>
+        ${analyzed ? '' : '<button type="button" class="btn btn-primary" data-act="build">חיפוש מחדש</button>'}</div>
+      <button type="button" class="link-btn dm-link" data-act="saved">משרות שמורות</button></div>`;
+  }
+
   function savedView() {
     const rows = state.saved.map(c => `<div class="saved-row"><div class="saved-main"><bdi dir="ltr" class="saved-title">${esc(c.job.title)}</bdi><span class="dm-muted"><bdi dir="ltr">${esc(c.job.company)}</bdi> · ${esc(c.match_day || '')}</span></div><span class="saved-score">${c.match_score == null ? '' : c.match_score}</span><button type="button" class="link-btn" data-act="open-saved" data-url="${esc(c.job.apply_url || c.job.url)}">פתיחה ↗</button></div>`).join('');
     return `${topBar('🔖 משרות שמורות')}<div class="dm-body">${rows || '<p class="dm-muted">אין עדיין משרות שמורות.</p>'}${back()}</div>`;
@@ -260,7 +336,7 @@
     return `<div class="dm-body pw"><div class="dm-big" aria-hidden="true">🔒</div>
       <h1 class="dm-h">ההתאמות היומיות שמורות למנויים</h1>
       <p class="dm-muted">${limit ? 'הניסיונות החינמיים מוגבלים כרגע מהרשת שלך או להיום.' : 'ההרצה החינמית שלך כבר נוצלה.'} מנויים מקבלים חפיסה חדשה בכל יום.</p>
-      <ul class="pw-list"><li>✓ עד 15 משרות מנותחות בכל יום</li><li>✓ ציון התאמה, דרישות ופערים לכל משרה</li><li>✓ המלצה איזו גרסת קו״ח להגיש</li><li>✓ מילוי אוטומטי בטפסים נתמכים</li></ul>
+      <ul class="pw-list"><li>✓ כל יום: המשרות החדשות בתחומים שלך, עד ${MAX_ANALYZED} מנותחות לעומק</li><li>✓ רק התאמות אמיתיות: ציון, דרישות ופערים לכל משרה</li><li>✓ המלצה איזו גרסת קו״ח להגיש, מוכנה להורדה</li><li>✓ מילוי אוטומטי בטפסים נתמכים</li></ul>
       <button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי</button>
       <button type="button" class="btn btn-secondary" data-act="have-key">יש לי מפתח מנוי</button>
       <p class="dm-fine">מפתח Claude אישי מכסה קריאות AI. ההתאמות היומיות נשענות על מאגר המשרות שלנו, ולכן הן חלק מהמנוי.</p>
@@ -268,15 +344,30 @@
   }
 
   function library() {
-    const rows = state.cvs.map(v => `<li class="lib-row"><input class="lib-label" data-id="${esc(v.id)}" value="${esc(v.label)}" maxlength="60" aria-label="שם הגרסה">
-      <span class="dm-fine">${v.source === 'main' ? 'מההגדרות' : esc(v.fileName || '')}${v.hasFile ? ' · קובץ שמור' : ''}</span>
-      ${v.source === 'main' ? '' : `<button type="button" class="link-btn lib-del" data-act="remove-cv" data-id="${esc(v.id)}">הסרה</button>`}</li>`).join('');
+    const rows = state.cvs.map(v => {
+      const file = v.source === 'main'
+        ? (v.hasFile ? `מההגדרות · ⬇️ ${esc(v.fileName || 'קובץ')} להורדה` : 'מההגדרות · אין קובץ להורדה')
+        : `${esc(v.fileName || '')}${v.hasFile ? ' · ⬇️ להורדה' : ''}`;
+      const attach = v.source === 'main' && !v.hasFile && !v.needsExtraction
+        ? '<label class="link-btn lib-attach">צירוף קובץ PDF/DOCX להורדה<input type="file" id="mainFile" accept=".pdf,.docx" hidden></label>' : '';
+      return `<li class="lib-row"><input class="lib-label" data-id="${esc(v.id)}" value="${esc(v.label)}" maxlength="60" aria-label="שם הגרסה">
+      ${v.source === 'main' ? '' : `<button type="button" class="link-btn lib-del" data-act="remove-cv" data-id="${esc(v.id)}">הסרה</button>`}
+      <span class="dm-fine lib-file">${file}</span>${attach}
+      <div class="lib-focus"><span class="lib-k">תחומים שהגרסה מכוונת אליהם:</span>${focusChips(v, true)}</div></li>`;
+    }).join('');
     const full = state.cvs.length >= DM.cvLibrary.MAX_VERSIONS;
+    const newChips = DM.cvLibrary.CATEGORIES.map(c => {
+      const on = state.newFocus.includes(c);
+      return `<button type="button" class="fchip${on ? ' is-on' : ''}" data-act="toggle-new-focus" data-cat="${esc(c)}" aria-pressed="${on}"><bdi dir="ltr">${esc(c)}</bdi></button>`;
+    }).join('');
     return `${topBar('📄 גרסאות קורות החיים')}<div class="dm-body">
+      <p class="dm-muted">אפשר להעלות גרסה לכל כיוון שמעניין אותך. לפי התחומים של כל גרסה נחפש משרות, ולכל משרה נמליץ על הגרסה המתאימה ונכין אותה להורדה.</p>
       <ul class="lib-list">${rows || '<li class="dm-muted">אין עדיין קורות חיים.</li>'}</ul>
-      <div class="dm-card-plain"><h2 class="dm-h2">הוספת גרסה</h2>
-        ${full ? `<p class="dm-muted">הגעת למקסימום של ${DM.cvLibrary.MAX_VERSIONS} גרסאות.</p>` : `<label class="fld"><span>שם הגרסה (למשל Data)</span><input id="libNewLabel" maxlength="60"></label>
+      <p class="dm-error" id="libFileError" role="alert"></p>
+      <div class="dm-card-plain"><h2 class="dm-h2">➕ הוספת גרסה</h2>
+        ${full ? `<p class="dm-muted">הגעת למקסימום של ${DM.cvLibrary.MAX_VERSIONS} גרסאות.</p>` : `<label class="fld"><span>שם הגרסה (למשל Full Stack + LLM)</span><input id="libNewLabel" maxlength="60"></label>
         <label class="fld"><span>קובץ PDF, DOCX או TXT</span><input id="libNewFile" type="file" accept=".pdf,.docx,.txt"></label>
+        <div class="lib-focus"><span class="lib-k">תחומים (אפשר לבחור כמה; בלי בחירה נזהה מתוך הקובץ):</span><div class="fchips">${newChips}</div></div>
         <button type="button" class="btn btn-primary" data-act="add-cv">הוספה</button>`}
         <p class="dm-error" id="libError" role="alert"></p></div>
       ${back()}</div>`;
@@ -404,7 +495,7 @@
     if (!payload.cvs.length) return setView('nocv');
     state.busy = true;
     const pool = state.status && state.status.pool;
-    state.build = { s1: 'active', s1text: pool && pool.active ? `סורקים ${fmtInt(pool.active)} משרות פעילות` : '', s2: 'wait', done: 0, total: 15, s3: 'wait' };
+    state.build = { s1: 'active', s1text: pool && pool.fresh ? `${fmtInt(pool.fresh)} משרות חדשות במאגר מ-3 הימים האחרונים` : '', s2: 'wait', done: 0, total: 0, s3: 'wait' };
     setView('building');
     let terminal = null;
     try {
@@ -413,11 +504,16 @@
         if (ev.type === 'cv_text') DM.cvLibrary.cacheExtracted(ev.cv_id, ev.text).catch(() => {});
         else if (ev.type === 'cv_ready') b.s1text = 'קורות החיים מוכנים · מחפשים';
         else if (ev.type === 'candidates') {
-          Object.assign(b, { s1: 'done', s1text: `✓ ${ev.candidates} משרות קרובות מתוך ${fmtInt(ev.pool)}`, s2: 'active', total: ev.candidates });
+          const fresh = ev.fresh != null ? ev.fresh : ev.candidates;
+          const s1text = !fresh ? 'אין משרות חדשות בתחומים שלך מאז החפיסה הקודמת'
+            : fresh > ev.candidates ? `✓ ${fmtInt(fresh)} משרות חדשות בתחומים שלך · מנתחים את ${ev.candidates} הקרובות ביותר`
+              : `✓ ${fmtInt(fresh)} משרות חדשות בתחומים שלך`;
+          Object.assign(b, { s1: 'done', s1text, s2: ev.candidates ? 'active' : 'done', total: ev.candidates });
         } else if (ev.type === 'progress') {
           Object.assign(b, { done: ev.done, total: ev.total, s2text: `הושלמו ${ev.done} מתוך ${ev.total} ניתוחים` });
         } else if (ev.type === 'done') {
-          Object.assign(b, { s2: 'done', s3: 'done', s3text: `✓ ${ev.count} משרות בחפיסה`, title: 'החפיסה מוכנה' });
+          const s3text = ev.count ? `✓ ${ev.count} משרות בחפיסה` : 'אין היום משרות עם ציון 60 ומעלה';
+          Object.assign(b, { s2: 'done', s3: 'done', s3text, title: 'החפיסה מוכנה' });
         }
         if (['done', 'already', 'error'].includes(ev.type)) terminal = ev;
         if (state.view === 'building') render();
@@ -443,7 +539,10 @@
     state.run = data.run;
     state.cards = data.cards || [];
     state.readOnly = data.entitlement === 'locked';
-    if (!state.cards.length) return latest ? setView('paywall') : setView('ready');
+    if (!state.cards.length) {
+      if (latest) return setView('paywall');
+      return setView(data.run && data.run.status === 'done' ? 'quiet' : 'ready');
+    }
     const firstOpen = state.cards.findIndex(c => !ACTED.has(c.user_action));
     if (firstOpen === -1) return setView('end');
     state.idx = firstOpen;
@@ -451,7 +550,7 @@
   }
 
   async function pollRunning() {
-    state.build = { s1: 'done', s1text: 'החפיסה נבנית ברקע', s2: 'active', s2text: 'ממשיכים מאיפה שעצרנו…', done: 0, total: 15, s3: 'wait' };
+    state.build = { s1: 'done', s1text: 'החפיסה נבנית ברקע', s2: 'active', s2text: 'ממשיכים מאיפה שעצרנו…', done: 0, total: 0, s3: 'wait' };
     setView('building');
     for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 3000));
@@ -472,6 +571,7 @@
       return showError({ title: 'אין חיבור לשרת', message: root.JMA_Auth ? root.JMA_Auth.friendly(e.message) : e.message, retry: 'reload' });
     }
     state.cvs = await DM.cvLibrary.list();
+    state.level = await DM.cvLibrary.getLevel();
     const s = state.status;
     if (!s || s.enabled === false) return setView('disabled');
     if (s.error) return showError({ title: 'לא הצלחנו לאמת את המנוי', message: root.JMA_Auth ? root.JMA_Auth.friendly(s.error) : s.error, retry: 'reload' });
@@ -496,7 +596,7 @@
     const card = state.cards[state.idx];
     if (!card) return;
     const cvId = selectedCv(card);
-    if (card.job && card.job.ats === 'lever' && !(await DM.apply.getProfile())) {
+    if (card.job && DM.apply.canAutofill(card.job.ats) && !(await DM.apply.getProfile())) {
       state.pendingApply = true;
       return openProfile();
     }
@@ -577,6 +677,44 @@
         btn.textContent = ok ? '✓ הקובץ ירד לתיקיית ההורדות' : 'ההורדה נכשלה';
         return undefined;
       }
+      case 'dl-cv': {
+        if (!card) return undefined;
+        const ok = await DM.apply.downloadCv(selectedCv(card)).catch(() => false);
+        btn.textContent = ok ? '✓ ירד' : 'נכשל';
+        return setTimeout(() => { btn.textContent = '⬇️ הורדה'; }, 1800);
+      }
+      case 'toggle-focus': {
+        // In place, so a half-typed new version below isn't wiped by a re-render.
+        const v = state.cvs.find(x => x.id === btn.dataset.id);
+        if (!v) return undefined;
+        const current = DM.cvLibrary.effectiveFocus(v);
+        const cat = btn.dataset.cat;
+        const next = current.includes(cat) ? current.filter(c => c !== cat) : current.concat(cat);
+        await DM.cvLibrary.setFocus(v.id, next);
+        v.focus = DM.cvLibrary.CATEGORIES.filter(c => next.includes(c));
+        btn.closest('.fchips').querySelectorAll('.fchip').forEach(b => {
+          const on = DM.cvLibrary.effectiveFocus(v).includes(b.dataset.cat);
+          b.classList.toggle('is-on', on);
+          b.setAttribute('aria-pressed', String(on));
+        });
+        const hint = btn.closest('.lib-focus').querySelector('.dm-fine');
+        if (hint && v.focus.length) hint.remove();
+        return undefined;
+      }
+      case 'toggle-new-focus': {
+        const cat = btn.dataset.cat;
+        state.newFocus = state.newFocus.includes(cat) ? state.newFocus.filter(c => c !== cat) : state.newFocus.concat(cat);
+        const on = state.newFocus.includes(cat);
+        btn.classList.toggle('is-on', on);
+        btn.setAttribute('aria-pressed', String(on));
+        return undefined;
+      }
+      case 'set-level': {
+        const level = btn.dataset.level === state.level ? null : btn.dataset.level;
+        await DM.cvLibrary.setLevel(level);
+        state.level = level;
+        return render();
+      }
       case 'copy': {
         const done = () => { btn.textContent = 'הועתק'; setTimeout(() => { btn.textContent = 'העתקה'; }, 1400); };
         try { await navigator.clipboard.writeText(btn.dataset.copy); } catch (_) { /* clipboard refused */ }
@@ -587,7 +725,7 @@
       case 'last-deck': return loadDeck(true);
       case 'saved': {
         try { state.saved = (await DM.api.saved()).cards || []; } catch (_) { state.saved = []; }
-        state.prevView = 'end';
+        state.prevView = state.view;
         return setView('saved');
       }
       case 'library': return openLibrary();
@@ -605,13 +743,14 @@
         btn.disabled = true;
         btn.textContent = /\.pdf$/i.test(file.name) ? 'קוראים את ה-PDF…' : 'מוסיפים…';
         try {
-          await DM.cvLibrary.add(file, $('#libNewLabel').value);
+          await DM.cvLibrary.add(file, $('#libNewLabel').value, state.newFocus);
         } catch (err) {
           errEl.textContent = root.JMA_Auth ? root.JMA_Auth.friendly(err.message) : err.message;
           btn.disabled = false;
           btn.textContent = 'הוספה';
           return undefined;
         }
+        state.newFocus = [];
         return openLibrary();
       }
       case 'save-profile': {
@@ -640,10 +779,20 @@
       const score = ((card.analysis && card.analysis.cv_scores) || []).find(s => s.cv_id === t.value);
       strip.querySelector('.dm-cv-k').textContent = t.value === card.best_cv_id ? 'מומלץ להגיש עם' : 'נבחר להגשה';
       strip.querySelector('.dm-cv-v').innerHTML = `<strong>${esc(cvLabel(card, t.value))}</strong>${score ? ` · התאמה ${score.score}` : ''}`;
+      strip.querySelector('.cv-dl').hidden = !hasCvFile(t.value);
       updateDeckChrome();
     } else if (t.classList && t.classList.contains('lib-label')) {
       await DM.cvLibrary.rename(t.dataset.id, t.value);
       state.cvs = await DM.cvLibrary.list();
+    } else if (t.id === 'mainFile' && t.files && t.files[0]) {
+      try {
+        await DM.cvLibrary.attachMainFile(t.files[0]);
+      } catch (err) {
+        const el = $('#libFileError');
+        if (el) el.textContent = err.message;
+        return;
+      }
+      await openLibrary();
     }
   }
 
@@ -661,7 +810,9 @@
   function onStorage(changes, area) {
     if (area !== 'local') return;
     if (changes[UI_KEY] && state.view === 'ready') maybeAutoStart();
-    if ((changes.cvText || changes.jma_dm_cv_library) && ['ready', 'nocv'].includes(state.view)) refresh();
+    // Library edits made in this panel already update state; only a CV changed
+    // elsewhere (V1's settings) or a first CV needs a reload here.
+    if ((changes.cvText && ['ready', 'nocv'].includes(state.view)) || (changes.jma_dm_cv_library && state.view === 'nocv')) refresh();
   }
 
   async function boot() {

@@ -9,6 +9,10 @@
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   DATABASE_URL    the same value as the Render web service's DATABASE_URL
 #   VOYAGE_API_KEY  the same value as the Render web service's VOYAGE_API_KEY
+# and reads one optional one:
+#   RAPIDAPI_KEY    a RapidAPI key subscribed to JSearch (the free Basic plan
+#                   is enough). Without it, JSearch is skipped.
+# LinkedIn and Indeed come through the JobSpy library, installed only here.
 name: Daily job pipeline
 
 on:
@@ -57,10 +61,19 @@ jobs:
         working-directory: server-python
         run: pip install -r requirements.txt
 
+      # Optional: without it LinkedIn and Indeed are skipped and the rest runs.
+      # The version daily_matches/sources/aggregators.py expects.
+      - name: Install JobSpy
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        run: pip install python-jobspy==1.2.0
+
       - name: Collect and embed today's jobs
         if: steps.gate.outputs.run == 'true'
         working-directory: server-python
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          # Under its own name: V1's sync would spend the free quota if it saw RAPIDAPI_KEY.
+          DM_JSEARCH_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: python scripts/run_daily_pipeline.py ${{ inputs.force && '--force' || '' }}

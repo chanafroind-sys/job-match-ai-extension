@@ -21,19 +21,33 @@ def _tables(db_file: Path) -> set[str]:
         return {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
+def _columns(db_file: Path, table: str) -> dict[str, str]:
+    with sqlite3.connect(db_file) as con:
+        return {r[1]: r[2] for r in con.execute(f"PRAGMA table_info({table})")}
+
+
 def test_upgrade_downgrade_upgrade(tmp_path):
     db_file = tmp_path / "migrate.db"
     _alembic(db_file, "upgrade", "head")
     tables = _tables(db_file)
     assert DM_TABLES <= tables and "daily_job_pool" in tables
+    # SQLite gets the JSON fallback, never vector(...)
+    assert _columns(db_file, "dm_job_embeddings")["embedding"] == "JSON"
+    assert "tier" in _columns(db_file, "dm_run_results") and "fresh_jobs" in _columns(db_file, "dm_runs")
+    assert "dm_sources" in tables
     with sqlite3.connect(db_file) as con:
-        cols = {r[1]: r[2] for r in con.execute("PRAGMA table_info(dm_job_embeddings)")}
-        assert cols["embedding"] == "JSON"  # SQLite gets the JSON fallback, never vector(...)
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "9c4e7a1d2b36"
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "c8e1f6a3d9b2"
+
+    _alembic(db_file, "downgrade", "-1")  # the board registry goes
+    assert "dm_sources" not in _tables(db_file) and DM_TABLES <= _tables(db_file)
+
+    _alembic(db_file, "downgrade", "-1")  # the tier columns go, the tables stay
+    assert DM_TABLES <= _tables(db_file) and "tier" not in _columns(db_file, "dm_run_results")
 
     _alembic(db_file, "downgrade", "-1")
     tables = _tables(db_file)
     assert not (DM_TABLES & tables) and "daily_job_pool" in tables
 
     _alembic(db_file, "upgrade", "head")
-    assert DM_TABLES <= _tables(db_file)
+    tables = _tables(db_file)
+    assert DM_TABLES <= tables and "dm_sources" in tables and "tier" in _columns(db_file, "dm_run_results")

@@ -68,7 +68,7 @@ async def test_status_when_disabled(client, monkeypatch):
 async def test_status_for_a_new_trial_user(client):
     body = (await client.get("/api/daily-matches/status", headers=TRIAL)).json()
     assert body["enabled"] and body["entitlement"] == "trial" and body["today"] is None
-    assert body["pool"] == {"active": 5, "embedded": 5}
+    assert body["pool"] == {"active": 5, "embedded": 5, "fresh": 5}
     assert body["next_reset_at"].endswith(("+03:00", "+02:00"))
 
 
@@ -97,6 +97,25 @@ async def test_run_then_reopen_then_act(client):
 
     again = _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
     assert again == [{"type": "already", "run_id": events[0]["run_id"], "status": "done"}]
+
+
+async def test_deck_holds_only_shown_tiers(client):
+    events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
+    deck = (await client.get("/api/daily-matches/today", headers=SUB)).json()
+    assert deck["run"]["candidates"] == 5 and deck["run"]["fresh"] == 5  # five analyzed...
+    assert len(deck["cards"]) == events[-1]["count"] < 5  # ...but the weak ones aren't cards
+    assert {c["tier"] for c in deck["cards"]} <= {"strong", "maybe"}
+    scores = [c["match_score"] for c in deck["cards"]]
+    assert scores == sorted(scores, reverse=True)
+
+
+async def test_focus_and_level_reach_the_pipeline(client):
+    body = {"cvs": [{"id": "main", "label": "Data", "text": BACKEND_CV, "focus": ["Data"]}],
+            "primaryCvId": "main", "prefs": {"level": "mid"}}
+    events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=body))
+    assert next(e for e in events if e["type"] == "candidates")["candidates"] == 1  # only de1 is Data
+    bad_level = {**body, "prefs": {"level": "wizard"}}
+    assert (await client.post("/api/daily-matches/run", headers=SUB, json=bad_level)).status_code == 422
 
 
 async def test_cards_belong_to_their_owner(client):

@@ -41,7 +41,13 @@ def world(monkeypatch):
                    for i, t in enumerate(["Senior Backend Engineer", "Backend Developer", "Data Engineer"])]
         return records, {"sources": {"lever:Acme": 3}, "errors": {}}
     monkeypatch.setattr(agg, "collect_jobs", fake_collect)
-    return {"clock": clock, "syncs": syncs, "embedder": embedder}
+    extras = []
+
+    async def fake_extra(session):
+        extras.append(clock["now"])
+        return {"stored": 0}
+    monkeypatch.setattr(daily_pipeline, "collect_extra", fake_extra)  # tests/test_dm_sources.py covers it
+    return {"clock": clock, "syncs": syncs, "embedder": embedder, "extras": extras}
 
 
 async def _run(db, world, at, **kw):
@@ -53,11 +59,20 @@ async def test_runs_at_six_in_summer_then_only_once(db, world):
     assert (await _run(db, world, SUMMER_0530))["skipped"].startswith("before 06:00")
     first = await _run(db, world, SUMMER_0605)
     assert first["sync"]["fetched"] == 3 and first["embed"]["embedded"] == 3
-    assert first["pool"] == {"active": 3, "embedded": 3}
+    assert first["pool"] == {"active": 3, "embedded": 3, "fresh": 3}
     second = await _run(db, world, SUMMER_0705)
     assert second["sync"]["skipped"].startswith("already ran today at 06:05")
     assert second["embed"]["to_embed"] == 0  # nothing re-sent to Voyage
     assert len(world["syncs"]) == 1
+    assert world["extras"] == [SUMMER_0605] and first["extra"] == {"stored": 0}  # extra sources: with the sync only
+
+
+async def test_a_crash_in_the_extra_sources_keeps_the_day(db, world, monkeypatch):
+    async def broken(session):
+        raise RuntimeError("linkedin changed its markup")
+    monkeypatch.setattr(daily_pipeline, "collect_extra", broken)
+    report = await _run(db, world, SUMMER_0605)
+    assert report["extra"]["error"].startswith("RuntimeError") and report["embed"]["embedded"] == 3
 
 
 async def test_runs_at_six_in_winter(db, world):

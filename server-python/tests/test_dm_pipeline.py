@@ -151,18 +151,23 @@ class TestRun:
         assert "de1" in {c.job_id for c in cards}  # the Data CV gets its floor of slots
         assert env["claude"].calls[0]["tools"][0]["input_schema"]["properties"]["best_cv_id"]["enum"] == ["cv1", "cv2"]
 
-    async def test_acted_jobs_stay_out_of_later_decks(self, db, env):
+    async def test_a_job_is_never_given_twice(self, db, env):
         await _seed_and_embed(db)
         await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
-        top = (await db.execute(select(DmRunResult).where(DmRunResult.rank == 1))).scalar_one()
-        top.user_action = "skipped"
-        await db.commit()
+        day1 = {r.job_id for r in (await db.execute(select(DmRunResult))).scalars()}
+        assert day1 == {"be1", "be2", "de1", "fe1", "hw1"}  # shown or not, every analyzed job is kept
+
+        await _seed_and_embed(db, [{"id": "be3", "title": "Python Backend Engineer",
+                                    "description": "Requirements:\n• Python, Kafka, AWS"}])
         env["monkeypatch"].setattr(config, "match_day", lambda now=None: date.today() + timedelta(days=1))
-        await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        calls = len(env["claude"].calls)
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert events[-1]["type"] == "done"
+        assert len(env["claude"].calls) - calls == 1  # only the new job is analyzed
         day2 = (await db.execute(select(DmRun).order_by(DmRun.id.desc()))).scalars().first()
         ids = {r.job_id for r in (await db.execute(
             select(DmRunResult).where(DmRunResult.run_id == day2.id))).scalars()}
-        assert top.job_id not in ids
+        assert ids == {"be3"}
 
     async def test_pdf_blob_is_read_once_and_returned(self, db, env):
         await _seed_and_embed(db)
@@ -196,6 +201,107 @@ class TestRun:
         assert events[-1]["code"] == "DM_NO_CV"
 
 
+async def _result_ids(db) -> set[str]:
+    return {r.job_id for r in (await db.execute(select(DmRunResult))).scalars()}
+
+
+class TestFreshDeck:
+    async def test_postings_older_than_the_window_are_left_out(self, db, env):
+        now = config.utcnow()
+        await _seed_and_embed(db, [
+            {"id": "new", "title": "Backend Engineer", "description": "Python Kafka AWS",
+             "published_at": now - timedelta(days=2)},
+            {"id": "old", "title": "Backend Engineer II", "description": "Python Kafka AWS",
+             "published_at": now - timedelta(days=4)},  # still listed, but not fresh
+        ])
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert next(e for e in events if e["type"] == "candidates")["fresh"] == 1
+        assert await _result_ids(db) == {"new"}
+
+    async def test_focus_limits_the_categories(self, db, env):
+        await _seed_and_embed(db)
+        cvs = [service.CvInput(id="cv-0", label="Data", text=DATA_CV, focus=["Data", "Not a category"])]
+        await _collect(cvs, SUBSCRIBER)
+        assert await _result_ids(db) == {"de1"}
+
+    async def test_each_version_searches_its_own_focus(self, db, env):
+        await _seed_and_embed(db)
+        cvs = [service.CvInput(id="cv-0", label="Backend", text=BACKEND_CV, focus=["Backend"]),
+               service.CvInput(id="cv-1", label="Data", text=DATA_CV, focus=["Data"])]
+        await _collect(cvs, SUBSCRIBER)
+        assert await _result_ids(db) == {"be1", "be2", "de1"}
+
+    async def test_level_leaves_out_mismatched_seniority(self, db, env):
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert "de1" in await _result_ids(db)
+        await db.execute(DmRunResult.__table__.delete())
+        await db.execute(DmRun.__table__.delete())
+        await db.commit()
+        events = await _collect_with_prefs(_cvs(BACKEND_CV), SUBSCRIBER, service.Prefs(level="junior"))
+        assert events[-1]["type"] == "done"
+        assert await _result_ids(db) == {"de1"}  # every other job in the pool is Senior
+
+    async def test_only_strong_and_maybe_are_shown(self, db, env):
+        await _seed_and_embed(db)
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        rows = (await db.execute(select(DmRunResult))).scalars().all()
+        tiers = {r.job_id: r.tier for r in rows}
+        for r in rows:
+            assert r.tier == service.tier_for(r.match_score)
+        assert "hidden" in tiers.values() and "strong" in tiers.values()
+        shown = sum(t in service.SHOWN_TIERS for t in tiers.values())
+        done = events[-1]
+        assert done["count"] == shown and done["analyzed"] == 5
+        assert (await db.execute(select(DmRun.results))).scalar() == shown
+
+    async def test_cap_limits_the_calls_and_counts_the_rest(self, db, env):
+        env["monkeypatch"].setattr(config, "MAX_ANALYZED", 2)
+        await _seed_and_embed(db)
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        cand = next(e for e in events if e["type"] == "candidates")
+        assert cand["fresh"] == 5 and cand["candidates"] == 2
+        assert len(env["claude"].calls) == 2
+        run = (await db.execute(select(DmRun))).scalar_one()
+        assert run.fresh_jobs == 5 and run.candidates == 2
+
+    async def test_quiet_day_costs_nothing_and_can_be_retried(self, db, env):
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        env["monkeypatch"].setattr(config, "match_day", lambda now=None: date.today() + timedelta(days=1))
+        calls = len(env["claude"].calls)
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert events[-1]["type"] == "done" and events[-1]["count"] == 0 and events[-1]["analyzed"] == 0
+        assert len(env["claude"].calls) == calls
+        # Nothing was spent, so the same day can run again (after a focus change, say).
+        outcome, _ = await service.claim_run(db, SUBSCRIBER)
+        assert outcome == "retry"
+
+    async def test_admin_runs_carry_the_compare_verdict(self, db, env):
+        env["monkeypatch"].setattr(config, "COMPARE_MODEL", "claude-sonnet-5-5")
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), Access("subscription", subject="lic:admin", is_admin=True))
+        models = [c["model"] for c in env["claude"].calls]
+        assert models.count("claude-sonnet-5-5") == 5 and models.count(config.LLM_MODEL) == 5
+        row = (await db.execute(select(DmRunResult).where(DmRunResult.rank == 1))).scalar_one()
+        assert row.analysis["compare"]["model"] == "claude-sonnet-5-5"
+        assert isinstance(row.analysis["compare"]["match_score"], int)
+
+    async def test_compare_is_admins_only(self, db, env):
+        env["monkeypatch"].setattr(config, "COMPARE_MODEL", "claude-sonnet-5-5")
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert {c["model"] for c in env["claude"].calls} == {config.LLM_MODEL}
+
+
+async def _collect_with_prefs(cvs, access, prefs):
+    events = []
+    async for chunk in service.stream_run(cvs, None, access, prefs):
+        if chunk.startswith("data: {"):
+            events.append(json.loads(chunk[len("data: "):]))
+    return events
+
+
 class TestTrialRuns:
     async def _trial(self, db, install="t" * 32, ip="1.2.3.4", cv=BACKEND_CV):
         from daily_matches.text_prep import cv_fingerprint
@@ -224,6 +330,14 @@ class TestTrialRuns:
         access = await self._trial(db)
         assert access.kind == "trial"
         assert (await _collect(_cvs(BACKEND_CV), access))[-1]["type"] == "done"
+
+    async def test_trial_with_an_empty_deck_is_not_used_up(self, db, env):
+        await _seed_and_embed(db)
+        env["monkeypatch"].setattr(main_module, "_ac", lambda: FakeClaude(base_score=-100))  # everything hidden
+        events = await _collect(_cvs(BACKEND_CV), await self._trial(db))
+        assert events[-1]["type"] == "done" and events[-1]["count"] == 0 and events[-1]["analyzed"] == 5
+        assert (await db.execute(select(func.count()).select_from(DmTrial))).scalar() == 0
+        assert (await self._trial(db)).kind == "trial"
 
 
 class TestServerKeyFailures:

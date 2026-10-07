@@ -1,4 +1,6 @@
 """Daily Matches Stage 2: strict schema, validation, fan-out and failure policy."""
+import json
+
 import httpx
 import pytest
 from anthropic import APIStatusError
@@ -6,6 +8,7 @@ from fastapi import HTTPException
 
 import main as main_module
 from daily_matches import config, reasoning
+from daily_matches.text_prep import estimate_tokens
 from tests.dm_helpers import FakeClaude
 
 CVS = [
@@ -106,9 +109,24 @@ class TestFanOut:
     async def test_short_prefix_is_not_cached_and_fans_out_at_once(self, monkeypatch):
         fake = FakeClaude(delay=0.05)
         monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        monkeypatch.setattr(config, "CACHE_MIN_TOKENS", 10 ** 6)
         await reasoning.analyze_jobs(CVS, _jobs(5))
         assert "cache_control" not in fake.calls[0]["system"][0]
         assert max(fake.started_at) - min(fake.started_at) < 0.04
+
+    def test_rubric_and_tool_alone_reach_the_cache_minimum(self):
+        # The point of the long rubric: even a one-paragraph CV gets the 90%
+        # cache discount on every call after the first.
+        tool = json.dumps(reasoning.tool_schema(["cv1"]))
+        assert estimate_tokens(reasoning.RUBRIC) + estimate_tokens(tool) >= config.CACHE_MIN_TOKENS
+
+    async def test_short_cv_prefix_is_cached(self, monkeypatch):
+        fake = FakeClaude()
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        monkeypatch.setattr(config, "WARMUP_DELAY_S", 0.01)
+        await reasoning.analyze_jobs([reasoning.CvForPrompt("cv1", "main", "Backend", "Python developer " * 20)],
+                                     _jobs(2))
+        assert fake.calls[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
 
     async def test_long_prefix_is_cached_and_warmed_first(self, monkeypatch):
         long_cvs = [reasoning.CvForPrompt("cv1", "main", "Backend", "Python Kafka AWS microservices " * 600)]
@@ -153,6 +171,29 @@ class TestFanOut:
         monkeypatch.setattr(main_module, "_ac", lambda: fake)
         results, _ = await reasoning.analyze_jobs(CVS, _jobs(1))
         assert results["j0"] is None
+
+
+class TestModels:
+    async def test_sonnet_gets_auto_tool_choice_and_no_thinking(self, monkeypatch):
+        # Sonnet 5.5 rejects a forced tool_choice with a 400, and thinks by default.
+        fake = FakeClaude()
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        results, _ = await reasoning.analyze_jobs(CVS, _jobs(2), model="claude-sonnet-5-5")
+        assert all(results.values())
+        call = fake.calls[0]
+        assert call["model"] == "claude-sonnet-5-5"
+        assert call["tool_choice"] == {"type": "auto"}
+        assert call["extra_body"] == {"thinking": {"type": "between_tools"}}
+        assert call["tools"][0]["strict"] is True
+
+    def test_haiku_keeps_the_forced_tool(self):
+        assert reasoning._model_kwargs(config.LLM_MODEL) == {
+            "tool_choice": {"type": "tool", "name": reasoning.TOOL_NAME}}
+
+    def test_cost_uses_each_models_prices(self):
+        usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+        assert config.usage_cost(usage) == 1.0
+        assert config.usage_cost(usage, "claude-sonnet-5-5") == 2.0
 
 
 async def _no_sleep():

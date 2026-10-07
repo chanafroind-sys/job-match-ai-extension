@@ -14,19 +14,28 @@ migration actually created.
 """
 import json
 import math
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import bindparam, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job_pool import DailyJobPool
 from daily_matches import config
 from daily_matches.models import DmCvEmbedding, DmJobEmbedding, DmRun, DmRunResult
 
-# Jobs the user acted on never come back in a later deck.
-EXCLUDED_ACTIONS = ("saved", "skipped", "applied")
-
 _mode_cache: dict[str, str] = {}
+
+
+@dataclass
+class JobFilter:
+    """Which pool rows a run may consider. A job this subject already got in
+    any run, shown or not, is never considered again."""
+    subject: str
+    active_since: datetime  # still listed: re-seen by a recent sync
+    published_since: datetime  # fresh: posted within config.FRESH_WINDOW
+    categories: list[str] = field(default_factory=list)  # empty: every category
+    excluded_seniority: list[str] = field(default_factory=list)
 
 
 async def vector_mode(session: AsyncSession) -> str:
@@ -128,7 +137,10 @@ async def touch_cv_embeddings(session: AsyncSession, row_ids: list[int]) -> None
 
 # ── Pool counts ───────────────────────────────────────────────────────────────
 
-async def pool_counts(session: AsyncSession, since: datetime) -> dict:
+async def pool_counts(session: AsyncSession, since: datetime, now: datetime | None = None) -> dict:
+    """Active (still listed) jobs, how many have vectors, and how many of them
+    were published within the fresh window."""
+    now = now or config.utcnow()
     active = (await session.execute(select(func.count()).select_from(DailyJobPool)
                                     .where(DailyJobPool.scraped_at >= since))).scalar() or 0
     embedded = (await session.execute(
@@ -136,15 +148,38 @@ async def pool_counts(session: AsyncSession, since: datetime) -> dict:
         .join(DailyJobPool, DailyJobPool.id == DmJobEmbedding.job_id)
         .where(DailyJobPool.scraped_at >= since, DmJobEmbedding.model == config.EMBED_TAG)
     )).scalar() or 0
-    return {"active": int(active), "embedded": int(embedded)}
+    fresh = (await session.execute(
+        select(func.count()).select_from(DailyJobPool)
+        .where(DailyJobPool.scraped_at >= since,
+               DailyJobPool.published_at >= now - config.FRESH_WINDOW)
+    )).scalar() or 0
+    return {"active": int(active), "embedded": int(embedded), "fresh": int(fresh)}
 
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
-def _excluded_subquery(subject: str):
+def _seen_subquery(subject: str):
     return (select(DmRunResult.job_id)
             .join(DmRun, DmRun.id == DmRunResult.run_id)
-            .where(DmRun.subject == subject, DmRunResult.user_action.in_(EXCLUDED_ACTIONS)))
+            .where(DmRun.subject == subject))
+
+
+def _orm_conditions(f: JobFilter) -> list:
+    conds = [DailyJobPool.scraped_at >= f.active_since, DailyJobPool.published_at >= f.published_since,
+             DailyJobPool.id.not_in(_seen_subquery(f.subject))]
+    if f.categories:
+        conds.append(DailyJobPool.category.in_(f.categories))
+    if f.excluded_seniority:
+        conds.append(DailyJobPool.seniority.not_in(f.excluded_seniority))
+    return conds
+
+
+async def count_fresh(session: AsyncSession, f: JobFilter) -> int:
+    """Embedded jobs that pass the filter: what a run could analyze, before the cap."""
+    query = (select(func.count()).select_from(DailyJobPool)
+             .join(DmJobEmbedding, DmJobEmbedding.job_id == DailyJobPool.id)
+             .where(DmJobEmbedding.model == config.EMBED_TAG, *_orm_conditions(f)))
+    return int((await session.execute(query)).scalar() or 0)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -158,36 +193,52 @@ def _as_vector(value) -> list[float]:
     return json.loads(value) if isinstance(value, str) else list(value)
 
 
-async def search_jobs(session: AsyncSession, cv_rows: dict[str, int], subject: str,
-                      since: datetime, limit: int) -> dict[str, list[tuple[str, float]]]:
+def _pgvector_search_sql(f: JobFilter):
+    where = [
+        "j.scraped_at >= :active_since", "j.published_at >= :published_since", "e.model = :model",
+        "e.job_id NOT IN (SELECT r.job_id FROM dm_run_results r JOIN dm_runs u ON u.id = r.run_id "
+        "WHERE u.subject = :subject)",
+    ]
+    params = [bindparam("active_since"), bindparam("published_since"), bindparam("model"),
+              bindparam("subject"), bindparam("cv_row"), bindparam("lim")]
+    if f.categories:
+        where.append("j.category IN :categories")
+        params.append(bindparam("categories", expanding=True))
+    if f.excluded_seniority:
+        where.append("j.seniority NOT IN :excluded_seniority")
+        params.append(bindparam("excluded_seniority", expanding=True))
+    return text(
+        "SELECT e.job_id AS job_id, 1 - (e.embedding <=> q.embedding) AS sim "
+        "FROM dm_job_embeddings e "
+        "JOIN daily_job_pool j ON j.id = e.job_id "
+        "CROSS JOIN (SELECT embedding FROM dm_cv_embeddings WHERE id = :cv_row) q "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY e.embedding <=> q.embedding LIMIT :lim"
+    ).bindparams(*params)
+
+
+async def search_jobs(session: AsyncSession, cv_rows: dict[str, int], f: JobFilter,
+                      limit: int) -> dict[str, list[tuple[str, float]]]:
     """For each CV (alias → dm_cv_embeddings.id), the `limit` most similar
-    active jobs the subject hasn't acted on, best first."""
+    jobs that pass the filter, best first."""
     out: dict[str, list[tuple[str, float]]] = {}
     if await vector_mode(session) == "pgvector":
-        excluded_sql = (
-            "SELECT r.job_id FROM dm_run_results r JOIN dm_runs u ON u.id = r.run_id "
-            "WHERE u.subject = :subject AND r.user_action IN ('saved', 'skipped', 'applied')"
-        )
-        sql = text(
-            "SELECT e.job_id AS job_id, 1 - (e.embedding <=> q.embedding) AS sim "
-            "FROM dm_job_embeddings e "
-            "JOIN daily_job_pool j ON j.id = e.job_id "
-            "CROSS JOIN (SELECT embedding FROM dm_cv_embeddings WHERE id = :cv_row) q "
-            "WHERE j.scraped_at >= :since AND e.model = :model "
-            f"AND e.job_id NOT IN ({excluded_sql}) "
-            "ORDER BY e.embedding <=> q.embedding LIMIT :lim"
-        )
+        sql = _pgvector_search_sql(f)
+        params = {"active_since": f.active_since, "published_since": f.published_since,
+                  "model": config.EMBED_TAG, "subject": f.subject, "lim": limit}
+        if f.categories:
+            params["categories"] = list(f.categories)
+        if f.excluded_seniority:
+            params["excluded_seniority"] = list(f.excluded_seniority)
         for alias, row_id in cv_rows.items():
-            rows = await session.execute(sql, {"cv_row": row_id, "since": since, "model": config.EMBED_TAG,
-                                               "subject": subject, "lim": limit})
+            rows = await session.execute(sql, {**params, "cv_row": row_id})
             out[alias] = [(r.job_id, float(r.sim)) for r in rows]
         return out
 
     jobs = (await session.execute(
         select(DmJobEmbedding.job_id, DmJobEmbedding.embedding)
         .join(DailyJobPool, DailyJobPool.id == DmJobEmbedding.job_id)
-        .where(DailyJobPool.scraped_at >= since, DmJobEmbedding.model == config.EMBED_TAG,
-               DmJobEmbedding.job_id.not_in(_excluded_subquery(subject)))
+        .where(DmJobEmbedding.model == config.EMBED_TAG, *_orm_conditions(f))
     )).all()
     job_vecs = [(r.job_id, _as_vector(r.embedding)) for r in jobs]
     cvs = (await session.execute(select(DmCvEmbedding.id, DmCvEmbedding.embedding)

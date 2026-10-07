@@ -1,8 +1,9 @@
-"""The daily pipeline: collect today's jobs into daily_job_pool, then embed
-them for Daily Matches. Runs once per Israel day, at 06:00 Israel time.
+"""The daily pipeline: collect today's jobs into daily_job_pool (V1's company
+boards, then Daily Matches' own extra sources, daily_matches/sources), then
+embed them for Daily Matches. Runs once per Israel day, at 06:00 Israel time.
 
-Render schedules crons in UTC only, while Israel moves between UTC+3 (summer)
-and UTC+2 (winter). So the cron fires at both 03:00 and 04:00 UTC, and this
+GitHub schedules in UTC only, while Israel moves between UTC+3 (summer) and
+UTC+2 (winter). So the workflow fires at both 03:00 and 04:00 UTC, and this
 module decides:
   - before 06:00 Israel time it does nothing (the winter 03:00 UTC firing);
   - the sync runs once per Israel day: a firing that finds today's sync
@@ -23,6 +24,7 @@ from app.models.job_pool import DailyJobPool
 from app.services.job_aggregator import run_daily_aggregation
 from daily_matches import config, store
 from daily_matches.pool_embedding import embed_pool, purge_retention
+from daily_matches.sources import collect_extra
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +75,19 @@ async def run_pipeline(session, *, now: datetime | None = None, force: bool = Fa
         report["sync"] = {k: sync.get(k) for k in ("fetched", "upserted", "purged_stale", "duration_sec", "errors")}
         if not sync.get("fetched"):
             raise PipelineError("the sync fetched 0 jobs from every source")
+        try:
+            report["extra"] = await collect_extra(session)
+        except Exception as exc:  # noqa: BLE001 — extra sources never cost the day's V1 jobs
+            logger.exception("[pipeline] extra sources crashed")
+            await session.rollback()
+            report["extra"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
     else:
         report["sync"] = {"skipped": f"already ran today at {config.to_israel(last_sync):%H:%M} Israel time"}
 
     report["embed"] = await embed_pool(session, now=now)
     report["purged"] = await purge_retention(session)
 
-    pool = await store.pool_counts(session, now - config.ACTIVE_WINDOW)
+    pool = await store.pool_counts(session, now - config.ACTIVE_WINDOW, now=now)
     report["pool"] = pool
     if pool["active"] == 0:
         raise PipelineError("no active jobs in daily_job_pool after the sync")

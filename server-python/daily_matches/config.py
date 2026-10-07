@@ -47,15 +47,32 @@ CACHE_MIN_TOKENS = 4096  # Haiku 4.5 silently skips caching shorter prefixes
 # A cache entry becomes readable only once the first response starts, so the
 # other calls wait this long after the first one is sent.
 WARMUP_DELAY_S = 1.2
+# A second model that admins' runs also ask, so its verdict shows next to the
+# main one on each card. Empty: off. For deciding whether a pricier model is
+# worth it, on real decks.
+COMPARE_MODEL = (os.getenv("DM_COMPARE_MODEL", "") or "").strip()
 
 # ── Matching ──────────────────────────────────────────────────────────────────
-TOP_K = _int("DM_TOP_K", 15)
-MIN_PER_CV = 3  # each CV version is guaranteed this many of the TOP_K slots
-MIN_DISPLAY_SCORE = _int("DM_MIN_SCORE", 50)
-MIN_CARDS = 5  # below this many passing cards, the best of the rest are shown
+# A deck holds only jobs published in the last FRESH_WINDOW that this person
+# was never shown or analyzed for: for a daily user, the last day's jobs.
+FRESH_WINDOW = timedelta(days=3)
+MAX_ANALYZED = _int("DM_MAX_ANALYZED", 40)  # LLM calls per run; the cost cap
+MIN_PER_CV = 3  # each CV version is guaranteed this many of the analyzed slots
+STRONG_SCORE = _int("DM_STRONG_SCORE", 70)  # the deck
+MAYBE_SCORE = _int("DM_MAYBE_SCORE", 60)  # shown after the strong ones, marked "worth a look"
 ACTIVE_WINDOW = timedelta(hours=48)  # same "still open" rule as app/routes/jobs.py
-NEW_JOB_WINDOW = timedelta(days=3)
 RUN_STALE_AFTER = timedelta(minutes=6)  # a "running" row older than this is retryable
+
+# What the extension may send as a CV version's focus: the pool's own categories.
+CATEGORIES = ("Backend", "Frontend", "Full Stack", "DevOps", "Mobile", "Data", "AI / ML",
+              "QA", "Security", "Embedded", "Hardware")
+# Experience level → job seniorities left out. Unknown seniority always stays in.
+LEVEL_EXCLUDES = {
+    "junior": ("Senior",),
+    "mid": (),
+    "senior": ("Junior",),
+    "lead": ("Junior", "Mid"),
+}
 
 # ── Free trial ────────────────────────────────────────────────────────────────
 TRIAL_IP_MAX = _int("DM_TRIAL_IP_MAX", 3)
@@ -77,8 +94,20 @@ CV_EMBED_RETENTION = timedelta(days=90)
 # trial, which would hand everyone a second one, so set it once and keep it.
 HASH_SALT = os.getenv("DM_HASH_SALT", "jma-daily-matches-v1")
 
-# Haiku 4.5 list prices, USD per million tokens — for the admin cost report only.
-PRICE_IN, PRICE_OUT, PRICE_CACHE_READ, PRICE_CACHE_WRITE = 1.00, 5.00, 0.10, 1.25
+# List prices, USD per million tokens (input, output, cache read, cache write)
+# — for the admin cost report only.
+PRICES = {
+    "claude-haiku-4-5-20251001": (1.00, 5.00, 0.10, 1.25),
+    "claude-sonnet-5-5": (2.00, 10.00, 0.20, 2.50),
+}
+PRICE_IN, PRICE_OUT, PRICE_CACHE_READ, PRICE_CACHE_WRITE = PRICES[LLM_MODEL]
+
+
+def usage_cost(usage: dict, model: str = LLM_MODEL) -> float:
+    p_in, p_out, p_read, p_write = PRICES.get(model, PRICES[LLM_MODEL])
+    return ((usage.get("input_tokens") or 0) * p_in + (usage.get("output_tokens") or 0) * p_out
+            + (usage.get("cache_read_tokens") or 0) * p_read
+            + (usage.get("cache_write_tokens") or 0) * p_write) / 1_000_000
 
 
 def utcnow() -> datetime:

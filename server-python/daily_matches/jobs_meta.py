@@ -1,7 +1,8 @@
 """Which ATS hosts a job, and the URL of its application form.
 
-The extension decides what Apply can do from `ats`: Lever gets auto-fill,
-Workday a sign-in explanation, everything else download-and-copy. The apply URL
+The extension decides what Apply can do from `ats`: Lever, Greenhouse and
+Ashby get auto-fill, Workday a sign-in explanation, everything else
+download-and-copy (daily/dm-apply.js). The apply URL
 points at the ATS-hosted form where one exists, rather than a company page that
 embeds it in an iframe, so the form is top-level and on a host the extension
 already has permission for.

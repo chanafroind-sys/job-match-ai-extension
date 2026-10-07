@@ -1,7 +1,7 @@
 """Keeps dm_job_embeddings in step with daily_job_pool, and enforces retention.
 
-Runs after the daily sync (scripts/run_job_embeddings.py, chained in the cron),
-and on demand from POST /api/daily-matches/admin/embed-pool. Only active jobs
+Runs after the daily sync (daily_matches/daily_pipeline.py, from the GitHub
+workflow), and on demand from POST /api/daily-matches/admin/embed-pool. Only active jobs
 whose embedding text changed, or whose vector came from another model, are
 sent to Voyage, so a normal day embeds just the new postings.
 """

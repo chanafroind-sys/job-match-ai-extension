@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -35,11 +35,18 @@ class CvIn(BaseModel):
     id: str = Field(..., min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
     label: str = Field("", max_length=60)
     text: str = Field(..., min_length=1, max_length=_MAX_BLOB)
+    # Job categories this version targets; unknown names are ignored, none means all.
+    focus: list[str] = Field(default_factory=list, max_length=len(config.CATEGORIES))
+
+
+class PrefsIn(BaseModel):
+    level: Optional[Literal["junior", "mid", "senior", "lead"]] = None
 
 
 class RunIn(BaseModel):
     cvs: list[CvIn] = Field(..., min_length=1, max_length=config.MAX_CV_VERSIONS)
     primaryCvId: Optional[str] = Field(None, max_length=40)
+    prefs: Optional[PrefsIn] = None
 
 
 class ActionIn(BaseModel):
@@ -88,6 +95,7 @@ def _run_json(run: DmRun) -> dict:
         "status": _run_status(run),
         "entitlement": run.entitlement,
         "pool_size": run.pool_size,
+        "fresh": run.fresh_jobs,
         "candidates": run.candidates,
         "cards": run.results,
     }
@@ -98,12 +106,18 @@ def _card_json(row: DmRunResult) -> dict:
         "id": row.id,
         "rank": row.rank,
         "match_score": row.match_score,
+        "tier": row.tier or "strong",
         "vector_score": row.vector_score,
         "best_cv_id": row.best_cv_ref,
         "analysis": row.analysis,
         "job": row.job_snapshot,
         "user_action": row.user_action,
     }
+
+
+def _shown():
+    """Deck rows: strong and maybe, plus rows from before tiers existed."""
+    return or_(DmRunResult.tier.is_(None), DmRunResult.tier.in_(service.SHOWN_TIERS))
 
 
 def _sse_one(event: dict) -> StreamingResponse:
@@ -166,8 +180,9 @@ async def run(body: RunIn, request: Request,
         err = locked_error(access.reason)
         return _sse_one(service.error_event(err.code, err.coded()))
 
-    cvs = [service.CvInput(id=c.id, label=c.label, text=c.text) for c in body.cvs]
-    return StreamingResponse(service.stream_run(cvs, body.primaryCvId, access),
+    cvs = [service.CvInput(id=c.id, label=c.label, text=c.text, focus=c.focus) for c in body.cvs]
+    prefs = service.Prefs(level=body.prefs.level if body.prefs else None)
+    return StreamingResponse(service.stream_run(cvs, body.primaryCvId, access, prefs),
                              media_type="text/event-stream", headers=service.SSE_HEADERS)
 
 
@@ -190,7 +205,7 @@ async def today(request: Request, latest: bool = False,
         return {"run": None, "cards": [], "entitlement": access.kind}
     cards = []
     if run_row.status == "done":
-        rows = await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id)
+        rows = await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id, _shown())
                                 .order_by(DmRunResult.rank))
         cards = [_card_json(r) for r in rows.scalars()]
     return {"run": _run_json(run_row), "cards": cards, "entitlement": access.kind}
@@ -263,9 +278,9 @@ async def extract_cv(body: ExtractIn, request: Request,
 # ── admin ─────────────────────────────────────────────────────────────────────
 
 def _run_cost(run: DmRun) -> float:
-    return ((run.input_tokens or 0) * config.PRICE_IN + (run.output_tokens or 0) * config.PRICE_OUT
-            + (run.cache_read_tokens or 0) * config.PRICE_CACHE_READ
-            + (run.cache_write_tokens or 0) * config.PRICE_CACHE_WRITE) / 1_000_000
+    return config.usage_cost({"input_tokens": run.input_tokens, "output_tokens": run.output_tokens,
+                              "cache_read_tokens": run.cache_read_tokens,
+                              "cache_write_tokens": run.cache_write_tokens})
 
 
 def _band(score: int | None) -> str:
@@ -289,13 +304,15 @@ async def admin_metrics(days: int = 14, _admin=Depends(require_admin), db: Async
         d["trial"] += r.entitlement == "trial"
         d["cost_usd"] = round(d["cost_usd"] + _run_cost(r), 4)
     done = [r for r in runs if r.status == "done"]
-    rows = (await db.execute(select(DmRunResult.match_score, DmRunResult.user_action)
+    rows = (await db.execute(select(DmRunResult.match_score, DmRunResult.user_action, DmRunResult.tier)
                              .join(DmRun, DmRun.id == DmRunResult.run_id)
                              .where(DmRun.match_day >= since))).all()
     bands: dict[str, dict] = {}
-    for score, action in rows:
-        b = bands.setdefault(_band(score), {"shown": 0, "viewed": 0, "saved": 0, "skipped": 0, "applied": 0})
-        b["shown"] += 1
+    for score, action, tier in rows:
+        b = bands.setdefault(_band(score), {"analyzed": 0, "shown": 0, "viewed": 0, "saved": 0,
+                                            "skipped": 0, "applied": 0})
+        b["analyzed"] += 1
+        b["shown"] += tier is None or tier in service.SHOWN_TIERS
         if action in b:
             b[action] += 1
     return {

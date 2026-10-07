@@ -231,14 +231,102 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   await tick(800);
   ok('"I applied" records it and moves on', actions(ctx.log).includes('1:applied') && ctx.doc.getElementById('dmCount').textContent === '2 / 3');
 
-  // ── apply: Greenhouse gets the hosted form plus download-and-copy ─────────────
-  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 3 })], storage: { cvText: CV } });
+  // ── apply: Greenhouse is filled by the React-aware filler ─────────────────────
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 3 })], storage: { cvText: CV },
+    injection: { found: true, filled: ['First name', 'Last name', 'Email'], left: ['Phone'], attached: false, fileName: '' } });
   ctx.app.goTo(2, false);
+  ok('a Greenhouse card says it can be auto-filled', ctx.doc.querySelectorAll('.dm-slide')[2].querySelector('.chip-auto'));
+  ctx.doc.querySelector('[data-act="apply"]').click();
+  await tick();
+  ok('first Greenhouse apply asks to confirm the form details too', ctx.app.state.view === 'profile');
+  ctx.doc.querySelector('[data-act="save-profile"]').click();
+  await tick(250);
+  const gh = ctx.log.scripting[0];
+  ok('Greenhouse opens the hosted application form', ctx.log.tabs[0].url === 'https://job-boards.greenhouse.io/datavine/jobs/9');
+  ok('and runs the React filler for Greenhouse', gh && gh.func.name === 'reactFill' && gh.args[0] === 'greenhouse' &&
+     gh.args[1].email === 'noa.levi@example.com');
+  ok('the result names the site', ctx.doc.querySelector('.ap-h').textContent.includes('Greenhouse') &&
+     ctx.doc.body.textContent.includes('מולאו 3 שדות'));
+
+  // ── apply: a site without auto-fill gets download-and-copy ────────────────────
+  const otherDeck = [card(7, 80, 'Backend Developer', { job: { title: 'Backend Developer', company: 'Papaya', category: 'Backend',
+    seniority: 'Mid', url: 'https://www.comeet.com/jobs/papaya/B2.00B/be/9A.1F3', apply_url: 'https://www.comeet.com/jobs/papaya/B2.00B/be/9A.1F3',
+    ats: 'other', excerpt: '' } })];
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV },
+    today: { run: { id: 8, status: 'done', candidates: 4 }, cards: otherDeck, entitlement: 'subscription' } });
   ctx.doc.querySelector('[data-act="apply"]').click();
   await tick(200);
-  ok('Greenhouse opens the hosted application form', ctx.log.tabs[0].url === 'https://job-boards.greenhouse.io/datavine/jobs/9');
-  ok('and offers details to copy instead of filling', ctx.log.scripting.length === 0 &&
-     ctx.doc.querySelectorAll('.cp-row').length >= 2 && ctx.doc.body.textContent.includes('Greenhouse'));
+  ok('a site without auto-fill opens and offers details to copy', ctx.log.tabs[0].url.includes('comeet.com') &&
+     ctx.log.scripting.length === 0 && ctx.doc.querySelectorAll('.cp-row').length >= 2 &&
+     ctx.doc.body.textContent.includes('עדיין לא זמין'));
+
+  // ── focus, level and the run payload ──────────────────────────────────────────
+  ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV } });
+  ok('the ready screen shows the guessed focus as such', ctx.doc.querySelector('.cvv-focus').textContent.includes('Backend') &&
+     ctx.doc.querySelector('.cvv-focus').textContent.includes('זוהה אוטומטית'));
+  ok('one version gets the tip to add more', !!ctx.doc.querySelector('.dm-tip') && !!ctx.doc.querySelector('.btn[data-act="library"]'));
+  ctx.doc.querySelector('[data-act="set-level"][data-level="mid"]').click();
+  await tick();
+  ok('choosing a level marks it and keeps it', ctx.doc.querySelector('.lvl.is-on').dataset.level === 'mid' &&
+     ctx.storage.jma_dm_cv_library.level === 'mid');
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(200);
+  let req = ctx.log.requests.find(r => r.path === '/run');
+  ok('the run sends each version\'s focus and the level', req && req.body.prefs.level === 'mid' &&
+     JSON.stringify(req.body.cvs[0].focus) === JSON.stringify(['Backend']));
+
+  ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV } });
+  ctx.doc.querySelector('[data-act="library"]').click();
+  await tick();
+  const devops = ctx.doc.querySelector('[data-act="toggle-focus"][data-cat="DevOps"]');
+  devops.click();
+  await tick();
+  ok('toggling a category saves the guess plus the change', JSON.stringify(ctx.storage.jma_dm_cv_library.mainFocus) ===
+     JSON.stringify(['Backend', 'DevOps']) && devops.classList.contains('is-on'));
+  ok('the "guessed" hint goes once the person chose', !ctx.doc.querySelector('.lib-focus .dm-fine'));
+  ctx.doc.querySelector('[data-act="toggle-new-focus"][data-cat="Data"]').click();
+  ok('a new version\'s categories toggle in place', ctx.app.state.newFocus.join() === 'Data' &&
+     ctx.doc.querySelector('[data-act="toggle-new-focus"][data-cat="Data"]').classList.contains('is-on'));
+
+  // ── a text-only main CV can get a file for downloading ───────────────────────
+  const docx = { name: 'Noa-Backend.docx', size: 2048, arrayBuffer: async () => new Uint8Array([80, 75, 3, 4]).buffer };
+  await ctx.window.JMA_DM.cvLibrary.attachMainFile(docx);
+  let lst = await ctx.window.JMA_DM.cvLibrary.list();
+  ok('an attached file makes the main CV downloadable', lst[0].hasFile && lst[0].fileName === 'Noa-Backend.docx' &&
+     (await ctx.window.JMA_DM.cvLibrary.getFile('main')).name === 'Noa-Backend.docx');
+  ctx.storage.cvText = CV + '\nNew job: Staff Engineer';
+  lst = await ctx.window.JMA_DM.cvLibrary.list();
+  ok('replacing the CV in settings retires the old file', !lst[0].hasFile &&
+     (await ctx.window.JMA_DM.cvLibrary.getFile('main')) === null);
+
+  // ── the deck: tiers, summary, download on the card, compare line ─────────────
+  const tiered = [card(1, 84, 'Backend Engineer', { tier: 'strong' }),
+    card(2, 64, 'Platform Engineer', { tier: 'maybe', analysis: { ...card(2, 64, 'x').analysis,
+      compare: { model: 'claude-sonnet-5-5', match_score: 58, fit_summary_he: 'חסר Go בפועל.' } } })];
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 2 })], storage: { cvText: '[PDF_BASE64:JVBERi0xLjQK]', cvName: 'cv.pdf' },
+    today: { run: { id: 3, status: 'done', candidates: 23, fresh: 31 }, cards: tiered, entitlement: 'subscription' } });
+  ok('the header sums up the deck', ctx.doc.querySelector('.dm-date').textContent.includes('1 התאמות חזקות') &&
+     ctx.doc.querySelector('.dm-date').textContent.includes('1 שווה הצצה') && ctx.doc.querySelector('.dm-date').textContent.includes('23'));
+  ok('a maybe card says so', ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.chip-maybe') &&
+     !ctx.doc.querySelectorAll('.dm-slide')[0].querySelector('.chip-maybe'));
+  ok('an admin card shows the second model\'s verdict', ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.dm-alt').textContent.includes('Sonnet 5.5'));
+  ctx.window.URL.createObjectURL = () => 'blob:cv';
+  ctx.window.URL.revokeObjectURL = () => {};
+  const dlBtn = ctx.doc.querySelectorAll('.dm-slide')[0].querySelector('[data-act="dl-cv"]');
+  ok('the recommended version can be downloaded from the card', dlBtn && !dlBtn.hidden);
+  dlBtn.click();
+  await tick();
+  ok('and the download goes out under the file\'s own name', ctx.log.downloads.length === 1 && ctx.log.downloads[0].filename === 'cv.pdf');
+
+  // ── a quiet day ───────────────────────────────────────────────────────────────
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 0 })], storage: { cvText: CV },
+    today: { run: { id: 4, status: 'done', candidates: 12, fresh: 12, cards: 0 }, cards: [], entitlement: 'subscription' } });
+  ok('nothing at 60+ shows the quiet screen, not weak cards', ctx.app.state.view === 'quiet' &&
+     ctx.doc.body.textContent.includes('12') && !ctx.doc.querySelector('[data-act="build"]'));
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 0 })], storage: { cvText: CV },
+    today: { run: { id: 5, status: 'done', candidates: 0, fresh: 0, cards: 0 }, cards: [], entitlement: 'subscription' } });
+  ok('nothing new at all offers to search again', ctx.app.state.view === 'quiet' &&
+     ctx.doc.body.textContent.includes('אין משרות חדשות') && !!ctx.doc.querySelector('[data-act="build"]'));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

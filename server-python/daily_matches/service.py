@@ -1,16 +1,24 @@
 """One Daily Matches run: claim the day, prepare CVs, Stage 1, Stage 2, store
 the deck.
 
+Stage 1 takes only fresh jobs (published within FRESH_WINDOW) that this person
+was never given before, in the fields their CV versions focus on and at their
+level, and keeps the MAX_ANALYZED most similar to their CVs. Stage 2 scores
+each of those with its own LLM call. The deck is the jobs scoring STRONG_SCORE
+or more, then the MAYBE_SCORE ones; nothing below is shown, so a quiet day
+shows few cards or none.
+
 The pipeline runs as its own task and reports through a queue that the SSE
 response drains. If the user closes the side panel mid-build, the task keeps
 going and the deck is waiting when they come back. Every failure path marks
 the day's run failed and releases a reserved trial, so a failed run never uses
-up the day or the free trial.
+up the day or the free trial. A run with nothing new to analyze costs nothing,
+so it doesn't use them up either.
 """
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator, Callable
 
 from fastapi import HTTPException
@@ -55,6 +63,12 @@ class CvInput:
     id: str
     label: str
     text: str
+    focus: list[str] = field(default_factory=list)  # job categories this version targets
+
+
+@dataclass
+class Prefs:
+    level: str | None = None  # a config.LEVEL_EXCLUDES key, or None for any level
 
 
 @dataclass
@@ -64,6 +78,7 @@ class _PreparedCv:
     label: str
     text: str
     hash: str
+    focus: list[str] = field(default_factory=list)
 
 
 def sse(event: dict) -> str:
@@ -92,13 +107,16 @@ async def claim_run(session, access: Access) -> tuple[str, DmRun]:
 
     existing = (await session.execute(select(DmRun).where(
         DmRun.subject == access.subject, DmRun.match_day == day))).scalar_one()
-    if existing.status == "done":
+    if existing.status == "done" and existing.candidates != 0:
         return "done", existing
     retried = await session.execute(
         update(DmRun)
         .where(DmRun.id == existing.id, or_(
             DmRun.status == "failed",
             and_(DmRun.status == "running", DmRun.started_at < now - config.RUN_STALE_AFTER),
+            # Nothing was analyzed, so nothing was spent: after changing their
+            # focus or CVs, a person may look again the same day.
+            and_(DmRun.status == "done", DmRun.candidates == 0),
         ))
         .values(status="running", started_at=now, finished_at=None, error=None, entitlement=access.kind)
         .execution_options(synchronize_session=False)
@@ -128,19 +146,23 @@ async def _mark_failed(session, run_id: int | None, install_hash: str | None, co
 
 # ── Ranking and cards ─────────────────────────────────────────────────────────
 
-def rank_cards(candidates: list[retrieval.Candidate],
-               analyses: dict[str, dict | None]) -> list[tuple[retrieval.Candidate, dict | None]]:
-    """Analyzed jobs by score. Only jobs at or above MIN_DISPLAY_SCORE make the
-    deck, unless fewer than MIN_CARDS do: then the best of the rest fill it, so
-    a thin day still shows something."""
+SHOWN_TIERS = ("strong", "maybe")
+
+
+def tier_for(score: int) -> str:
+    if score >= config.STRONG_SCORE:
+        return "strong"
+    return "maybe" if score >= config.MAYBE_SCORE else "hidden"
+
+
+def rank_results(candidates: list[retrieval.Candidate],
+                 analyses: dict[str, dict | None]) -> list[tuple[retrieval.Candidate, dict, str]]:
+    """Every analyzed job, best first, with its tier. Only strong and maybe are
+    shown; hidden ones are kept so they never come back. A job whose analysis
+    failed is left out entirely, so a later run can try it again."""
     analyzed = [(c, analyses[c.job_id]) for c in candidates if analyses.get(c.job_id)]
     analyzed.sort(key=lambda t: (-t[1]["match_score"], -t[0].sim))
-    passing = [t for t in analyzed if t[1]["match_score"] >= config.MIN_DISPLAY_SCORE]
-    if len(passing) >= config.MIN_CARDS:
-        return passing
-    rest = [t for t in analyzed if t[1]["match_score"] < config.MIN_DISPLAY_SCORE]
-    unanalyzed = sorted(((c, None) for c in candidates if not analyses.get(c.job_id)), key=lambda t: -t[0].sim)
-    return (passing + rest + unanalyzed)[:config.MIN_CARDS]
+    return [(c, a, tier_for(a["match_score"])) for c, a in analyzed]
 
 
 def job_snapshot(job: DailyJobPool) -> dict:
@@ -155,9 +177,24 @@ def job_snapshot(job: DailyJobPool) -> dict:
         "apply_url": apply_url_for(ats, job.url, job.company, job.external_job_id),
         "ats": ats,
         "published_at": published.isoformat() if published else None,
-        "is_new": bool(published and published >= config.utcnow() - config.NEW_JOB_WINDOW),
+        "is_new": bool(published and published >= config.utcnow() - config.FRESH_WINDOW),
         "excerpt": card_excerpt(job.description),
     }
+
+
+def job_filters(access: Access, prepared: list[_PreparedCv], prefs: Prefs,
+                now) -> tuple[store.JobFilter, dict[str, store.JobFilter]]:
+    """The run's filter (every focused category together) and one per CV
+    version: a version searches its own categories, or the run's when it has
+    none. No focus anywhere means every category."""
+    excluded = list(config.LEVEL_EXCLUDES.get(prefs.level or "", ()))
+    union = sorted({c for cv in prepared for c in cv.focus})
+
+    def make(categories: list[str]) -> store.JobFilter:
+        return store.JobFilter(subject=access.subject, active_since=now - config.ACTIVE_WINDOW,
+                               published_since=now - config.FRESH_WINDOW,
+                               categories=categories, excluded_seniority=excluded)
+    return make(union), {cv.alias: make(cv.focus or union) for cv in prepared}
 
 
 # ── The pipeline ──────────────────────────────────────────────────────────────
@@ -172,16 +209,36 @@ async def _prepare_cvs(cvs_in: list[CvInput], emit: Callable[[dict], None]) -> l
         norm = normalize_cv_text(text)
         if len(norm) < config.MIN_CV_CHARS:
             continue
+        focus = [c for c in config.CATEGORIES if c in set(cv.focus or [])]
         prepared.append(_PreparedCv(alias=f"cv{len(prepared) + 1}", ref=cv.id,
                                     label=(cv.label or "").strip()[:60] or f"CV {len(prepared) + 1}",
-                                    text=norm, hash=sha256(norm)))
+                                    text=norm, hash=sha256(norm), focus=focus))
     if not prepared:
         raise DmError("DM_NO_CV", "לא נמצאו קורות חיים עם מספיק טקסט להתאמה. העלה/י קורות חיים בהגדרות.", 422)
     return prepared
 
 
+async def _compare(prompt_cvs, prompt_jobs, analyses: dict[str, dict | None]) -> None:
+    """Admins' runs: ask config.COMPARE_MODEL too, and put its verdict next to
+    the main one on each card. Its failure never fails the run."""
+    try:
+        other, usage = await reasoning.analyze_jobs(prompt_cvs, prompt_jobs, model=config.COMPARE_MODEL)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[DM] compare model %s failed: %s", config.COMPARE_MODEL, exc)
+        return
+    logger.warning("[DM] compare model %s cost $%.4f", config.COMPARE_MODEL,
+                   config.usage_cost(usage, config.COMPARE_MODEL))
+    for job_id, alt in other.items():
+        if alt and analyses.get(job_id):
+            analyses[job_id]["compare"] = {
+                "model": config.COMPARE_MODEL, "match_score": alt["match_score"],
+                "best_cv_ref": alt["best_cv_ref"], "fit_summary_he": alt["fit_summary_he"],
+            }
+
+
 async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Access,
-                    emit: Callable[[dict], None]) -> None:
+                    emit: Callable[[dict], None], prefs: Prefs | None = None) -> None:
+    prefs = prefs or Prefs()
     run_id: int | None = None
     reserved_install: str | None = None
     async with _new_session() as session:
@@ -218,11 +275,18 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             await session.commit()
             emit({"type": "cv_ready", "count": len(prepared), "embedded_now": len(missing)})
 
-            # Stage 1
-            since = config.utcnow() - config.ACTIVE_WINDOW
-            counts = await store.pool_counts(session, since)
-            per_cv = await store.search_jobs(session, cv_rows, access.subject, since, config.TOP_K)
-            candidates = retrieval.merge_candidates(per_cv, config.TOP_K, config.MIN_PER_CV)
+            # Stage 1: fresh, unseen, in focus, at level; the closest MAX_ANALYZED.
+            now = config.utcnow()
+            run_filter, cv_filters = job_filters(access, prepared, prefs, now)
+            counts = await store.pool_counts(session, run_filter.active_since)
+            if counts["active"] == 0:
+                raise DmError("DM_POOL_EMPTY", "מאגר המשרות של היום עדיין לא מוכן. נסה/י שוב בעוד כמה שעות.", 503)
+            fresh_total = await store.count_fresh(session, run_filter)
+            per_cv: dict[str, list[tuple[str, float]]] = {}
+            for alias, row_id in cv_rows.items():
+                found = await store.search_jobs(session, {alias: row_id}, cv_filters[alias], config.MAX_ANALYZED)
+                per_cv.update(found)
+            candidates = retrieval.merge_candidates(per_cv, config.MAX_ANALYZED, config.MIN_PER_CV)
             jobs = {}
             if candidates:
                 rows = await session.execute(select(DailyJobPool).where(
@@ -232,10 +296,23 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             if not candidates and counts["active"] > counts["embedded"]:
                 # Jobs are in, vectors aren't yet: the status call starts that in the background.
                 raise DmError("DM_POOL_PREPARING", "מאגר המשרות של היום בהכנה. נסה/י שוב בעוד כמה דקות.", 503)
-            if not candidates:
-                raise DmError("DM_POOL_EMPTY", "מאגר המשרות של היום עדיין לא מוכן. נסה/י שוב בעוד כמה שעות.", 503)
             emit({"type": "candidates", "pool": counts["active"], "embedded": counts["embedded"],
-                  "candidates": len(candidates)})
+                  "fresh": fresh_total, "candidates": len(candidates)})
+
+            if not candidates:
+                # A quiet day: nothing new in this person's fields. Nothing was spent,
+                # so the trial stays unused and the day can be retried (claim_run).
+                await session.execute(
+                    update(DmRun).where(DmRun.id == run_id).values(
+                        status="done", finished_at=config.utcnow(), pool_size=counts["active"],
+                        fresh_jobs=fresh_total, candidates=0, results=0,
+                    ).execution_options(synchronize_session=False))
+                if reserved_install:
+                    await release_trial(session, reserved_install)
+                await session.commit()
+                emit({"type": "done", "run_id": run_id, "count": 0, "strong": 0, "maybe": 0,
+                      "analyzed": 0, "fresh": fresh_total})
+                return
 
             # Stage 2 — the job rows are loaded; release the connection during the LLM calls.
             await session.commit()
@@ -247,26 +324,30 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             analyses, usage = await reasoning.analyze_jobs(
                 prompt_cvs, prompt_jobs,
                 on_progress=lambda done, total: emit({"type": "progress", "done": done, "total": total}))
+            if config.COMPARE_MODEL and access.is_admin:
+                await _compare(prompt_cvs, prompt_jobs, analyses)
 
-            # The deck
-            alias_to_ref = {cv.alias: cv.ref for cv in prepared}
-            cards = rank_cards(candidates, analyses)
-            for rank, (cand, analysis) in enumerate(cards, 1):
+            # The deck: every analyzed job is kept, so none is analyzed or shown twice.
+            ranked = rank_results(candidates, analyses)
+            for rank, (cand, analysis, tier) in enumerate(ranked, 1):
                 session.add(DmRunResult(
                     run_id=run_id, job_id=cand.job_id, rank=rank, vector_score=round(cand.sim, 4),
-                    match_score=analysis["match_score"] if analysis else None,
-                    best_cv_ref=analysis["best_cv_ref"] if analysis else alias_to_ref.get(cand.best_cv),
+                    match_score=analysis["match_score"], tier=tier, best_cv_ref=analysis["best_cv_ref"],
                     analysis=analysis, job_snapshot=job_snapshot(jobs[cand.job_id]),
                 ))
+            strong = sum(1 for *_, t in ranked if t == "strong")
+            maybe = sum(1 for *_, t in ranked if t == "maybe")
             await session.execute(
                 update(DmRun).where(DmRun.id == run_id).values(
                     status="done", finished_at=config.utcnow(), pool_size=counts["active"],
-                    candidates=len(candidates), results=len(cards), **usage,
+                    fresh_jobs=fresh_total, candidates=len(candidates), results=strong + maybe, **usage,
                 ).execution_options(synchronize_session=False))
             if reserved_install:
-                await consume_trial(session, reserved_install)
+                # A trial is used up only by a deck with something in it.
+                await (consume_trial if strong + maybe else release_trial)(session, reserved_install)
             await session.commit()
-            emit({"type": "done", "run_id": run_id, "count": len(cards)})
+            emit({"type": "done", "run_id": run_id, "count": strong + maybe, "strong": strong,
+                  "maybe": maybe, "analyzed": len(candidates), "fresh": fresh_total})
 
         except DmError as exc:
             await _mark_failed(session, run_id, reserved_install, exc.code)
@@ -297,16 +378,18 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             emit(error_event("DM_INTERNAL", "קרתה תקלה בבניית ההתאמות. אפשר לנסות שוב. [jma:DM_INTERNAL]"))
 
 
-def start_pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Access) -> tuple[asyncio.Task, asyncio.Queue]:
+def start_pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Access,
+                   prefs: Prefs | None = None) -> tuple[asyncio.Task, asyncio.Queue]:
     queue: asyncio.Queue = asyncio.Queue()
-    task = asyncio.create_task(_pipeline(cvs_in, primary_id, access, queue.put_nowait))
+    task = asyncio.create_task(_pipeline(cvs_in, primary_id, access, queue.put_nowait, prefs))
     _running.add(task)  # a strong reference, so the task outlives a closed connection
     task.add_done_callback(_running.discard)
     return task, queue
 
 
-async def stream_run(cvs_in: list[CvInput], primary_id: str | None, access: Access) -> AsyncIterator[str]:
-    task, queue = start_pipeline(cvs_in, primary_id, access)
+async def stream_run(cvs_in: list[CvInput], primary_id: str | None, access: Access,
+                     prefs: Prefs | None = None) -> AsyncIterator[str]:
+    task, queue = start_pipeline(cvs_in, primary_id, access, prefs)
     while True:
         try:
             event = await asyncio.wait_for(queue.get(), timeout=10)

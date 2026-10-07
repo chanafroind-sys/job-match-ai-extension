@@ -151,3 +151,14 @@ class TestMergeCandidates:
 
     def test_empty(self):
         assert merge_candidates({"cv1": []}, top_k=15, min_per_cv=3) == []
+
+
+class TestFilterVocabulary:
+    def test_focus_categories_are_the_pools_own(self):
+        # A focus the pool never assigns would silently match nothing.
+        from app.services.job_aggregator import CATEGORIES
+        assert set(config.CATEGORIES) == set(CATEGORIES)
+
+    def test_levels_only_drop_seniorities_the_pool_assigns(self):
+        assigned = {"Junior", "Mid", "Senior"}
+        assert all(set(dropped) <= assigned for dropped in config.LEVEL_EXCLUDES.values())

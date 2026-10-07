@@ -40,8 +40,9 @@ def _keywords(text: str) -> set[str]:
 
 
 class FakeMessages:
-    """Scores a job by keyword overlap with the system block, answering through
-    the forced tool exactly like the API would."""
+    """Scores a job by keyword overlap with the CV versions in the system
+    block (not the rubric, which names every technology), answering through
+    the tool exactly like the API would."""
 
     def __init__(self, owner: "FakeClaude"):
         self.owner = owner
@@ -56,9 +57,10 @@ class FakeMessages:
         if o.fail_when and o.fail_when(job_text):
             raise o.error_factory()
         system_text = kwargs["system"][0]["text"]
+        cv_part = system_text.split("CANDIDATE CV VERSIONS", 1)[-1]
         enum = kwargs["tools"][0]["input_schema"]["properties"]["best_cv_id"]["enum"]
-        overlap = len(_keywords(job_text) & _keywords(system_text))
-        score = max(5, min(97, 30 + overlap * 6))
+        overlap = len(_keywords(job_text) & _keywords(cv_part))
+        score = max(5, min(97, o.base_score + overlap * 6))
         tool_input = {
             "match_score": score,
             "best_cv_id": enum[0],
@@ -73,7 +75,7 @@ class FakeMessages:
             "top_gap_he": "חסר ניסיון ב-Go.",
         }
         return SimpleNamespace(
-            content=[SimpleNamespace(type="tool_use", name=kwargs["tool_choice"]["name"], input=tool_input)],
+            content=[SimpleNamespace(type="tool_use", name=kwargs["tools"][0]["name"], input=tool_input)],
             stop_reason=o.stop_reason,
             usage=SimpleNamespace(input_tokens=1000, output_tokens=300,
                                   cache_read_input_tokens=0, cache_creation_input_tokens=0),
@@ -81,13 +83,15 @@ class FakeMessages:
 
 
 class FakeClaude:
-    def __init__(self, delay: float = 0.0, fail_when=None, error_factory=None, stop_reason="tool_use"):
+    def __init__(self, delay: float = 0.0, fail_when=None, error_factory=None, stop_reason="tool_use",
+                 base_score: int = 30):
         self.calls: list[dict] = []
         self.started_at: list[float] = []
         self.delay = delay
         self.fail_when = fail_when
         self.error_factory = error_factory or (lambda: RuntimeError("boom"))
         self.stop_reason = stop_reason
+        self.base_score = base_score
         self.messages = FakeMessages(self)
 
 
