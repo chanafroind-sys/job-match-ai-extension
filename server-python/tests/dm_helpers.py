@@ -39,10 +39,33 @@ def _keywords(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if len(w) >= 3}
 
 
+_STOP = {"and", "with", "the", "for", "using"}
+
+
+def fake_requirements(job_text: str, cv_text: str) -> list[dict]:
+    """One must requirement per bullet of the posting, the first primary, the
+    rest core: met when most of its words are in the CV, partial when some
+    are, missing when none are."""
+    cv_words = _keywords(cv_text)
+    reqs = []
+    for line in job_text.splitlines():
+        line = line.strip()
+        if not line.startswith("•"):
+            continue
+        words = [w for w in _keywords(line) if w not in _STOP]
+        if not words:
+            continue
+        hits = sum(w in cv_words for w in words)
+        status = "met" if hits * 2 >= len(words) else "partial" if hits else "missing"
+        reqs.append({"text": line.lstrip("• ").strip(), "importance": "must",
+                     "weight": "primary" if not reqs else "core", "status": status})
+    return reqs[:10]
+
+
 class FakeMessages:
-    """Scores a job by keyword overlap with the CV versions in the system
-    block (not the rubric, which names every technology), answering through
-    the tool exactly like the API would."""
+    """Classifies a job's requirements by keyword overlap with the CV versions
+    in the system block (not the rubric, which names every technology),
+    answering through the tool exactly like the API would."""
 
     def __init__(self, owner: "FakeClaude"):
         self.owner = owner
@@ -59,17 +82,14 @@ class FakeMessages:
         system_text = kwargs["system"][0]["text"]
         cv_part = system_text.split("CANDIDATE CV VERSIONS", 1)[-1]
         enum = kwargs["tools"][0]["input_schema"]["properties"]["best_cv_id"]["enum"]
-        overlap = len(_keywords(job_text) & _keywords(cv_part))
-        score = max(5, min(97, o.base_score + overlap * 6))
         tool_input = {
-            "match_score": score,
+            "requirements": fake_requirements(job_text, cv_part),
+            "years_required": 0,
+            "years_relevant": 0,
+            "caps": list(o.force_caps),
+            "offsets": [],
             "best_cv_id": enum[0],
-            "cv_scores": [{"cv_id": alias, "score": max(0, score - 10 * i)} for i, alias in enumerate(enum)],
-            "requirements": [
-                {"text": "Python", "status": "met", "importance": "must"},
-                {"text": "Go", "status": "missing", "importance": "nice"},
-                {"text": "Kubernetes at scale", "status": "partial", "importance": "must"},
-            ],
+            "cv_scores": [{"cv_id": alias, "score": max(0, 90 - 10 * i)} for i, alias in enumerate(enum)],
             "fit_summary_he": "התאמה טובה לליבת התפקיד.",
             "cv_choice_reason_he": "הגרסה מדגישה את הניסיון הרלוונטי.",
             "top_gap_he": "חסר ניסיון ב-Go.",
@@ -84,14 +104,14 @@ class FakeMessages:
 
 class FakeClaude:
     def __init__(self, delay: float = 0.0, fail_when=None, error_factory=None, stop_reason="tool_use",
-                 base_score: int = 30):
+                 force_caps: tuple[str, ...] = ()):
         self.calls: list[dict] = []
         self.started_at: list[float] = []
         self.delay = delay
         self.fail_when = fail_when
         self.error_factory = error_factory or (lambda: RuntimeError("boom"))
         self.stop_reason = stop_reason
-        self.base_score = base_score
+        self.force_caps = force_caps  # e.g. ("hard_blocker",) to push every job below the deck
         self.messages = FakeMessages(self)
 
 

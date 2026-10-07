@@ -189,6 +189,34 @@
   }
 
   const hasCvFile = (cvId) => !!(state.cvs.find(v => v.id === cvId) || {}).hasFile;
+  const isAdmin = () => !!(state.status && state.status.is_admin);
+
+  // The server computes the score from the model's classifications
+  // (server-python/daily_matches/reasoning.py score_of); this shows the sum.
+  const CAP_HE = {
+    level_unproven: 'תפקיד בכיר בלי הוכחה לניסיון ברמה הזו', no_people_leadership: 'תפקיד ניהולי בלי ניסיון בניהול אנשים',
+    overqualified: 'תפקיד ג׳וניור לניסיון בכיר', hard_blocker: 'דרישת סף שלא מופיעה בקורות החיים',
+    domain_mismatch: 'תחום שונה מהניסיון שלך', not_a_job: 'זו לא מודעת דרושים', no_requirements: 'המודעה לא מפרטת דרישות',
+  };
+  const OFFSET_HE = { strong_academics: 'השכלה חזקה', adjacent_skills: 'כישורים קרובים', relevant_projects: 'פרויקטים רלוונטיים' };
+
+  function whyHtml(a) {
+    if (!Array.isArray(a.breakdown)) return ''; // decks scored before the breakdown existed
+    const row = (pts, label, cls = '') => `<li class="why-row${cls}"><b class="why-pts" dir="ltr">${pts}</b><span>${label}</span></li>`;
+    const rows = a.breakdown.map(b => {
+      const pts = `${b.points > 0 ? '+' : '−'}${Math.abs(b.points)}`;
+      if (b.kind === 'requirement') {
+        return row(pts, `<bdi dir="ltr">${esc(b.text)}</bdi> · ${b.importance === 'must' ? 'חובה' : 'יתרון'}, ${b.status === 'missing' ? 'חסר' : 'חלקי'}`, ' is-neg');
+      }
+      if (b.kind === 'years') return row(pts, `ניסיון: ${esc(b.relevant)} מתוך ${esc(b.required)} שנים נדרשות`, ' is-neg');
+      if (b.kind === 'offsets') return row(pts, esc((b.names || []).map(n => OFFSET_HE[n] || n).join(', ')), ' is-pos');
+      return '';
+    }).join('');
+    const cap = a.cap ? row(`≤${esc(a.cap.value)}`, `תקרה: ${esc(CAP_HE[a.cap.name] || a.cap.name)}`, ' is-cap') : '';
+    return `<div><button type="button" class="link-btn" data-act="why" aria-expanded="false">🧮 איך חושב הציון ▾</button>
+      <div class="dm-why" hidden><p class="dm-fine">מתחילים מ-100 ומורידים לפי כל פער. אותם פערים תמיד נותנים אותו ציון.</p>
+        <ul class="why-list">${row('100', 'נקודת ההתחלה')}${rows}${cap}${row(esc(a.match_score), '<b>הציון</b>', ' is-total')}</ul></div></div>`;
+  }
 
   function cardHtml(card, i, n) {
     const a = card.analysis;
@@ -221,7 +249,8 @@
           <div class="dm-cv-cmp" hidden>${scores.map(s => `<label class="dm-cv-opt"><input type="radio" name="cv-${card.id}" value="${esc(s.cv_id)}"${s.cv_id === sel ? ' checked' : ''}><span>${esc(s.label)}${s.cv_id === card.best_cv_id ? '<em>מומלץ</em>' : ''}</span><span class="bar"><i style="width:${Math.max(0, Math.min(100, s.score))}%"></i></span><b>${s.score}</b></label>`).join('')}</div></div>
         ${a.fit_summary_he ? `<section><h3 class="dm-sec-h">🤖 ניתוח ההתאמה</h3><p class="dm-ai">${esc(a.fit_summary_he)}</p></section>` : ''}
         ${reqs.length ? `<section><div class="dm-sec-row"><h3 class="dm-sec-h">דרישות התפקיד</h3><span class="req-sum">${reqSummary(reqs)}</span></div><ul class="reqs">${reqs.map(r => `<li class="req req--${esc(r.status)}${r.status === 'missing' && r.importance === 'must' ? ' req--hard' : ''}"><span class="req-ico" aria-hidden="true">${(STATUS_ICON[r.status] || ['?'])[0]}</span><span class="sr">${(STATUS_ICON[r.status] || ['', ''])[1]}:</span><bdi dir="ltr" class="req-t">${esc(r.text)}</bdi><span class="req-imp req-imp--${r.importance === 'must' ? 'must' : 'nice'}">${r.importance === 'must' ? 'חובה' : 'יתרון'}</span></li>`).join('')}</ul></section>` : ''}
-        ${a.top_gap_he ? `<div class="dm-gap${hard ? ' is-hard' : ''}"><b>${hard ? '⚠️' : '💡'} הפער המרכזי:</b> ${esc(a.top_gap_he)}</div>` : ''}`;
+        ${a.top_gap_he ? `<div class="dm-gap${hard ? ' is-hard' : ''}"><b>${hard ? '⚠️' : '💡'} הפער המרכזי:</b> ${esc(a.top_gap_he)}</div>` : ''}
+        ${whyHtml(a)}`;
     } else {
       body = `<p class="dm-muted">הניתוח המעמיק לא הושלם למשרה הזו. היא כאן כי היא קרובה מאוד לקורות החיים שלך.</p>`;
     }
@@ -248,7 +277,7 @@
   function deck() {
     const n = state.cards.length;
     return `<div class="dm" tabindex="-1">
-      <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}</div></div>
+      <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div></div>
         <div class="dm-nav"><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
       <div class="dm-progress" aria-hidden="true">${state.cards.map(() => '<span class="dm-seg"></span>').join('')}</div>
       <div class="dm-track" id="dmTrack" role="region" aria-roledescription="קרוסלה" aria-label="משרות שהותאמו לך">${state.cards.map((c, i) => cardHtml(c, i, n)).join('')}</div>
@@ -321,7 +350,8 @@
       <div class="dm-card-plain"><div class="dm-big" aria-hidden="true">🌤️</div><h2 class="dm-h2">${head[0]}</h2><p class="dm-muted">${head[1]}</p>
         <p class="dm-fine">המאגר מתעדכן כל בוקר ב-6:00. אפשר גם להרחיב את התחומים או להוסיף גרסת קו״ח.</p></div>
       <div class="dm-stack"><button type="button" class="btn ${analyzed ? 'btn-primary' : 'btn-secondary'}" data-act="library">עריכת התחומים והגרסאות</button>
-        ${analyzed ? '' : '<button type="button" class="btn btn-primary" data-act="build">חיפוש מחדש</button>'}</div>
+        ${analyzed ? '' : '<button type="button" class="btn btn-primary" data-act="build">חיפוש מחדש</button>'}
+        ${analyzed && isAdmin() ? '<button type="button" class="btn btn-secondary" data-act="rebuild">🔁 בנייה מחדש (מנהלת)</button>' : ''}</div>
       <button type="button" class="link-btn dm-link" data-act="saved">משרות שמורות</button></div>`;
   }
 
@@ -657,6 +687,19 @@
         btn.setAttribute('aria-expanded', String(!body.hidden));
         btn.textContent = body.hidden ? 'תיאור המשרה ▾' : 'הסתרת התיאור ▴';
         return undefined;
+      }
+      case 'why': {
+        const body = btn.nextElementSibling;
+        body.hidden = !body.hidden;
+        btn.setAttribute('aria-expanded', String(!body.hidden));
+        btn.textContent = body.hidden ? '🧮 איך חושב הציון ▾' : '🧮 הסתרת החישוב ▴';
+        return undefined;
+      }
+      case 'rebuild': {
+        // Admins only (the server refuses everyone else): analyzes today's jobs again.
+        const sure = typeof root.confirm === 'function'
+          ? root.confirm('לבנות מחדש את החפיסה של היום? כל המשרות של היום ינותחו שוב (כ-$0.09).') : true;
+        return sure ? build() : undefined;
       }
       case 'open-job': return card && chrome.tabs.create({ url: card.job.url });
       case 'open-saved': return chrome.tabs.create({ url: btn.dataset.url });

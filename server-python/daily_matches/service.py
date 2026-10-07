@@ -107,17 +107,22 @@ async def claim_run(session, access: Access) -> tuple[str, DmRun]:
 
     existing = (await session.execute(select(DmRun).where(
         DmRun.subject == access.subject, DmRun.match_day == day))).scalar_one()
-    if existing.status == "done" and existing.candidates != 0:
+    if existing.status == "done" and existing.candidates != 0 and not access.is_admin:
         return "done", existing
+    retryable = [
+        DmRun.status == "failed",
+        and_(DmRun.status == "running", DmRun.started_at < now - config.RUN_STALE_AFTER),
+        # Nothing was analyzed, so nothing was spent: after changing their
+        # focus or CVs, a person may look again the same day.
+        and_(DmRun.status == "done", DmRun.candidates == 0),
+    ]
+    if access.is_admin:
+        # Admins rebuild a finished day on purpose, to judge a change to the
+        # matching right away. The day's results go, so its jobs count as unseen.
+        retryable.append(DmRun.status == "done")
     retried = await session.execute(
         update(DmRun)
-        .where(DmRun.id == existing.id, or_(
-            DmRun.status == "failed",
-            and_(DmRun.status == "running", DmRun.started_at < now - config.RUN_STALE_AFTER),
-            # Nothing was analyzed, so nothing was spent: after changing their
-            # focus or CVs, a person may look again the same day.
-            and_(DmRun.status == "done", DmRun.candidates == 0),
-        ))
+        .where(DmRun.id == existing.id, or_(*retryable))
         .values(status="running", started_at=now, finished_at=None, error=None, entitlement=access.kind)
         .execution_options(synchronize_session=False)
     )

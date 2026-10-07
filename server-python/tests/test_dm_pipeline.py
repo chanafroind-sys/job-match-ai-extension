@@ -287,6 +287,19 @@ class TestFreshDeck:
         assert row.analysis["compare"]["model"] == "claude-sonnet-5-5"
         assert isinstance(row.analysis["compare"]["match_score"], int)
 
+    async def test_admins_can_rebuild_a_finished_day(self, db, env):
+        admin = Access("subscription", subject="lic:admin", is_admin=True)
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), admin)
+        first = len(env["claude"].calls)
+        events = await _collect(_cvs(BACKEND_CV), admin)
+        assert events[-1]["type"] == "done" and events[-1]["analyzed"] == 5  # the same jobs, analyzed again
+        assert len(env["claude"].calls) == 2 * first
+        assert (await db.execute(select(func.count()).select_from(DmRun))).scalar() == 1
+        # Everyone else gets the finished deck back.
+        await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert [e["type"] for e in await _collect(_cvs(BACKEND_CV), SUBSCRIBER)] == ["already"]
+
     async def test_compare_is_admins_only(self, db, env):
         env["monkeypatch"].setattr(config, "COMPARE_MODEL", "claude-sonnet-5-5")
         await _seed_and_embed(db)
@@ -333,7 +346,7 @@ class TestTrialRuns:
 
     async def test_trial_with_an_empty_deck_is_not_used_up(self, db, env):
         await _seed_and_embed(db)
-        env["monkeypatch"].setattr(main_module, "_ac", lambda: FakeClaude(base_score=-100))  # everything hidden
+        env["monkeypatch"].setattr(main_module, "_ac", lambda: FakeClaude(force_caps=("hard_blocker",)))  # everything hidden
         events = await _collect(_cvs(BACKEND_CV), await self._trial(db))
         assert events[-1]["type"] == "done" and events[-1]["count"] == 0 and events[-1]["analyzed"] == 5
         assert (await db.execute(select(func.count()).select_from(DmTrial))).scalar() == 0

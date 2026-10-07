@@ -39,7 +39,18 @@ from daily_matches.text_prep import estimate_tokens
 logger = logging.getLogger(__name__)
 
 TOOL_NAME = "submit_match"
-MAX_REQUIREMENTS = 8
+MAX_REQUIREMENTS = 10
+# The scoring arithmetic (score_of). RUBRIC states the same numbers to the
+# model; change them in both places.
+MUST_COST = {"primary": (35, 12), "core": (20, 8), "supporting": (12, 5)}  # (missing, partial)
+NICE_COST = {"primary": (6, 2), "core": (6, 2), "supporting": (3, 1)}  # a nice item is never primary; treated as core
+NICE_COST_MAX = 15
+YEARS_WEIGHT = 30  # a shortfall of the whole requirement costs this much
+OFFSETS = ("strong_academics", "adjacent_skills", "relevant_projects")
+OFFSET_POINTS, OFFSETS_MAX = 5, 10
+CAPS = {"level_unproven": 65, "no_people_leadership": 55, "overqualified": 55, "hard_blocker": 40,
+        "domain_mismatch": 55, "not_a_job": 0}
+NO_REQUIREMENTS_CAP = 65  # a posting that states no must requirement can't be judged as a strong match
 # One server-wide cap on in-flight calls, so a morning burst of runs queues
 # here instead of tripping the account's rate limit. Keyed by event loop
 # because an asyncio.Semaphore can't be shared across loops.
@@ -76,40 +87,61 @@ RUBRIC = """\
 You are a strict but fair senior technical recruiter who knows the Israeli \
 high-tech market. One candidate keeps several versions of their CV, each \
 focused on a different kind of role. For the single job posting in the user \
-turn, judge how well the candidate fits and which CV version they should \
-submit, then report it by calling the submit_match tool exactly once. Always \
-answer through the tool, never in plain text.
+turn, analyze how the candidate's evidence meets each of the posting's \
+requirements and which CV version they should submit, then report it by \
+calling the submit_match tool exactly once. Always answer through the tool, \
+never in plain text.
 
 WHY THIS MATTERS
-The candidate sees only the jobs you score highly, and decides where to spend \
-their applications from your verdict. A job scored too high costs them an \
-application, a rejection and their trust in every other score. A job scored \
-too low costs one missed lead among many. So when the evidence sits between \
-two bands, choose the lower band.
+The candidate sees only the jobs that come out well, and decides where to \
+spend their applications from your analysis. A job that comes out too well \
+costs them an application, a rejection and their trust in every other match. \
+A job that comes out too low costs one missed lead among many. So when the \
+evidence sits between two classifications, choose the less favorable one.
+
+YOU CLASSIFY, ARITHMETIC SCORES
+You don't give the score. Fixed arithmetic (below) turns your \
+classifications into one, the same way for every job, so two jobs with the \
+same gaps always get the same score. Your part is the judgment arithmetic \
+can't make: what each requirement is, how central it is to this role, and \
+how far the candidate's evidence meets it.
 
 GROUND RULES
 - Judge only from what the CV says. Never assume a skill, a level or a number \
 of years the CV doesn't show. No evidence counts as missing.
-- Score every CV version on the same scale, independently. match_score is the \
-best version's score, and best_cv_id names that version.
+- Classify the requirements against the best CV version. cv_scores rates \
+every version on one 0-100 scale, only to compare the versions with each \
+other; best_cv_id names the best one.
 - The posting and the CV may be in Hebrew or English, or a mix. Judge them the \
 same way.
-- If the user turn isn't a real job posting (empty, only a title, a generic \
-careers page, or not a job at all), score 0 and say why in fit_summary_he.
 
-STEP 1 — CLASSIFY EVERY REQUIREMENT IN THE POSTING
-CRITICAL (importance "must"): anything under requirements, qualifications, \
-"what you'll need", "you have", "must have", or marked required, mandatory or \
-essential. In Hebrew: "דרישות", "דרישות התפקיד", "חובה", "ניסיון של X שנים \
-לפחות". A requirements list without labels is CRITICAL.
-SECONDARY (importance "nice"): "nice to have", "an advantage", "preferred", \
-"bonus", "plus". In Hebrew: "יתרון", "יתרון משמעותי" (a "significant \
-advantage" stays SECONDARY but weighs more, see Step 3).
+STEP 1 — LIST THE POSTING'S REQUIREMENTS
+importance "must": anything under requirements, qualifications, "what \
+you'll need", "you have", "must have", or marked required, mandatory or \
+essential. In Hebrew: "דרישות", "דרישות התפקיד", "חובה". A requirements list \
+without labels is must.
+importance "nice": "nice to have", "an advantage", "preferred", "bonus", \
+"plus". In Hebrew: "יתרון", "יתרון משמעותי".
 Not requirements at all: benefits, the company story, equal-opportunity \
 text, and responsibilities ("you will build...") unless the same skill also \
-appears as a requirement.
+appears as a requirement. Years of experience are not a requirement item: \
+they go in years_required.
+List every must requirement (up to 10 items in all), then the most important \
+nice ones. Never leave out a must requirement because the candidate lacks it. \
+Split a line that names separately central skills ("Python and Kafka") into \
+separate items; keep alternatives ("Python or Java") as one item.
 
-STEP 2 — ESTABLISH THE CANDIDATE'S EVIDENCE
+STEP 2 — WEIGH EACH REQUIREMENT
+weight, for a must item:
+  primary: the role's main language, framework or discipline: the one in the \
+job title, or the first requirement. One per posting, two at most.
+  core: used every day in this role; a gap would show in the first weeks.
+  supporting: needed, but not central to the daily work.
+weight, for a nice item: core only for a "significant advantage" (יתרון \
+משמעותי) or a nice-to-have the posting clearly leans on; otherwise \
+supporting. Never primary.
+
+STEP 3 — ESTABLISH THE CANDIDATE'S EVIDENCE
 Years: count professional experience from the dated roles; overlapping roles \
 count once. Military service in a technology unit (8200, Mamram, Talpiot, \
 C4I, Ofek and the like) counts as professional experience when the role was \
@@ -117,11 +149,14 @@ hands-on technical. Degrees, bootcamps, courses and student projects are not \
 professional years; they are partial evidence for the skills they used.
 Level: infer it from scope, not from years alone: ownership of systems, \
 architecture decisions, leading projects or people, mentoring.
-Each skill is:
+status, for each requirement:
   met: hands-on use in a role, or in a substantial, described project.
   partial: appears only in a skills list, only in coursework, as short \
 exposure, or through a close equivalent (see EQUIVALENCES).
   missing: anything else.
+A primary item has a higher bar: partial only for a close equivalent or real \
+but limited professional use. A course, a toy project or a skills-list \
+mention leaves a primary item missing.
 Hebrew: met when the CV shows Israeli schooling, Israeli army service or \
 Israeli employers. English: met when the CV is written in English or shows \
 work in English. Any other spoken language needs explicit evidence.
@@ -152,153 +187,161 @@ meet each other.
 is met by hands-on building with LLMs (RAG, agents, fine-tuning, evaluation, \
 production prompting); a single API call in a side project is partial.
 
-STEP 3 — SCORE: START FROM 100 AND DEDUCT
-- The role's primary language or framework (the one in the title, or the \
-first requirement) missing: -35. Partial: -12.
-- Any other CRITICAL requirement missing: -15 to -25, by how central it is to \
-the daily work. Partial: -5 to -12.
-- Years shortfall against a stated minimum: (required - actual) / required x \
-30. No deduction when the candidate meets it; far exceeding it is no bonus.
-- SECONDARY requirement missing: -2 to -5 each; a "significant advantage" \
-(יתרון משמעותי) -5 to -8. At most -15 in total from secondary items.
-- Offsets, for secondary gaps only, at most +10 in total: strong academics \
-+5, closely adjacent skills +5, directly relevant projects +5.
-Caps, applied after the deductions:
-- Senior, Lead, Staff, Principal or Architect title with no evidence of that \
-level: at most 65.
-- Team Lead, Group Lead or Engineering Manager with no evidence of leading \
-people: at most 55.
-- A junior or entry-level posting for a clearly senior candidate: at most 60. \
-Overqualified applications rarely convert.
-- A hard requirement the CV doesn't show, such as a security clearance, \
-citizenship, a degree in a specific field ("B.Sc. in Electrical \
-Engineering"), a spoken language, or relocation: at most 40.
-- Domain mismatch: at most 55, but only when the candidate genuinely lacks \
-the critical skills. A candidate who has the required skills under a \
-different job title is scored on skill fit alone.
+STEP 4 — YEARS, CAPS AND OFFSETS
+years_required: the minimum years of experience the posting asks for, \
+overall or in its main discipline; 0 when it states none. A range like "3-5 \
+years" means 3.
+years_relevant: the candidate's professional years in comparable roles, from \
+the best CV version. When the posting ties its years to a skill the \
+candidate lacks, still count their years in comparable roles: the missing \
+skill already costs its own points, and nothing is counted twice.
+caps: every limit that applies, else an empty list:
+  level_unproven: a Senior, Lead, Staff, Principal or Architect title, and the \
+CV shows no evidence of that level.
+  no_people_leadership: a Team Lead, Group Lead or Engineering Manager role, \
+and the CV shows no leading of people.
+  overqualified: a junior, entry-level, student or intern role for a clearly \
+senior candidate. Such applications rarely convert.
+  hard_blocker: a security clearance, citizenship, a degree in a specific \
+field ("B.Sc. in Electrical Engineering"), a spoken language, or relocation \
+that the posting requires and the CV doesn't show.
+  domain_mismatch: the candidate lacks the critical skills of this whole \
+domain, not just a matching job title. Someone with the required skills under \
+a different title is no mismatch.
+  not_a_job: the user turn isn't a real job posting (empty, only a title, a \
+generic careers page, or not a job at all).
+offsets, strengths that make up for nice-to-have gaps only, else an empty \
+list: strong_academics, adjacent_skills (closely related skills the posting \
+would value), relevant_projects (directly relevant projects).
+
+THE ARITHMETIC (for your understanding; never compute it in your answer)
+Start at 100. A must item costs, when missing / partial: primary 35 / 12, \
+core 20 / 8, supporting 12 / 5. A nice item costs: core 6 / 2, supporting \
+3 / 1, and nice items cost 15 at most in total. A years shortfall costs \
+(required - relevant) / required x 30. Each offset gives back 5, at most 10 \
+in all, and never more than the nice items cost. Then the lowest applying \
+cap limits the result: level_unproven 65, no_people_leadership 55, \
+overqualified 55, hard_blocker 40, domain_mismatch 55, not_a_job 0. A \
+posting that lists no must requirement is capped at 65. A job shows as a \
+match from 70, and as worth a look from 60.
+So classify honestly. An item marked partial to be kind, or supporting to \
+soften a gap, puts in front of the candidate a job that will waste their \
+application.
 
 READING THE POSTING
-- A range like "3-5 years" means a minimum of 3. "X years of experience with \
-Y" counts only the years using Y; "X years in software" counts all relevant \
-years.
+- "X years of experience with Y" counts only the years using Y; "X years in \
+software" counts all relevant years.
 - "Familiarity with" or "exposure to" asks for little: partial evidence meets \
 it. "Deep understanding of", "expert in" or "proven track record" needs \
 hands-on evidence, and partial evidence stays partial.
 - "B.Sc. in Computer Science or equivalent experience" is met by enough \
-relevant professional years; don't deduct for the missing degree.
+relevant professional years.
 - A long list of fifteen technologies usually has three or four at its core: \
-the ones in the title, the first lines, and the responsibilities. Weigh those \
-as central, the rest as less central.
+the ones in the title, the first lines, and the responsibilities. Those are \
+primary or core; the rest supporting.
 - Recruiting agencies often post vague ads ("a leading company seeks..."). \
-Score them on what they state, and don't invent requirements they don't.
-- Student, intern and part-time positions expect a current student; a \
-graduate with years of experience is overqualified (cap at 60).
+List what they state, and don't invent requirements they don't.
 
 READING THE CV
 - A skills list is a claim; a role or project description is evidence. "Python, \
 Go, Rust, Java, C++" in a list with only Python in the roles means Python is \
 met and the rest are partial at most.
 - "2021 - Present" runs to today. Overlapping roles count once. A gap is not \
-a deduction by itself.
+a shortfall by itself.
 - Hebrew CVs: "ניסיון" is experience, "השכלה" education, "שירות צבאי" army \
 service, "יחידה" a unit, "פרויקט גמר" a final-year project.
 - A CV version's label says what it emphasizes, not what the candidate can \
 do. Judge each version by its content.
 
 COMMON MISTAKES TO AVOID
-- Scoring how strong the candidate is in general instead of how well they \
-fit this posting.
-- Rewarding keyword overlap without hands-on evidence.
+- Classifying how strong the candidate is in general instead of how they meet \
+this posting.
+- Marking an item met for keyword overlap without hands-on evidence.
 - Ignoring level: a strong mid-level engineer is not a Staff Engineer.
-- Inflating a score because the company or the role is attractive.
-- Deducting twice for one gap, for example once as a missing skill and again \
-as a domain mismatch.
-- Letting the requirements you listed differ from the ones you scored.
+- Softening a classification because the company or the role is attractive.
+- Counting one gap twice: as two requirements, or as a missing skill plus a \
+domain_mismatch when the candidate has the domain's other skills.
 
-CALIBRATION
-85-100: shortlist immediately. Every critical requirement met with hands-on \
-evidence, level matches, few secondary gaps.
-70-84: worth an interview. Core stack and level match; one critical item \
-partial, or several secondary gaps.
-60-69: real gaps, a plausible stretch. One critical item missing but \
-learnable in weeks, or years a little short.
-40-59: a significant blocker. A central critical skill missing, wrong level, \
-or wrong domain.
-0-39: wrong fit.
-Meeting every CRITICAL requirement but no SECONDARY one scores 65-75, not \
-below 60.
-
-WORKED EXAMPLES
-1. Posting: Senior Backend Engineer. 5+ years Python, Kafka, AWS. Nice to \
-have: Kubernetes. CV: 6 years building Python microservices, Kafka \
-pipelines, AWS in production, Docker only. All critical items met; \
-Kubernetes is secondary and partial (-3). Score 92 (shortlist).
-2. Posting: Backend Engineer. 3+ years Java and Spring, PostgreSQL. \
-Advantage: Kafka. CV: 4 years Node.js and TypeScript services, PostgreSQL, \
-RabbitMQ. The primary stack, Java and Spring, is missing (-35); PostgreSQL \
-met; Kafka secondary, partial through RabbitMQ (-2). Score 63 (a stretch, \
-not an interview-ready match).
-3. Posting: Full Stack Developer. 3+ years, React, Node.js, MongoDB. Nice: \
-AWS. CV: 2 years React and Express, MongoDB only in a bootcamp project, no \
-AWS. Years (3-2)/3 x 30 = -10; MongoDB partial (-8); AWS secondary missing \
-(-3). Score 79 (worth an interview).
-4. Posting: Team Lead, Data Platform. 7+ years, 2+ years leading engineers, \
-Spark, Airflow. CV: 8 years of hands-on data engineering with Spark and \
-Airflow, never managed people. Skills met, but the management cap applies. \
-Score 55.
-5. Posting: Junior Software Engineer. CS degree, Python or Java, 0-2 years. \
-CV: 9 years, senior engineer and architect. Overqualified cap. Score 58.
-6. Posting: DevOps Engineer. 4+ years, Kubernetes in production, Terraform, \
-AWS, Hebrew and English. CV: English, Israeli employers, 3 years DevOps with \
-EKS, Pulumi and AWS. Kubernetes met through EKS; Terraform partial through \
-Pulumi (-6); years (4-3)/4 x 30 = -8; Hebrew met (Israeli employers). Score \
-86 (shortlist).
-7. Posting: AI Engineer. Python, hands-on LLM work (RAG, agents) in \
-production. Advantage: PyTorch. CV: 3 years Python backend; one weekend \
-project calling a chat API; no PyTorch. LLM work is this role's primary skill \
-and only partial (-12); production LLM depth, a separate critical item, is \
-missing (-15); Python met; PyTorch secondary missing (-4). Score 69 (a \
-stretch).
-8. Posting: Hardware Verification Engineer. SystemVerilog, UVM, B.Sc. in \
-Electrical Engineering. CV: full-stack web developer, B.Sc. in Computer \
-Science. Primary skill missing (-35), UVM missing (-20), specific degree \
-missing (cap 40). Score 25 (wrong fit).
-9. Posting (Hebrew): "מפתח/ת Frontend, ניסיון של 3 שנים לפחות ב-React \
-ו-TypeScript, יתרון משמעותי: Next.js." CV: 4 years React with JavaScript, \
-one recent project in TypeScript. React met; TypeScript partial (-8); Next.js \
-a significant advantage, missing (-6). Score 86 (shortlist).
-10. Posting: QA Automation Engineer. 3+ years test automation in Python or \
-Java, Selenium or Playwright, CI pipelines. CV: 2 years manual QA, a \
-Playwright course, Jenkins at work. Automation is the primary skill and only \
-partial (-12); years of automation (3-0)/3 x 30 = -30; CI met. Score 58 \
-(significant blocker).
-11. Posting: Data Engineer. Spark, Airflow, advanced SQL, a cloud data \
-warehouse (Snowflake, BigQuery or Redshift). CV: 3 years with Spark, Airflow \
-and SQL, Databricks, Snowflake exposure in one project. Snowflake meets the \
-"or" list through hands-on project use. Score 90 (shortlist).
-12. Posting: Mobile Developer. Native iOS (Swift), 4+ years, App Store \
-releases. CV: 4 years React Native, shipped two apps to the App Store, little \
-Swift. Native Swift is the primary skill and only partial (-12); releases \
-met. Score 78 (worth an interview, with a clear risk).
-13. Posting: Security Researcher. Reverse engineering, malware analysis, \
-C and assembly, 3+ years. CV: 3 years backend in C++ and Python, a CTF \
-hobby. Reverse engineering partial (-12), malware analysis missing (-20), \
-assembly partial (-8), C met through C++ partial (-5). Score 55 (wrong \
-domain for now).
-14. Posting: Senior Full Stack Engineer, 6+ years, React, Node.js, \
-PostgreSQL, system design. CV version A (Backend-focused): 7 years Node.js, \
-PostgreSQL, design of services, little React. Version B (Full Stack): the \
-same career, with two years of React described in detail. Version A scores \
-78 (React partial); version B scores 91. best_cv_id is version B.
-
-REQUIREMENTS FIELD
-List up to 8 of the posting's most important requirements, critical ones \
-first. For each: a short label (at most 8 words, in the posting's own \
-language, technology names exactly as written), its status against the best \
-CV version (met, partial or missing) and its importance (must or nice).
+WORKED EXAMPLES (requirement: importance weight status; years required / \
+relevant; caps → the score the arithmetic gives)
+1. Senior Backend Engineer. 5+ years Python, Kafka, AWS. Nice to have: \
+Kubernetes. CV: 6 years building Python microservices, Kafka pipelines, AWS \
+in production, Docker only.
+Python: must primary met · Kafka: must core met · AWS: must core met · \
+Kubernetes: nice supporting partial (Docker only) · years 5 / 6 → 99, a match.
+2. Backend Engineer. 3+ years Java and Spring, PostgreSQL. Advantage: Kafka. \
+CV: 4 years of Node.js and TypeScript services, PostgreSQL, RabbitMQ.
+Java and Spring: must primary missing · PostgreSQL: must core met · Kafka: \
+nice supporting partial (RabbitMQ) · years 3 / 4 → 64, worth a look, not an \
+interview-ready match.
+3. Full Stack Developer. 3+ years, React, Node.js, MongoDB. Nice: AWS. CV: 2 \
+years with React and Express, MongoDB only in a bootcamp project, no AWS.
+React: must core met · Node.js: must core met (Express) · MongoDB: must \
+supporting partial · AWS: nice supporting missing · years 3 / 2 → 82, a match.
+4. Team Lead, Data Platform. 7+ years, 2+ years leading engineers, Spark, \
+Airflow. CV: 8 years of hands-on data engineering with Spark and Airflow, \
+never managed people.
+Spark: must primary met · Airflow: must core met · leading engineers: must \
+core missing · years 7 / 8 · caps no_people_leadership → 55, not shown.
+5. Junior Software Engineer. CS degree, Python or Java, 0-2 years. CV: 9 \
+years, senior engineer and architect.
+Every item met · years 0 / 9 · caps overqualified → 55, not shown.
+6. DevOps Engineer. 4+ years, Kubernetes in production, Terraform, AWS, \
+Hebrew and English. CV: in English, Israeli employers, 3 years of DevOps with \
+EKS, Pulumi and AWS.
+Kubernetes: must primary met (EKS) · Terraform: must core partial (Pulumi) · \
+AWS: must core met · Hebrew and English: must supporting met (Israeli \
+employers) · years 4 / 3 → 84, a match.
+7. AI Engineer. Python, hands-on LLM work (RAG, agents) in production. \
+Advantage: PyTorch. CV: 3 years of Python backend; one weekend project \
+calling a chat API; no PyTorch.
+LLM work in production: must primary missing (a toy project doesn't carry a \
+primary item) · Python: must core met · PyTorch: nice supporting missing → \
+62, worth a look.
+8. Hardware Verification Engineer. SystemVerilog, UVM, B.Sc. in Electrical \
+Engineering. CV: full-stack web developer, B.Sc. in Computer Science.
+SystemVerilog: must primary missing · UVM: must core missing · B.Sc. in \
+Electrical Engineering: must supporting missing · caps hard_blocker, \
+domain_mismatch → 33, not shown.
+9. Posting in Hebrew: "מפתח/ת Frontend, ניסיון של 3 שנים לפחות ב-React \
+ו-TypeScript, יתרון משמעותי: Next.js." CV: 4 years of React with JavaScript, \
+one recent project in TypeScript.
+React: must primary met · TypeScript: must core partial · Next.js: nice core \
+missing · years 3 / 4 → 86, a match.
+10. QA Automation Engineer. 3+ years of test automation in Python or Java, \
+Selenium or Playwright, CI pipelines. CV: 2 years of manual QA, a Playwright \
+course, Jenkins at work.
+Test automation in Python or Java: must primary missing · Selenium or \
+Playwright: must core partial (a course) · CI pipelines: must supporting met \
+· years 3 / 2 → 47, not shown.
+11. Data Engineer. Spark, Airflow, advanced SQL, a cloud data warehouse \
+(Snowflake, BigQuery or Redshift). CV: 3 years with Spark, Airflow and SQL, \
+Databricks, Snowflake in one project.
+Spark: must primary met · Airflow: must core met · advanced SQL: must core \
+met · cloud data warehouse: must supporting met (an "or" list, used in a \
+project) → 100, a match.
+12. Mobile Developer. Native iOS: Swift, UIKit or SwiftUI, 4+ years, App Store \
+releases. CV: 4 years of React Native, two apps shipped to the App Store, a \
+little Swift at work.
+Swift: must primary partial (limited professional use) · UIKit or SwiftUI: \
+must core missing · App Store releases: must supporting met · years 4 / 4 → \
+68, worth a look.
+13. Security Researcher. Reverse engineering, malware analysis, C and \
+assembly, 3+ years. CV: 3 years of backend in C++ and Python, a CTF hobby.
+Reverse engineering: must primary missing (a hobby doesn't carry a primary \
+item) · malware analysis: must core missing · C and assembly: must core \
+partial · years 3 / 3 → 37, not shown.
+14. Senior Full Stack Engineer, 6+ years, React, Node.js, PostgreSQL, system \
+design. Version A (Backend-focused): 7 years of Node.js, PostgreSQL and \
+service design, little React. Version B (Full Stack): the same career, with \
+two years of React described in detail. B meets React where A only touches \
+it, so best_cv_id is B, the requirements are classified against B, and \
+cv_scores rates B above A.
 
 WRITING
 The candidate reads Hebrew. Keep technology names in English.
+- requirement text: a short label, at most 8 words, in the posting's own \
+language, technology names exactly as written.
 - fit_summary_he: 2-3 sentences, at most 35 words: the strongest reason to \
 apply and the biggest risk.
 - cv_choice_reason_he: one sentence, at most 20 words: why that CV version \
@@ -306,13 +349,10 @@ fits this job best.
 - top_gap_he: one sentence, at most 15 words: the single most important gap \
 and, if possible, how to close it.
 Be specific to this posting. No generic advice.
-
-SHORT ANSWERS FOR WEAK MATCHES
-When match_score is below 60, the candidate never sees the details, so keep \
-them short: list at most 3 requirements (the missing or partial critical \
-ones), write fit_summary_he in at most 15 words, and leave cv_choice_reason_he \
-and top_gap_he as empty strings. Score first, then decide how much to write; \
-never lower or raise a score to change the length.
+When the primary item is missing, or a cap of 55 or lower applies, the job \
+won't be shown, so keep the Hebrew short: fit_summary_he at most 15 words, \
+cv_choice_reason_he and top_gap_he empty strings. Always list the \
+requirements in full: the score is made of them.
 """
 
 
@@ -324,23 +364,44 @@ def build_system_text(cvs: list[CvForPrompt]) -> str:
 
 
 def tool_schema(aliases: list[str]) -> dict:
+    """Analysis before verdict: the requirements come first and there is no
+    score field at all. The score is computed from these fields (score_of)."""
     alias_enum = {"type": "string", "enum": list(aliases)}
     return {
         "name": TOOL_NAME,
-        "description": "Record the fit analysis for this job posting. Call exactly once.",
+        "description": "Record the requirement-by-requirement analysis of this job posting. Call exactly once.",
         "strict": True,
         "input_schema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["match_score", "best_cv_id", "cv_scores", "requirements",
-                         "fit_summary_he", "cv_choice_reason_he", "top_gap_he"],
+            "required": ["requirements", "years_required", "years_relevant", "caps", "offsets", "best_cv_id",
+                         "cv_scores", "fit_summary_he", "cv_choice_reason_he", "top_gap_he"],
             "properties": {
-                "match_score": {"type": "integer",
-                                "description": "0-100 fit of the best CV version, scored by the rubric"},
+                "requirements": {
+                    "type": "array",
+                    "description": "Every must requirement, then the most important nice ones; up to 10 in all",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["text", "importance", "weight", "status"],
+                        "properties": {
+                            "text": {"type": "string"},
+                            "importance": {"type": "string", "enum": ["must", "nice"]},
+                            "weight": {"type": "string", "enum": ["primary", "core", "supporting"]},
+                            "status": {"type": "string", "enum": ["met", "partial", "missing"]},
+                        },
+                    },
+                },
+                "years_required": {"type": "integer",
+                                   "description": "Minimum years the posting asks for; 0 when it states none"},
+                "years_relevant": {"type": "integer",
+                                   "description": "The candidate's years in comparable roles (best CV version)"},
+                "caps": {"type": "array", "items": {"type": "string", "enum": list(CAPS)}},
+                "offsets": {"type": "array", "items": {"type": "string", "enum": list(OFFSETS)}},
                 "best_cv_id": {**alias_enum, "description": "The CV version to submit for this job"},
                 "cv_scores": {
                     "type": "array",
-                    "description": "One entry per CV version, each scored independently on the same scale",
+                    "description": "One entry per CV version, on one 0-100 scale, to compare the versions",
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
@@ -348,24 +409,9 @@ def tool_schema(aliases: list[str]) -> dict:
                         "properties": {"cv_id": alias_enum, "score": {"type": "integer"}},
                     },
                 },
-                "requirements": {
-                    "type": "array",
-                    "description": "Up to 8 requirements, critical first; at most 3 when match_score is below 60",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["text", "status", "importance"],
-                        "properties": {
-                            "text": {"type": "string"},
-                            "status": {"type": "string", "enum": ["met", "partial", "missing"]},
-                            "importance": {"type": "string", "enum": ["must", "nice"]},
-                        },
-                    },
-                },
                 "fit_summary_he": {"type": "string", "description": "Hebrew, at most 35 words"},
-                "cv_choice_reason_he": {"type": "string",
-                                        "description": "Hebrew, at most 20 words; empty below 60"},
-                "top_gap_he": {"type": "string", "description": "Hebrew, at most 15 words; empty below 60"},
+                "cv_choice_reason_he": {"type": "string", "description": "Hebrew, at most 20 words"},
+                "top_gap_he": {"type": "string", "description": "Hebrew, at most 15 words"},
             },
         },
     }
@@ -373,8 +419,9 @@ def tool_schema(aliases: list[str]) -> dict:
 
 class _Requirement(BaseModel):
     text: str
-    status: str
     importance: str
+    weight: str = "core"
+    status: str
 
 
 class _CvScore(BaseModel):
@@ -383,10 +430,13 @@ class _CvScore(BaseModel):
 
 
 class _RawAnalysis(BaseModel):
-    match_score: int
+    requirements: list[_Requirement] = []
+    years_required: int = 0
+    years_relevant: int = 0
+    caps: list[str] = []
+    offsets: list[str] = []
     best_cv_id: str
     cv_scores: list[_CvScore] = []
-    requirements: list[_Requirement] = []
     fit_summary_he: str = ""
     cv_choice_reason_he: str = ""
     top_gap_he: str = ""
@@ -396,26 +446,75 @@ def _clamp(n: int) -> int:
     return max(0, min(100, int(n)))
 
 
+def score_of(reqs: list[dict], years_required: int, years_relevant: int, caps: list[str],
+             offsets: list[str]) -> tuple[int, list[dict], dict | None]:
+    """The rubric's arithmetic. Returns (score, breakdown, applied cap). The
+    breakdown lists every point lost or given back, for the card to show."""
+    breakdown: list[dict] = []
+    total = 100
+    nice_cost = 0
+    for r in reqs:
+        if r["status"] == "met":
+            continue
+        missing = r["status"] == "missing"
+        if r["importance"] == "must":
+            cost = MUST_COST[r["weight"]][0 if missing else 1]
+        else:
+            cost = min(NICE_COST[r["weight"]][0 if missing else 1], NICE_COST_MAX - nice_cost)
+            nice_cost += cost
+        if cost:
+            total -= cost
+            breakdown.append({"kind": "requirement", "text": r["text"], "importance": r["importance"],
+                              "status": r["status"], "points": -cost})
+    required = max(0, min(int(years_required), 40))
+    relevant = max(0, min(int(years_relevant), 60))
+    if required and relevant < required:
+        cost = round((required - relevant) / required * YEARS_WEIGHT)
+        if cost:
+            total -= cost
+            breakdown.append({"kind": "years", "required": required, "relevant": relevant, "points": -cost})
+    given = sorted(set(o for o in offsets if o in OFFSETS))
+    back = min(OFFSET_POINTS * len(given), OFFSETS_MAX, nice_cost)
+    if back:
+        total += back
+        breakdown.append({"kind": "offsets", "names": given, "points": back})
+    score = _clamp(total)
+    applying = [(CAPS[c], c) for c in set(caps) if c in CAPS]
+    if not any(r["importance"] == "must" for r in reqs):
+        applying.append((NO_REQUIREMENTS_CAP, "no_requirements"))
+    cap = None
+    if applying:
+        value, name = min(applying)
+        if score > value:
+            cap, score = {"name": name, "value": value}, value
+    return score, breakdown, cap
+
+
 def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
-    """Validated, clamped analysis keyed by the extension's CV IDs, or None.
-    Strict mode guarantees the shape; this enforces what JSON Schema can't
-    (score range, list length, an alias that exists)."""
+    """Validated analysis keyed by the extension's CV IDs, with the score
+    computed by score_of, or None. Strict mode guarantees the shape; this
+    enforces what JSON Schema can't (list length, an alias that exists)."""
     try:
         parsed = _RawAnalysis.model_validate(raw)
     except ValidationError:
         return None
     by_alias = {cv.alias: cv for cv in cvs}
-    scores = {s.cv_id: _clamp(s.score) for s in parsed.cv_scores if s.cv_id in by_alias}
+    rated = {s.cv_id: _clamp(s.score) for s in parsed.cv_scores if s.cv_id in by_alias}
     best = parsed.best_cv_id if parsed.best_cv_id in by_alias else (
-        max(scores, key=scores.get) if scores else cvs[0].alias)
-    match = _clamp(parsed.match_score)
-    scores[best] = max(scores.get(best, match), match)
+        max(rated, key=rated.get) if rated else cvs[0].alias)
     reqs = [
-        {"text": r.text.strip()[:120], "status": r.status, "importance": r.importance}
+        {"text": r.text.strip()[:120], "importance": r.importance, "weight": r.weight, "status": r.status}
         for r in parsed.requirements
         if r.text.strip() and r.status in ("met", "partial", "missing") and r.importance in ("must", "nice")
-    ]
+        and r.weight in MUST_COST
+    ][:MAX_REQUIREMENTS]
     reqs.sort(key=lambda r: 0 if r["importance"] == "must" else 1)  # stable: keeps the model's order within a group
+    match, breakdown, cap = score_of(reqs, parsed.years_required, parsed.years_relevant, parsed.caps, parsed.offsets)
+    # The computed score is the best version's. Other versions keep the gap
+    # the model saw between them and the best one.
+    top = rated.get(best, match)
+    scores = {alias: _clamp(match - max(0, top - s)) for alias, s in rated.items()}
+    scores[best] = match
     return {
         "match_score": match,
         "best_cv_ref": by_alias[best].ref,
@@ -423,7 +522,10 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
             {"cv_id": cv.ref, "label": cv.label, "score": scores[cv.alias]}
             for cv in cvs if cv.alias in scores
         ],
-        "requirements": reqs[:MAX_REQUIREMENTS],
+        "requirements": reqs,
+        "breakdown": breakdown,
+        "cap": cap,
+        "years": {"required": max(0, parsed.years_required), "relevant": max(0, parsed.years_relevant)},
         "fit_summary_he": parsed.fit_summary_he.strip()[:400],
         "cv_choice_reason_he": parsed.cv_choice_reason_he.strip()[:250],
         "top_gap_he": parsed.top_gap_he.strip()[:250],

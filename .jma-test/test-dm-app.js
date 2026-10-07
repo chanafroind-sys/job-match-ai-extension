@@ -318,6 +318,32 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   await tick();
   ok('and the download goes out under the file\'s own name', ctx.log.downloads.length === 1 && ctx.log.downloads[0].filename === 'cv.pdf');
 
+  // ── the score's arithmetic, shown on the card ─────────────────────────────────
+  const explained = card(11, 61, 'Backend Engineer', { tier: 'maybe', analysis: { ...card(11, 61, 'x').analysis,
+    breakdown: [{ kind: 'requirement', text: 'Java <b>Spring</b>', importance: 'must', status: 'missing', points: -35 },
+      { kind: 'years', required: 5, relevant: 3, points: -12 },
+      { kind: 'offsets', names: ['relevant_projects'], points: 3 }],
+    cap: { name: 'level_unproven', value: 65 }, match_score: 61 } });
+  ctx = await boot({ statuses: [{ ...SUB({ status: 'done', cards: 1 }), is_admin: true }], storage: { cvText: CV },
+    today: { run: { id: 12, status: 'done', candidates: 9 }, cards: [explained], entitlement: 'subscription' },
+    runEvents: [{ type: 'started', run_id: 12 }, { type: 'done', run_id: 12, count: 1 }] });
+  const why = ctx.doc.querySelector('.dm-why');
+  ok('a card can show how its score was computed', why && why.hidden && ctx.doc.querySelector('[data-act="why"]'));
+  ctx.doc.querySelector('[data-act="why"]').click();
+  const rows = [...why.querySelectorAll('.why-row')].map(r => r.textContent.replace(/\s+/g, ' ').trim());
+  ok('every point lost or given back is listed, then the total', !why.hidden && rows[0].startsWith('100') &&
+     rows.some(r => r.startsWith('−35') && r.includes('Java') && r.includes('חובה, חסר')) &&
+     rows.some(r => r.startsWith('−12') && r.includes('3 מתוך 5')) && rows.some(r => r.startsWith('+3') && r.includes('פרויקטים')) &&
+     rows.some(r => r.startsWith('≤65') && r.includes('תקרה')) && rows[rows.length - 1].startsWith('61'), rows.join(' | '));
+  ok('requirement text in the breakdown is escaped', !why.querySelector('b b') && why.textContent.includes('<b>Spring</b>'));
+  ctx.window.confirm = () => true;
+  ctx.doc.querySelector('[data-act="rebuild"]').click();
+  await tick(200);
+  ok('an admin can rebuild the day from the deck', ctx.log.requests.some(r => r.path === '/run'));
+
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 3 })] });
+  ok('nobody else sees the rebuild button', !ctx.doc.querySelector('[data-act="rebuild"]'));
+
   // ── a quiet day ───────────────────────────────────────────────────────────────
   ctx = await boot({ statuses: [SUB({ status: 'done', cards: 0 })], storage: { cvText: CV },
     today: { run: { id: 4, status: 'done', candidates: 12, fresh: 12, cards: 0 }, cards: [], entitlement: 'subscription' } });

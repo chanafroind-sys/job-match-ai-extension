@@ -55,40 +55,99 @@ class TestSchema:
         assert '=== cv1 · label: "Backend" ===' in text and '=== cv2 · label: "Data" ===' in text
         assert "v-data" not in text  # the extension's own IDs never reach the model
 
+    def test_analysis_comes_before_any_verdict(self):
+        # A score field written first is a number picked before the analysis;
+        # with no score field, the model can only classify.
+        props = reasoning.tool_schema(["cv1"])["input_schema"]["properties"]
+        assert list(props)[0] == "requirements" and "match_score" not in props
+        assert set(props["caps"]["items"]["enum"]) == set(reasoning.CAPS)
 
-class TestNormalize:
-    def test_clamps_and_maps_to_refs(self):
-        out = reasoning.normalize_analysis({
-            "match_score": 140, "best_cv_id": "cv2",
-            "cv_scores": [{"cv_id": "cv1", "score": -5}, {"cv_id": "cv2", "score": 70}],
-            "requirements": [], "fit_summary_he": "  טוב  ", "cv_choice_reason_he": "", "top_gap_he": "",
-        }, CVS)
-        assert out["match_score"] == 100
-        assert out["best_cv_ref"] == "v-data"
-        assert {s["cv_id"]: s["score"] for s in out["cv_scores"]} == {"main": 0, "v-data": 100}
-        assert out["cv_scores"][0]["label"] == "Backend"
+
+def _req(text, importance="must", weight="core", status="met"):
+    return {"text": text, "importance": importance, "weight": weight, "status": status}
+
+
+def _raw(reqs, **extra):
+    return {"requirements": reqs, "years_required": 0, "years_relevant": 0, "caps": [], "offsets": [],
+            "best_cv_id": "cv1", "cv_scores": [{"cv_id": "cv1", "score": 80}, {"cv_id": "cv2", "score": 60}],
+            "fit_summary_he": "  טוב  ", "cv_choice_reason_he": "", "top_gap_he": "", **extra}
+
+
+class TestScore:
+    def test_the_score_is_computed_from_the_classifications(self):
+        out = reasoning.normalize_analysis(_raw([
+            _req("Python", weight="primary"), _req("Kubernetes", status="partial"),
+            _req("Go", importance="nice", weight="supporting", status="missing"),
+        ], years_required=5, years_relevant=4), CVS)
+        # 100 - 8 (Kubernetes, core partial) - 3 (Go, nice missing) - 6 (one year of five) = 83
+        assert out["match_score"] == 83 and out["cap"] is None
+        assert [b["points"] for b in out["breakdown"]] == [-8, -3, -6]
+        assert out["breakdown"][2] == {"kind": "years", "required": 5, "relevant": 4, "points": -6}
         assert out["fit_summary_he"] == "טוב"
 
-    def test_unknown_alias_falls_back_to_best_scored(self):
-        out = reasoning.normalize_analysis({
-            "match_score": 60, "best_cv_id": "cv9",
-            "cv_scores": [{"cv_id": "cv1", "score": 40}, {"cv_id": "cv2", "score": 60}],
-            "requirements": [],
-        }, CVS)
+    def test_same_gaps_same_score(self):
+        a = reasoning.normalize_analysis(_raw([_req("Java", weight="primary", status="missing"), _req("SQL")]), CVS)
+        b = reasoning.normalize_analysis(_raw([_req("Go", weight="primary", status="missing"), _req("Redis")]), CVS)
+        assert a["match_score"] == b["match_score"] == 65
+
+    def test_nice_to_haves_cost_15_at_most(self):
+        nice = [_req(f"tool {i}", importance="nice", weight="core", status="missing") for i in range(5)]
+        out = reasoning.normalize_analysis(_raw([_req("Python", weight="primary")] + nice), CVS)
+        assert out["match_score"] == 85
+
+    def test_offsets_only_make_up_for_nice_gaps(self):
+        both = ["strong_academics", "relevant_projects"]
+        with_gap = reasoning.normalize_analysis(_raw([
+            _req("Python", weight="primary", status="partial"),
+            _req("Go", importance="nice", weight="supporting", status="missing")], offsets=both), CVS)
+        assert with_gap["match_score"] == 100 - 12 - 3 + 3  # only the 3 the nice item cost comes back
+        no_gap = reasoning.normalize_analysis(_raw([_req("Python", weight="primary", status="partial")],
+                                                   offsets=both), CVS)
+        assert no_gap["match_score"] == 88
+
+    def test_the_lowest_cap_wins_and_is_reported(self):
+        out = reasoning.normalize_analysis(_raw([_req("Python", weight="primary")],
+                                                caps=["level_unproven", "hard_blocker", "made_up"]), CVS)
+        assert out["match_score"] == 40 and out["cap"] == {"name": "hard_blocker", "value": 40}
+
+    def test_a_cap_above_the_score_does_nothing(self):
+        out = reasoning.normalize_analysis(_raw([_req("Java", weight="primary", status="missing"),
+                                                 _req("Spring", status="missing")], caps=["level_unproven"]), CVS)
+        assert out["match_score"] == 45 and out["cap"] is None
+
+    def test_a_posting_without_must_requirements_is_not_a_strong_match(self):
+        out = reasoning.normalize_analysis(_raw([_req("Go", importance="nice", weight="supporting")]), CVS)
+        assert out["match_score"] == reasoning.NO_REQUIREMENTS_CAP and out["cap"]["name"] == "no_requirements"
+
+    def test_years_are_bounded_and_never_a_bonus(self):
+        assert reasoning.normalize_analysis(_raw([_req("Python")], years_required=3, years_relevant=12),
+                                            CVS)["match_score"] == 100
+        out = reasoning.normalize_analysis(_raw([_req("Python")], years_required=5, years_relevant=-2), CVS)
+        assert out["match_score"] == 70  # a negative count is read as none: the whole 30
+
+    def test_other_versions_keep_their_gap_to_the_best(self):
+        out = reasoning.normalize_analysis(_raw([_req("Python", status="partial")]), CVS)
+        assert out["match_score"] == 92
+        assert {s["cv_id"]: s["score"] for s in out["cv_scores"]} == {"main": 92, "v-data": 72}
+        assert out["cv_scores"][0]["label"] == "Backend" and out["best_cv_ref"] == "main"
+
+    def test_unknown_alias_falls_back_to_the_best_rated(self):
+        out = reasoning.normalize_analysis(_raw([_req("SQL")], best_cv_id="cv9",
+                                                cv_scores=[{"cv_id": "cv1", "score": 40},
+                                                           {"cv_id": "cv2", "score": 60}]), CVS)
         assert out["best_cv_ref"] == "v-data"
 
     def test_requirements_filtered_ordered_and_capped(self):
-        reqs = [{"text": f"nice {i}", "status": "met", "importance": "nice"} for i in range(5)]
-        reqs += [{"text": f"must {i}", "status": "missing", "importance": "must"} for i in range(5)]
-        reqs += [{"text": "", "status": "met", "importance": "must"},
-                 {"text": "bad", "status": "maybe", "importance": "must"}]
-        out = reasoning.normalize_analysis({"match_score": 50, "best_cv_id": "cv1", "requirements": reqs}, CVS)
+        reqs = [_req(f"nice {i}", importance="nice", weight="supporting") for i in range(5)]
+        reqs += [_req(f"must {i}", status="missing") for i in range(8)]
+        reqs += [_req(""), _req("bad", status="maybe"), _req("odd", weight="huge")]
+        out = reasoning.normalize_analysis(_raw(reqs), CVS)
         assert len(out["requirements"]) == reasoning.MAX_REQUIREMENTS
         assert [r["importance"] for r in out["requirements"][:5]] == ["must"] * 5
-        assert all(r["text"] not in ("", "bad") for r in out["requirements"])
+        assert all(r["text"] not in ("", "bad", "odd") for r in out["requirements"])
 
     def test_wrong_shape_is_none(self):
-        assert reasoning.normalize_analysis({"best_cv_id": "cv1"}, CVS) is None
+        assert reasoning.normalize_analysis({"requirements": []}, CVS) is None
 
 
 class TestFanOut:
