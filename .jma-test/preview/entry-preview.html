@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Popup entry preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- The real popup.html styles and header/ready markup, with daily/dm-entry.js on top.
+     Serve the repo root (python -m http.server 5500) and open
+     /.jma-test/preview/entry-preview.html?state=trial|subscription|locked|done -->
+<style>html { background: #DEE1E6; } body { width: 400px; height: 600px; margin: 16px auto; position: relative; overflow: hidden;
+  box-shadow: 0 6px 24px rgba(15,23,42,.18); transform: translateZ(0); }</style>
+</head>
+<body>
+<script>
+(async function () {
+  const state = new URLSearchParams(location.search).get('state') || 'trial';
+  const html = await (await fetch('../../popup.html?t=' + Date.now())).text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('style').forEach(s => document.head.appendChild(document.importNode(s, true)));
+  const header = doc.querySelector('.header');
+  const ready = doc.getElementById('screen-ready');
+  document.body.append(document.importNode(header, true), document.importNode(ready, true));
+  document.getElementById('screen-ready').classList.add('active');
+
+  const status = {
+    trial: { enabled: true, entitlement: 'trial', today: null, pool: { active: 1050, embedded: 1050, fresh: 260 } },
+    subscription: { enabled: true, entitlement: 'subscription', today: null, pool: { active: 1050, embedded: 1050 } },
+    locked: { enabled: true, entitlement: 'locked', reason: 'trial_used', today: null, last_run: { id: 1 } },
+    done: { enabled: true, entitlement: 'subscription', today: { status: 'done', cards: 6 } },
+  }[state];
+  const storage = {};
+  const realFetch = window.fetch.bind(window);
+  window.fetch = (url, opts) => String(url).includes('/api/daily-matches/')
+    ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(status) }) : realFetch(url, opts);
+  window.chrome = {
+    storage: { onChanged: { addListener() {} }, local: {
+      get: (keys, cb) => { const o = {}; [].concat(keys).forEach(k => { if (storage[k] !== undefined) o[k] = storage[k]; });
+        if (cb) setTimeout(() => cb(o), 0); return Promise.resolve(o); },
+      set: (o, cb) => { Object.assign(storage, o); if (cb) setTimeout(cb, 0); return Promise.resolve(); } } },
+    windows: { getCurrent: () => Promise.resolve({ id: 1 }) },
+    sidePanel: { open: () => { console.log('[preview] side panel'); return Promise.resolve(); } },
+    tabs: { create: () => Promise.resolve({}) },
+    runtime: { getURL: (p) => p },
+  };
+  window.close = () => console.log('[preview] popup closed');
+  for (const src of ['../../jma-auth.js', '../../daily/dm-api.js']) {
+    await new Promise(r => { const s = document.createElement('script'); s.src = src + '?t=' + Date.now(); s.onload = r; document.body.appendChild(s); });
+  }
+  // dm-entry.js loads daily/dm-api.js relative to popup.html; it's already loaded here.
+  const s = document.createElement('script'); s.src = '../../daily/dm-entry.js?t=' + Date.now(); document.body.appendChild(s);
+})();
+</script>
+</body>
+</html>

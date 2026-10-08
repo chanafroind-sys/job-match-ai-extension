@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Match AI",
-  "version": "3.2.2",
+  "version": "3.3.0",
   "description": "ניתוח משרות חכם + קורות חיים מותאמים + מעקב הגשות",
   "permissions": [
     "activeTab", 

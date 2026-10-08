@@ -95,7 +95,8 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
 
   // ── trial, locked, done, running ──────────────────────────────────────────────
   ctx = await boot({ status: { ...SUB, entitlement: 'trial' } });
-  ok('trial card offers the free run', ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent === 'ניסיון חינם');
+  ok('trial card offers the free run, highlighted', ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('ניסיון חינם') &&
+     ctx.doc.getElementById('jma-dm-hero').classList.contains('is-gift'));
 
   ctx = await boot({ status: { ...SUB, entitlement: 'locked', reason: 'trial_used', last_run: { id: 3 } } });
   ok('locked card is marked for subscribers', ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('למנויים'));
@@ -124,6 +125,47 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
   await tick();
   ok('without a side panel it opens the deck in a tab',
      ctx.log.tabs.length === 1 && ctx.log.tabs[0].url === 'chrome-extension://abc/daily/daily.html');
+
+  // ── the launch announcement ───────────────────────────────────────────────────
+  const TRIAL = { ...SUB, entitlement: 'trial' };
+  ctx = await boot({ status: TRIAL });
+  let ann = ctx.doc.getElementById('jma-dm-announce');
+  ok('someone who can try it sees the announcement', ann && ann.getAttribute('role') === 'dialog' &&
+     ann.textContent.includes('ניסיון אחד עלינו') && ann.querySelectorAll('.dm-ann-steps li').length === 3);
+  ann.querySelector('[data-ann="go"]').click();
+  await tick();
+  ok('"try it" opens the deck and starts the free run', ctx.log.sidePanel.length === 1 &&
+     ctx.storage.jma_dm_ui.autoStartAt > 0 && ctx.log.closed === 1);
+
+  ctx = await boot({ status: TRIAL });
+  ctx.doc.querySelector('.dm-ann-later').click();
+  await tick();
+  ok('"later" hides it until tomorrow', !ctx.doc.getElementById('jma-dm-announce') &&
+     ctx.storage.jma_dm_ui.annDismissedOn === new Date().toDateString());
+  const storage = ctx.storage;
+  ctx = await boot({ status: TRIAL, storage });
+  ok('the same day it stays away, while the card keeps offering the trial',
+     !ctx.doc.getElementById('jma-dm-announce') && ctx.doc.getElementById('jma-dm-hero').classList.contains('is-gift'));
+  ctx = await boot({ status: TRIAL, storage: { jma_dm_ui: { annDismissedOn: 'Mon Jan 01 2001' } } });
+  ok('a new day brings it back until it is tried', !!ctx.doc.getElementById('jma-dm-announce'));
+
+  ctx = await boot({ status: TRIAL });
+  ctx.doc.dispatchEvent(new ctx.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await tick();
+  ok('Escape closes it', !ctx.doc.getElementById('jma-dm-announce'));
+
+  ctx = await boot({ status: SUB });
+  ann = ctx.doc.getElementById('jma-dm-announce');
+  ok('subscribers see it once, as part of their plan', ann && ann.textContent.includes('כלול במנוי'));
+  ann.querySelector('.dm-ann-x').click();
+  await tick();
+  ctx = await boot({ status: SUB, storage: ctx.storage });
+  ok('and not again after closing it', !ctx.doc.getElementById('jma-dm-announce'));
+
+  ctx = await boot({ status: { ...SUB, entitlement: 'locked', reason: 'trial_used' } });
+  ok('no announcement once the free run is used', !ctx.doc.getElementById('jma-dm-announce'));
+  ctx = await boot({ status: { ...TRIAL, today: { status: 'done', cards: 3 } } });
+  ok('no announcement over a deck that is already waiting', !ctx.doc.getElementById('jma-dm-announce'));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
