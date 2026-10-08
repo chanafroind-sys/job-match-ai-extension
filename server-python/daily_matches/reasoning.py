@@ -1,4 +1,4 @@
-"""Stage 2: one Haiku call per candidate job, all in parallel, each returning
+"""Stage 2: one Haiku 5.5 call per candidate job, all in parallel, each returning
 strict JSON through a tool call. The model scores each job on its own; picking
 the best jobs is plain sorting afterwards.
 
@@ -8,13 +8,12 @@ per distinct schema, so aliases keep it to five schema variants in total
 instead of a new one for every user.
 
 Caching: the tools and the system block (rubric + every CV version) are
-identical across the run's calls. Haiku 4.5 only caches prefixes of 4,096+
-tokens, and a cache entry is readable only after the first response has
-started. The rubric is long enough (its worked examples are most of it) that
-any real CV takes the prefix past the minimum; then call 1 goes out alone and
-the rest follow WARMUP_DELAY_S later, each paying a tenth of the input price
-for the prefix. A prefix that is still too short isn't marked, and every call
-goes at once.
+identical across the run's calls. Haiku 5.5 caches prefixes of 512+ tokens
+(Haiku 4.5 needed 4,096, which is why the rubric's worked examples are so many;
+they stay, for the quality they bring). A cache entry is readable only after
+the first response has started, so call 1 goes out alone and the rest follow
+WARMUP_DELAY_S later, each paying a tenth of the input price for the prefix. A
+prefix that is still too short isn't marked, and every call goes at once.
 
 Output: below MAYBE_SCORE the analysis is never shown, so the rubric asks for a
 short one there. Output tokens are the larger share of a call's cost.
@@ -548,16 +547,47 @@ def _usage_of(message) -> dict:
 
 
 def _model_kwargs(model: str) -> dict:
-    """Haiku 4.5 takes a forced tool call. The 5-series models reject forced
-    tool_choice, so they get auto (the rubric demands the tool, and strict
-    keeps the arguments to the schema); Sonnet 5.5 also has its thinking turned
-    off, which this one-tool-call task doesn't need and would bill as output."""
+    """Haiku 4.5 and Haiku 5.5 take a forced tool call; Haiku 5.5 then answers
+    with the tool call straight away, without its default adaptive thinking.
+    Sonnet 5.5 rejects forced tool_choice, so it gets auto (the rubric demands
+    the tool, and strict keeps the arguments to the schema) with its thinking
+    turned off, which this one-tool-call task doesn't need and would bill as
+    output."""
     if model.startswith("claude-haiku"):
         return {"tool_choice": {"type": "tool", "name": TOOL_NAME}}
     kwargs: dict = {"tool_choice": {"type": "auto"}}
     if model.startswith("claude-sonnet-5"):
         kwargs["extra_body"] = {"thinking": {"type": "between_tools"}}
     return kwargs
+
+
+# Models whose API refused a forced tool call in this process. Haiku 5.5's
+# docs accept one; this is the safety net if that ever changes: the call goes
+# again with tool_choice auto (the rubric demands the tool) instead of failing
+# the run.
+_forced_tool_refused: set[str] = set()
+
+
+def _refuses_forced_tool(exc: Exception) -> bool:
+    return getattr(exc, "status_code", 0) == 400 and "tool_choice" in str(exc).lower()
+
+
+async def _create(client, model: str, system_blocks: list, tool: dict, job: JobForPrompt):
+    def send(kwargs: dict, max_tokens: int):
+        return client.messages.create(model=model, max_tokens=max_tokens, system=system_blocks, tools=[tool],
+                                      messages=[{"role": "user", "content": job.text}], **kwargs)
+    kwargs = _model_kwargs(model)
+    forced = kwargs.get("tool_choice", {}).get("type") == "tool"
+    if forced and model in _forced_tool_refused:
+        return await send({"tool_choice": {"type": "auto"}}, config.LLM_MAX_TOKENS_AUTO)
+    try:
+        return await send(kwargs, config.LLM_MAX_TOKENS)
+    except Exception as exc:  # noqa: BLE001
+        if not (forced and _refuses_forced_tool(exc)):
+            raise
+        logger.warning("[DM] %s refused a forced tool call; using tool_choice auto: %s", model, exc)
+        _forced_tool_refused.add(model)
+        return await send({"tool_choice": {"type": "auto"}}, config.LLM_MAX_TOKENS_AUTO)
 
 
 async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
@@ -567,14 +597,7 @@ async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
     for attempt in range(2):
         try:
             async with _sem():
-                message = await client.messages.create(
-                    model=model,
-                    max_tokens=config.LLM_MAX_TOKENS,
-                    system=system_blocks,
-                    tools=[tool],
-                    messages=[{"role": "user", "content": job.text}],
-                    **_model_kwargs(model),
-                )
+                message = await _create(client, model, system_blocks, tool, job)
             for key, value in _usage_of(message).items():
                 usage[key] += value
             if getattr(message, "stop_reason", "") == "max_tokens":
@@ -584,7 +607,10 @@ async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
                           if getattr(b, "type", "") == "tool_use" and getattr(b, "name", "") == TOOL_NAME), None)
             if block is None:
                 return None
-            return normalize_analysis(dict(block.input), cvs)
+            analysis = normalize_analysis(dict(block.input), cvs)
+            if analysis is not None:
+                analysis["_cost_usd"] = config.usage_cost(_usage_of(message), model)  # for the model comparison
+            return analysis
         except Exception as exc:  # noqa: BLE001 — classified below
             last_exc = exc
             if not main._retryable(exc) or attempt == 1:

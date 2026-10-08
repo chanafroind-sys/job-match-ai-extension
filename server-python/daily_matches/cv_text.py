@@ -48,7 +48,7 @@ async def extract_pdf_text(b64: str) -> str:
     clean_b64 = "".join(b64.split())
     try:
         message = await main._ac().messages.create(
-            model=config.LLM_MODEL,
+            model=config.CV_EXTRACT_MODEL,
             max_tokens=8000,
             messages=[{
                 "role": "user",

@@ -21,6 +21,12 @@ def _jobs(n: int) -> list[reasoning.JobForPrompt]:
     return [reasoning.JobForPrompt(f"j{i}", f"JOB POSTING\nTitle: Backend {i}\nPython Kafka") for i in range(n)]
 
 
+def _status_error_msg(status: int, message: str) -> APIStatusError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(status, request=request, json={"error": {"message": message}})
+    return APIStatusError(message, response=response, body=None)
+
+
 def _status_error(status: int) -> APIStatusError:
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     response = httpx.Response(status, request=request, json={"error": {"message": "x"}})
@@ -251,8 +257,36 @@ class TestModels:
 
     def test_cost_uses_each_models_prices(self):
         usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
-        assert config.usage_cost(usage) == 1.0
+        assert config.LLM_MODEL == "claude-haiku-5-5" and config.usage_cost(usage) == pytest.approx(0.10)
+        assert config.usage_cost(usage, "claude-haiku-4-5-20251001") == 1.0
         assert config.usage_cost(usage, "claude-sonnet-5-5") == 2.0
+
+    async def test_a_refused_forced_tool_call_falls_back_to_auto(self, monkeypatch):
+        fake = FakeClaude()
+        real_create = fake.messages.create
+
+        async def create(**kwargs):
+            if kwargs["tool_choice"]["type"] == "tool":
+                fake.calls.append(kwargs)
+                raise _status_error_msg(400, "tool_choice: forced tool use is not supported with this model")
+            return await real_create(**kwargs)
+        monkeypatch.setattr(fake.messages, "create", create)
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        monkeypatch.setattr(reasoning, "_forced_tool_refused", set())
+        results, _ = await reasoning.analyze_jobs(CVS, _jobs(3))
+        assert all(results.values())
+        forced = [c for c in fake.calls if c["tool_choice"]["type"] == "tool"]
+        auto = [c for c in fake.calls if c["tool_choice"]["type"] == "auto"]
+        assert 1 <= len(forced) < 3 and len(auto) == 3  # once refused, the rest go straight to auto
+        assert all(c["max_tokens"] == config.LLM_MAX_TOKENS_AUTO for c in auto)
+
+    async def test_other_bad_requests_still_fail(self, monkeypatch):
+        fake = FakeClaude(fail_when=lambda _: True, error_factory=lambda: _status_error_msg(400, "prompt is too long"))
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        monkeypatch.setattr(reasoning, "_forced_tool_refused", set())
+        with pytest.raises(HTTPException):
+            await reasoning.analyze_jobs(CVS, _jobs(2))
+        assert all(c["tool_choice"]["type"] == "tool" for c in fake.calls)
 
 
 async def _no_sleep():

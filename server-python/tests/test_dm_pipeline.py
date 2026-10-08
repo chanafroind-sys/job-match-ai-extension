@@ -433,3 +433,22 @@ class TestCompareThroughOpenRouter:
 
 async def _instant():
     return None
+
+
+class TestCompareWithAnotherClaude:
+    async def test_the_old_haiku_is_compared_on_the_same_jobs_with_its_own_prices(self, db, env):
+        mp = env["monkeypatch"]
+        mp.setattr(config, "COMPARE_MODEL", "claude-haiku-4-5-20251001")
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), Access("subscription", subject="lic:admin", is_admin=True))
+        calls = env["claude"].calls
+        older = [c for c in calls if c["model"] == "claude-haiku-4-5-20251001"]
+        assert len(older) == 5 and all(c["tool_choice"] == {"type": "tool", "name": "submit_match"} for c in calls)
+        rows = (await db.execute(select(DmRunResult))).scalars().all()
+        alt = rows[0].analysis["compare"]
+        # The fake reports 1000 input + 300 output tokens a call: $0.001 + $0.0015 at Haiku 4.5's prices.
+        assert alt["model"] == "claude-haiku-4-5-20251001" and alt["cost_usd"] == pytest.approx(0.0025)
+        assert "_cost_usd" not in rows[0].analysis  # bookkeeping never reaches the card
+        summary = service.compare_summary(rows, (await db.execute(select(DmRun))).scalar_one())
+        assert summary["main_model"] == "claude-haiku-5-5" and summary["cost_other_usd"] == pytest.approx(0.0125, abs=1e-4)
+        assert summary["cost_main_usd"] == pytest.approx(5 * (1000 * 0.10 + 300 * 0.50) / 1e6, abs=1e-4)

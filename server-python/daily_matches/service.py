@@ -279,6 +279,7 @@ def compare_summary(rows: list[DmRunResult], run: DmRun) -> dict | None:
                   "cache_read_tokens": run.cache_read_tokens or 0, "cache_write_tokens": run.cache_write_tokens or 0}
     return {
         "model": model,
+        "main_model": config.LLM_MODEL,
         "jobs": n + failed,
         "failed": failed,
         "mean_abs_diff": round(sum(abs(a - b) for a, b, _, _ in pairs) / n, 1) if n else None,
@@ -390,6 +391,10 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
                 raise
             if compare is not None:
                 merge_compare(analyses, await compare)
+            for analysis in analyses.values():  # per-call bookkeeping, not part of the card
+                if analysis:
+                    analysis.pop("_cost_usd", None)
+                    analysis.pop("_provider", None)
 
             # The deck: every analyzed job is kept, so none is analyzed or shown twice.
             ranked = rank_results(candidates, analyses)

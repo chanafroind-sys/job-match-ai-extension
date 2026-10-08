@@ -187,7 +187,8 @@
 
   const STATUS_ICON = { met: ['✓', 'מתקיימת'], partial: ['◐', 'חלקית'], missing: ['✕', 'חסרה'] };
   const ACTION_RIBBON = { applied: ['✓ הוגש', 's-applied'], saved: ['🔖 נשמר', 's-saved'], skipped: ['דולג', 's-skipped'] };
-  const MODEL_NAME = { 'claude-sonnet-5-5': 'Sonnet 5.5', 'openrouter:deepseek/deepseek-v4.1-flash': 'DeepSeek V4.1 Flash' };
+  const MODEL_NAME = { 'claude-haiku-4-5-20251001': 'Haiku 4.5', 'claude-haiku-5-5': 'Haiku 5.5', 'claude-sonnet-5-5': 'Sonnet 5.5',
+    'openrouter:deepseek/deepseek-v4.1-flash': 'DeepSeek V4.1 Flash' };
   const modelName = (m) => MODEL_NAME[m] || String(m || '').replace(/^openrouter:/, '');
 
   function postedLabel(iso) {
@@ -291,15 +292,16 @@
     const c = state.compare;
     if (!c || !isAdmin()) return '';
     const sign = (x) => (x > 0 ? `+${x}` : `${x}`);
+    const main = modelName(c.main_model || 'claude-haiku-4-5-20251001');
     const rows = [
       ['משרות שנבדקו', `${c.jobs}${c.failed ? ` (${c.failed} בלי תשובה תקינה)` : ''}`],
       ['הפרש ממוצע בציון', c.mean_abs_diff == null ? '—' : `${c.mean_abs_diff} נק׳ (בממוצע ${sign(c.mean_diff)})`],
       ['עד 10 נק׳ הפרש', c.within_10 == null ? '—' : `${c.within_10}%`],
       ['אותה קטגוריה (חזקה/הצצה/מוסתרת)', c.same_tier == null ? '—' : `${c.same_tier}%`],
-      ['היו מוצגות', `Haiku ${c.shown_main} · ${modelName(c.model)} ${c.shown_other} · שניהם ${c.shown_both}`],
-      ['עלות הריצה', `Haiku $${c.cost_main_usd} · ${modelName(c.model)} $${c.cost_other_usd}`],
+      ['היו מוצגות', `${main} ${c.shown_main} · ${modelName(c.model)} ${c.shown_other} · שניהם ${c.shown_both}`],
+      ['עלות הריצה', `${main} $${c.cost_main_usd} · ${modelName(c.model)} $${c.cost_other_usd}`],
     ];
-    return `<details class="dm-cmp-sum"><summary>🧪 השוואה: Haiku מול ${esc(modelName(c.model))}</summary>
+    return `<details class="dm-cmp-sum"><summary>🧪 השוואה: ${esc(main)} מול ${esc(modelName(c.model))}</summary>
       <dl>${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd dir="auto">${esc(v)}</dd></div>`).join('')}</dl></details>`;
   }
 

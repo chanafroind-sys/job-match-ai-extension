@@ -262,7 +262,7 @@ flowchart TB
         direction LR
         F["Stage 1 — filter<br/>fresh · unseen · focus · level"]
         V["Stage 1 — rank<br/>cosine similarity per CV version"]
-        L["Stage 2 — up to 40 parallel<br/>Claude Haiku 4.5 calls"]
+        L["Stage 2 — up to 40 parallel<br/>Claude Haiku 5.5 calls"]
         C["score_of()<br/>deterministic arithmetic"]
         T{"tier"}
         F --> V --> L --> C --> T
@@ -313,7 +313,7 @@ An early version let the model write `match_score` as the first field of its JSO
 sequenceDiagram
     autonumber
     participant S as service.py
-    participant H as Claude Haiku 4.5<br/>(one call per job)
+    participant H as Claude Haiku 5.5<br/>(one call per job)
     participant C as score_of()
     S->>H: rubric + every CV version (cached prefix)<br/>+ one job posting
     Note over H: no score field exists in the schema
@@ -350,15 +350,18 @@ The rubric (≈4.3K tokens) teaches the *judgment*: what counts as primary, what
 
 | Lever | Effect |
 |---|---|
-| **Prompt caching by design** | The rubric is deliberately long enough that rubric + tool schema alone pass Haiku 4.5's 4,096-token cache minimum. The first call writes the cache; the other 39 start ~1.2s later and pay a tenth of the input price for the shared prefix. |
+| **Prompt caching by design** | Rubric + tool schema + CV versions form one cached prefix (Haiku 5.5 caches from 512 tokens). The first call writes the cache; the other 39 start ~1.2s later and pay a tenth of the input price for the shared prefix. |
 | **Short answers for hidden jobs** | When the primary skill is missing or a cap ≤ 55 applies, the Hebrew prose is cut to a line — output tokens are the expensive ones. |
 | **Filters before tokens** | Freshness, never-twice, focus and level are SQL, not LLM calls. |
 | **Free infrastructure** | GitHub Actions on a public repo; Voyage's 200M free tokens cover years of incremental embedding; no paid data source. |
 
 | | Per deck | Per active user / month |
 |---|---:|---:|
-| Haiku 4.5, up to 40 jobs | ≈ $0.12 | ≤ ≈ $3.6 (a deck every day) |
+| Haiku 5.5, up to 40 jobs | ≈ $0.02 | ≤ ≈ $0.6 (a deck every day) |
+| *(Haiku 4.5, until 2026-10-08)* | *≈ $0.12* | *≤ ≈ $3.6* |
 | Fixed platform cost | — | **$0** on top of the existing hosting |
+
+Haiku 5.5 (from 2026-10-08) costs a tenth of Haiku 4.5 per token ($0.10 / $0.50 per million) and scores far higher on independent benchmarks; its tokenizer counts ~30% more tokens for the same text, which the estimate above includes. It takes the forced tool call, which also means no thinking tokens; if its API ever refuses one, the call falls back to `tool_choice: auto` on its own instead of failing the run. PDF CVs are still transcribed by Haiku 4.5 (`CV_EXTRACT_MODEL`), a one-off call per file that needs no thinking.
 
 `DM_COMPARE_MODEL=claude-sonnet-5-5` makes administrators' decks also show Sonnet 5.5's verdict next to each card, so a model upgrade is judged on real decks before it is paid for — Sonnet 5.5 rejects forced `tool_choice`, so that path uses `auto` + a strict tool, with thinking switched off.
 

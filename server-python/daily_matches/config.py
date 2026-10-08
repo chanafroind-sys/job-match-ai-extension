@@ -38,12 +38,21 @@ EMBED_BATCH_TEXTS = 64
 EMBED_BATCH_CHARS = 200_000  # voyage-4 accepts 120K tokens per request; Hebrew runs ~2 chars/token
 
 # ── Stage 2 (LLM) ─────────────────────────────────────────────────────────────
-# Same ID main.py resolves "haiku" to. Never a claude-3-5-* ID: those are retired
-# and one already broke V2's semantic map silently.
-LLM_MODEL = "claude-haiku-4-5-20251001"
-LLM_MAX_TOKENS = 1200
+# Haiku 5.5 (from 2026-10-08; Haiku 4.5 before): far stronger than 4.5 at a
+# tenth of its per-token price. Its ID has no date suffix. Never a claude-3-5-*
+# ID: those are retired and one already broke V2's semantic map silently. V1
+# (main.py) keeps its own model choice.
+LLM_MODEL = "claude-haiku-5-5"
+# Reading a PDF CV into text: a transcription, which needs no thinking (Haiku
+# 5.5 thinks by default on a free-form answer) and runs once per uploaded file.
+CV_EXTRACT_MODEL = "claude-haiku-4-5-20251001"
+# A cap, not a charge. Haiku 5.5's tokenizer counts ~30% more tokens for the same text.
+LLM_MAX_TOKENS = 1600
+# Only when the API refuses a forced tool call: the answer then may think first,
+# and thinking counts against max_tokens.
+LLM_MAX_TOKENS_AUTO = 4000
 LLM_CONCURRENCY = _int("DM_LLM_CONCURRENCY", 40)  # server-wide, all runs together
-CACHE_MIN_TOKENS = 4096  # Haiku 4.5 silently skips caching shorter prefixes
+CACHE_MIN_TOKENS = 1024  # Haiku 5.5 caches prefixes of 512+ tokens; the rubric alone is ~4K
 # A cache entry becomes readable only once the first response starts, so the
 # other calls wait this long after the first one is sent.
 WARMUP_DELAY_S = 1.2
@@ -114,6 +123,7 @@ HASH_SALT = os.getenv("DM_HASH_SALT", "jma-daily-matches-v1")
 # — for the admin cost report only.
 PRICES = {
     "claude-haiku-4-5-20251001": (1.00, 5.00, 0.10, 1.25),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),  # prompts up to 100K tokens (ours are ~10K)
     "claude-sonnet-5-5": (2.00, 10.00, 0.20, 2.50),
 }
 PRICE_IN, PRICE_OUT, PRICE_CACHE_READ, PRICE_CACHE_WRITE = PRICES[LLM_MODEL]
