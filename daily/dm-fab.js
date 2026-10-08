@@ -87,7 +87,7 @@
     const w = 260;
     let left = r.left - w - 12; // to the FAB's left by default
     if (left < 8) left = Math.min(window.innerWidth - w - 8, r.right + 12);
-    const top = Math.max(8, Math.min(window.innerHeight - 230, r.top + r.height / 2 - 110));
+    const top = Math.max(8, Math.min(window.innerHeight - 270, r.top + r.height / 2 - 130));
     bubble.style.left = `${Math.max(8, left)}px`;
     bubble.style.top = `${top}px`;
   }
@@ -108,7 +108,7 @@
       <button type="button" class="x" aria-label="סגירה עד מחר">✕</button>
       <span class="b">✨ חדש ב-Job Match AI</span>
       <div class="t">ההתאמות היומיות</div>
-      <p>כל בוקר, המשרות החדשות בהייטק שבאמת מתאימות לך, עם ציון מוסבר והגרסה הנכונה של קורות החיים.</p>
+      <p>כל בוקר: רוב המשרות החדשות בהייטק בארץ, מסוננות לגלגלת הגשה מהירה של מה שמתאים לך. לכל משרה, גרסת קורות החיים המומלצת ומילוי אוטומטי של הטופס כשאפשר.</p>
       <div class="g">🎁 ניסיון אחד עלינו · בלי מפתח ובלי כרטיס אשראי</div>
       <button type="button" class="go">לנסות עכשיו</button>`;
     bubble.addEventListener('click', (e) => e.stopPropagation());

@@ -102,6 +102,16 @@ async def record_boards(session, records: list[dict], found_via: str) -> list[Dm
     return added
 
 
+def _hosted_greenhouse_url(rec: dict, board: str) -> None:
+    """A Greenhouse job on a company's own careers site (…?gh_jid=123) keeps
+    its board in the URL, so the apply step can open Greenhouse's form for it
+    (jobs_meta.apply_url_for). Its id is unchanged: it was set from the
+    original URL."""
+    ext = str(rec.get("external_job_id") or "")
+    if ext.isdigit() and "greenhouse.io" not in (rec.get("url") or ""):
+        rec["url"] = f"https://job-boards.greenhouse.io/{board}/jobs/{ext}"
+
+
 async def fetch_boards(session, rows: list[DmSource] | None = None) -> tuple[list[dict], dict]:
     """Every fetchable, healthy registry board through its ATS API. Returns
     (records, report). Each board's outcome is written back to its row; the
@@ -133,6 +143,9 @@ async def fetch_boards(session, rows: list[DmSource] | None = None) -> tuple[lis
         row.last_fetched_at = now
         if error is None:
             row.failures, row.last_count = 0, len(found)
+            if row.ats == "greenhouse":
+                for rec in found:
+                    _hosted_greenhouse_url(rec, row.slug)
             records.extend(found)
             report["ok"] += 1
         else:

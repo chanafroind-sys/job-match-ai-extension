@@ -6,9 +6,13 @@
 // screens, using the popup's existing classes and tokens. It loads
 // daily/dm-api.js itself rather than taking a second script tag.
 //
-// The status call is free (no AI) and runs for keyless users too, because the
-// free trial is open to them. On any failure (server asleep, feature off) the
-// popup simply shows nothing new.
+// The card never waits for the server. It draws at once from the last status
+// the server gave (kept in storage), or, the very first time, from a "first
+// look" that needs nothing from the server: what the feature does and "try
+// it". The live status (free, no AI, open to keyless users because the trial
+// is) then fills in what only the server knows: the free run or the
+// subscription, today's deck, the pool. A definite "no" (feature off, bad
+// key) removes the card; a server that can't be reached leaves it.
 //
 // The launch announcement: a dialog over the popup that explains the feature
 // in three steps and offers the free run. Until a person has tried it, it
@@ -93,8 +97,8 @@
       .dm-ann-chips span { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #fff; border: 1px solid #E2E8F0; }
       .dm-ann-chips .ok { color: #15803D; } .dm-ann-chips .mid { color: #B45309; }
       .dm-ann-cv { font-size: 11.5px; color: var(--accent-dark, #4F46E5); font-weight: 600; }
-      .dm-ann-steps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 9px; }
-      .dm-ann-steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; line-height: 1.55; color: var(--text-secondary, #334155); }
+      .dm-ann-steps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 7px; }
+      .dm-ann-steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary, #334155); }
       .dm-ann-steps .ico { flex: 0 0 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 16px;
         background: var(--bg-hover, #F1F5F9); }
       .dm-ann-steps b { color: var(--text-primary, #0F172A); }
@@ -111,6 +115,13 @@
   }
 
   const fmt = (n) => (typeof n === 'number' ? n.toLocaleString('en-US') : '');
+
+  // What the feature is, in one breath. Shared by the card and the dialog.
+  const PITCH = 'כל בוקר: רוב המשרות החדשות בהייטק בארץ, מסוננות לפי קורות החיים שלך לגלגלת הגשה מהירה. ' +
+    'לכל משרה, הגרסה המומלצת של קורות החיים ומילוי אוטומטי של הטופס כשאפשר.';
+
+  // Before the server has answered even once on this computer.
+  const FIRST_LOOK = { enabled: true, entitlement: null, today: null, firstLook: true };
 
   // What the card says for each state, plus whether clicking should start a
   // run right away (the user already asked for one by clicking it).
@@ -129,11 +140,15 @@
         btn: 'לפרטים', meta: s.last_run ? 'החפיסה החינמית עדיין זמינה לצפייה' : '', autoStart: false };
     }
     if (s.entitlement === 'trial') {
-      return { pill: '🎁 ניסיון חינם', gift: true,
-        text: 'המשרות החדשות בהייטק שבאמת מתאימות לך, כל אחת עם ציון מוסבר והגרסה הנכונה של קורות החיים. הרצה אחת עלינו.',
-        btn: 'לנסות בחינם', meta: 'בלי מפתח ובלי כרטיס אשראי', autoStart: true };
+      return { pill: '🎁 ניסיון חינם', gift: true, text: PITCH,
+        btn: 'לנסות בחינם', meta: 'הרצה אחת עלינו · בלי מפתח ובלי כרטיס אשראי', autoStart: true };
     }
-    return { pill: 'חדש להיום', text: `${pool}ננתח לעומק את המשרות שהכי מתאימות לך.`,
+    if (s.firstLook) {
+      return { pill: '✨ חדש', gift: true, text: PITCH,
+        btn: 'לנסות עכשיו', meta: 'מי שעוד לא ניסה מקבל הרצה אחת עלינו', autoStart: true };
+    }
+    return { pill: 'חדש להיום',
+      text: `${pool}נסנן אותן לגלגלת הגשה מהירה של מה שמתאים לך, עם הגרסה המומלצת של קורות החיים.`,
       btn: 'בניית החפיסה של היום', meta: 'פעם ביום · מתאפס בחצות', autoStart: true };
   }
 
@@ -217,6 +232,7 @@
   // nobody whose free run is used up.
   function shouldAnnounce(s, ui) {
     if (s.today) return false;
+    if (s.firstLook) return !ui.annSeen && ui.annDismissedOn !== todayKey();
     if (s.entitlement === 'trial') return ui.annDismissedOn !== todayKey();
     if (s.entitlement === 'subscription') return !ui.annSeen;
     return false;
@@ -227,11 +243,32 @@
     await chrome.storage.local.set({ [UI_KEY]: { ...ui, ...patch } });
   }
 
+  // The parts of the dialog that depend on the server's answer. The first look
+  // says only what is true for everyone.
+  function annVariant(s) {
+    if (s.entitlement === 'trial') {
+      return { kind: 'trial', gift: '🎁 <b>ניסיון אחד עלינו</b> · בלי מפתח ובלי כרטיס אשראי', go: 'לנסות עכשיו בחינם' };
+    }
+    if (s.entitlement === 'subscription') {
+      return { kind: 'subscription', gift: '✓ <b>כלול במנוי שלך</b> · חפיסה חדשה בכל יום', go: 'לבנות את החפיסה הראשונה' };
+    }
+    return { kind: 'first', gift: '🎁 מי שעוד לא ניסה מקבל <b>הרצה אחת עלינו</b>', go: 'לנסות עכשיו' };
+  }
+
   function renderAnnouncement(s) {
-    if (document.getElementById('jma-dm-announce')) return;
-    const trial = s.entitlement === 'trial';
+    const v = annVariant(s);
+    const open = document.getElementById('jma-dm-announce');
+    if (open) { // already on screen: refine it, don't redraw it under the reader
+      if (open.dataset.kind !== v.kind) {
+        open.dataset.kind = v.kind;
+        open.querySelector('.dm-ann-gift').innerHTML = v.gift;
+        open.querySelector('[data-ann="go"]').textContent = v.go;
+      }
+      return;
+    }
     const back = el('div', 'dm-ann-backdrop');
     back.id = 'jma-dm-announce';
+    back.dataset.kind = v.kind;
     back.setAttribute('role', 'dialog');
     back.setAttribute('aria-modal', 'true');
     back.setAttribute('aria-labelledby', 'dmAnnTitle');
@@ -241,7 +278,7 @@
         <button type="button" class="dm-ann-x" data-ann="later" aria-label="סגירה">✕</button>
         <span class="dm-ann-badge">✨ חדש בתוסף</span>
         <h2 id="dmAnnTitle">ההתאמות היומיות</h2>
-        <p class="dm-ann-sub">כל בוקר, המשרות החדשות בהייטק שבאמת מתאימות לך, מוכנות להגשה.</p>
+        <p class="dm-ann-sub">כל בוקר, רוב המשרות החדשות בהייטק בארץ, מסוננות למה שבאמת מתאים לך ומוכנות להגשה מהירה.</p>
         <div class="dm-ann-demo" aria-hidden="true">
           <div class="dm-ann-demo-head"><div class="dm-ann-ring-wrap"><div class="dm-ann-ring"></div><span class="dm-ann-ring-num">86</span></div>
             <div><div class="dm-ann-jt" dir="ltr">Senior Backend Engineer</div><div class="dm-ann-co">פורסמה היום · ⭐ מעולה</div></div></div>
@@ -249,18 +286,20 @@
           <div class="dm-ann-cv">📄 מומלץ להגיש עם גרסת ה-Backend ⬇️</div>
         </div>
         <ol class="dm-ann-steps">
-          <li><span class="ico">🌅</span><div><b>כל בוקר ב-6:00</b> אנחנו אוספים את משרות הפיתוח החדשות בארץ: מלינקדאין, מ-Indeed ומאתרי החברות.</div></li>
-          <li><span class="ico">🎯</span><div><b>ה-AI בודק כל משרה מול קורות החיים שלך</b>, דרישה אחרי דרישה, ומציג רק את מה שבאמת מתאים, עם הסבר לכל ציון.</div></li>
-          <li><span class="ico">🚀</span><div><b>מגישים מהר יותר</b>: הגרסה הנכונה של קורות החיים מוכנה להורדה, והטופס מתמלא אוטומטית באתרים נתמכים.</div></li>
+          <li><span class="ico">🌅</span><div><b>רוב המשרות החדשות בהייטק, במקום אחד.</b> כל בוקר, מלינקדאין, מ-Indeed ומאתרי החברות.</div></li>
+          <li><span class="ico">🎯</span><div><b>רק מה שמתאים לך.</b> ה-AI בודק כל משרה מול קורות החיים, דרישה אחרי דרישה, ומסביר כל ציון.</div></li>
+          <li><span class="ico">🎞️</span><div><b>גלגלת הגשה מהירה.</b> מגישים, שומרים או מדלגים, משרה אחרי משרה.</div></li>
+          <li><span class="ico">⚡</span><div><b>הגרסה הנכונה, והטופס מתמלא.</b> גרסת קורות החיים המתאימה לכל משרה, והטופס מתמלא אוטומטית כשאפשר. את השליחה לוחצים בעצמך.</div></li>
         </ol>
-        <div class="dm-ann-gift">${trial ? '🎁 <b>ניסיון אחד עלינו</b> · בלי מפתח ובלי כרטיס אשראי' : '✓ <b>כלול במנוי שלך</b> · חפיסה חדשה בכל יום'}</div>
-        <button type="button" class="btn btn-primary" data-ann="go">${trial ? 'לנסות עכשיו בחינם' : 'לבנות את החפיסה הראשונה'}</button>
+        <div class="dm-ann-gift">${v.gift}</div>
+        <button type="button" class="btn btn-primary" data-ann="go">${v.go}</button>
         <button type="button" class="dm-ann-later" data-ann="later">אחר כך</button>
       </div>`;
     const later = async () => {
       back.remove();
       document.removeEventListener('keydown', onKey);
-      await saveUi(trial ? { annDismissedOn: todayKey() } : { annSeen: true });
+      // Subscribers see it once; anyone who may still try it, again tomorrow.
+      await saveUi(back.dataset.kind === 'subscription' ? { annSeen: true } : { annDismissedOn: todayKey() });
     };
     const onKey = (e) => { if (e.key === 'Escape') later(); };
     back.addEventListener('click', (e) => {
@@ -275,23 +314,59 @@
     document.addEventListener('keydown', onKey);
     document.body.appendChild(back);
     const go = back.querySelector('[data-ann="go"]');
-    if (go && go.focus) go.focus();
+    if (go && go.focus) go.focus({ preventScroll: true }); // the dialog opens at its top
+  }
+
+  // The last status the server gave, kept by this file and by daily/dm-bg.js
+  // (which fetches it at install and browser start). The card draws from it
+  // the moment the popup opens; the live answer, which takes up to a minute
+  // when the free server is asleep, only corrects it.
+  const CACHE_KEY = 'jma_dm_status_cache';
+
+  function fromCache(entry) {
+    if (!entry || !entry.status) return null;
+    const s = { ...entry.status };
+    // An answer from before midnight still says "today's deck is ready".
+    const reset = Date.parse(s.next_reset_at || '');
+    if (!reset || Date.now() >= reset) s.today = null;
+    return s;
+  }
+
+  function clearAll() {
+    ['jma-dm-hero', 'jma-dm-strip', 'jma-dm-announce'].forEach(id => {
+      const node = document.getElementById(id);
+      if (node) node.remove();
+    });
+  }
+
+  function show(s, ui) {
+    if (!s || !s.enabled || s.error) return clearAll();
+    injectStyles();
+    renderHero(s);
+    const stripWanted = !s.today && (s.entitlement === 'subscription' || s.entitlement === 'trial');
+    const strip = document.getElementById('jma-dm-strip');
+    if (!stripWanted && strip) strip.remove();
+    if (stripWanted && ui.stripDismissedOn !== new Date().toDateString()) renderStrip(s);
+    const ann = document.getElementById('jma-dm-announce');
+    if (shouldAnnounce(s, ui)) renderAnnouncement(s);
+    else if (ann) ann.remove();
+    return undefined;
   }
 
   async function init() {
+    const stored = await chrome.storage.local.get([CACHE_KEY, UI_KEY]);
+    // At once, before any network: the last known status, or the first look.
+    show(fromCache(stored[CACHE_KEY]) || FIRST_LOOK, stored[UI_KEY] || {});
     try {
       await loadScript('daily/dm-api.js');
       lastStatus = await window.JMA_DM.api.status();
     } catch (_) {
-      return; // server asleep or unreachable: the popup works exactly as before
+      return; // unreachable: the card stays (the deck says what's wrong if it's opened); the popup works as before
     }
-    if (!lastStatus || !lastStatus.enabled || lastStatus.error) return;
-    injectStyles();
-    renderHero(lastStatus);
-    const ui = (await chrome.storage.local.get(UI_KEY))[UI_KEY] || {};
-    if (ui.stripDismissedOn !== new Date().toDateString()) renderStrip(lastStatus);
-    if (shouldAnnounce(lastStatus, ui)) renderAnnouncement(lastStatus);
-    syncBadge(lastStatus, ui).catch(() => {});
+    await chrome.storage.local.set({ [CACHE_KEY]: { at: Date.now(), status: lastStatus } });
+    const ui = (await chrome.storage.local.get(UI_KEY))[UI_KEY] || {}; // may have changed meanwhile
+    show(lastStatus, ui);
+    if (lastStatus && lastStatus.enabled && !lastStatus.error) syncBadge(lastStatus, ui).catch(() => {});
   }
 
   // The toolbar's "חדש" until the deck is first opened (daily/dm-bg.js sets it

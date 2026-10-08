@@ -71,6 +71,14 @@ class TestBoardFromUrl:
     def test_parses(self, url, expected):
         assert registry.board_from_url(url) == expected
 
+    def test_a_greenhouse_job_on_a_company_site_keeps_its_board(self):
+        rec = {"url": "https://www.acme.com/careers/backend?gh_jid=9", "external_job_id": "9", "id": "h1"}
+        registry._hosted_greenhouse_url(rec, "acme")
+        assert rec == {"url": "https://job-boards.greenhouse.io/acme/jobs/9", "external_job_id": "9", "id": "h1"}
+        hosted = {"url": "https://job-boards.greenhouse.io/acme/jobs/9", "external_job_id": "9"}
+        registry._hosted_greenhouse_url(hosted, "other")
+        assert hosted["url"] == "https://job-boards.greenhouse.io/acme/jobs/9"
+
 
 class TestDedupe:
     def test_key_ignores_suffixes_locations_and_punctuation(self):

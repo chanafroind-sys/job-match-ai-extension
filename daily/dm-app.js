@@ -50,7 +50,8 @@
     return `<div class="ring${small ? ' ring-sm' : ''}" style="--c:${bandColor(score)}"><svg viewBox="0 0 72 72" aria-hidden="true"><circle class="ring-track" cx="36" cy="36" r="30"/><circle class="ring-val" cx="36" cy="36" r="30" stroke-dasharray="${CIRC}" stroke-dashoffset="${off}"/></svg><span class="ring-num" aria-hidden="true">${score}</span><span class="sr">ציון התאמה ${score} מתוך 100</span></div>`;
   }
 
-  const ATS_NAME = { lever: 'Lever', greenhouse: 'Greenhouse', ashby: 'Ashby', smartrecruiters: 'SmartRecruiters', workday: 'Workday', other: 'אתר החברה' };
+  const ATS_NAME = { lever: 'Lever', greenhouse: 'Greenhouse', ashby: 'Ashby', smartrecruiters: 'SmartRecruiters', workday: 'Workday',
+    comeet: 'Comeet', workable: 'Workable', teamtailor: 'Teamtailor', linkedin: 'LinkedIn', indeed: 'Indeed', other: 'אתר החברה' };
 
   function cvLabel(card, cvId) {
     const fromScores = card.analysis && (card.analysis.cv_scores || []).find(s => s.cv_id === cvId);
@@ -63,12 +64,10 @@
   async function applySubLabel(card) {
     const ats = card.job && card.job.ats;
     const label = cvLabel(card, selectedCv(card));
-    if (DM.apply.canAutofill(ats)) {
-      const profile = await DM.apply.getProfile();
-      return `${profile ? '⚡ מילוי אוטומטי + צירוף קו״ח' : '⚡ מילוי אוטומטי (אחרי אישור פרטים)'} · ${label}`;
-    }
     if (ats === 'workday') return `🔐 נדרשת התחברות לאתר החברה · ${label}`;
-    return `📎 קו״ח מוכנים לצירוף · ${label}`;
+    if (!(await DM.apply.getProfile())) return `⚡ מילוי אוטומטי (אחרי אישור פרטים) · ${label}`;
+    if (DM.apply.canAutofill(ats)) return `⚡ מילוי אוטומטי + צירוף קו״ח · ${label}`;
+    return `⚡ נמלא את טופס החברה כשתגיע/י אליו · ${label}`;
   }
 
   // ── rendering ────────────────────────────────────────────────────────────────
@@ -89,8 +88,17 @@
   const topBar = (title, extra = '') => `<header class="dm-top"><div><h1 class="dm-title">${title}</h1><div class="dm-date">${esc(todayLabel())}</div></div>${extra}</header>`;
   const back = (act = 'back', text = 'חזרה') => `<button type="button" class="btn btn-secondary" data-act="${act}">${text}</button>`;
 
+  // While the first answer is on its way (up to a minute when the free server
+  // is asleep), say what is coming instead of showing a bare spinner.
   function loading() {
-    return `<div class="dm-center"><div class="spinner" aria-hidden="true"></div><p class="dm-muted">טוען…</p></div>`;
+    return `<div class="dm-center"><div class="spinner" aria-hidden="true"></div><p class="dm-muted">טוען…</p>
+      <p class="dm-fine dm-wake" id="dmWake" hidden>השרת מתעורר. בפעם הראשונה ביום זה לוקח עד דקה.</p>
+      <ul class="dm-pitch">
+        <li><span aria-hidden="true">🌅</span>רוב המשרות החדשות בהייטק בארץ, כל בוקר</li>
+        <li><span aria-hidden="true">🎯</span>רק מה שמתאים לקורות החיים שלך, עם ציון מוסבר</li>
+        <li><span aria-hidden="true">🎞️</span>גלגלת הגשה מהירה: מגישים, שומרים או מדלגים</li>
+        <li><span aria-hidden="true">⚡</span>גרסת הקו״ח המומלצת לכל משרה, ומילוי אוטומטי של הטופס כשאפשר</li>
+      </ul></div>`;
   }
 
   function disabled() {
@@ -299,31 +307,53 @@
     if (ap.mode === 'opening') {
       return `<div class="dm-body ap">${head}<div class="ap-box"><p class="dm-muted">פותחים את טופס ההגשה…</p></div></div>`;
     }
-    if (ap.mode === 'autofill') {
-      const r = ap.result || {};
+    const ev = ap.event || {};
+    const r = ev.kind === 'filled' ? (ev.result || {}) : null;
+    // A form reached from LinkedIn is named by its host; a known ATS by name.
+    const byHost = ev.host && !DM.apply.canAutofill(job.ats);
+    const site = byHost ? `<bdi dir="ltr">${esc(ev.host)}</bdi>` : esc(ATS_NAME[job.ats] || 'אתר החברה');
+    const at = byHost ? `באתר ${site}` : `ב-${site}`; // "ב-" glued to a domain reads backwards in RTL
+    const fillNow = '<button type="button" class="link-btn" data-act="fill-now">⚡ למלא עכשיו את הטופס הפתוח</button>';
+    let box;
+    if (r) {
+      const left = (r.left || []).filter(l => l !== 'קורות חיים');
       const items = [
-        ['is-done', 'טופס ההגשה נפתח בלשונית הסמוכה'],
-        r.attached ? ['is-done', `צירפנו את ${r.fileName}`] : ['is-info', 'לא צירפנו קובץ: לגרסה הזו אין קובץ שמור. אפשר להוסיף אותו בספריית הקו״ח (📄 בראש החפיסה).'],
+        ['is-done', 'טופס ההגשה מולא בלשונית הסמוכה'],
+        r.attached ? ['is-done', `צירפנו את ${r.fileName}`]
+          : ap.hasFile ? ['is-info', 'את קובץ קורות החיים צריך לצרף בעצמך (ההורדה למטה).']
+            : ['is-info', 'לא צירפנו קובץ: לגרסה הזו אין קובץ שמור. אפשר להוסיף אותו בספריית הקו״ח (📄 בראש החפיסה).'],
         r.filled && r.filled.length ? ['is-done', `מולאו ${r.filled.length} שדות: ${r.filled.join(', ')}`] : null,
-        r.left && r.left.length ? ['is-info', `נשארו לך: ${r.left.join(', ')}. אנחנו לא ממציאים תשובות.`] : null,
+        left.length ? ['is-info', `נשארו לך: ${left.join(', ')}. אנחנו לא ממציאים תשובות.`] : null,
+        r.questions ? ['is-info', `ועוד ${r.questions} שאלות של החברה, שעליהן עונים בעצמך.`] : null,
         ['is-you', 'עבר/י על הטופס ולחץ/י Submit בעצמך'],
       ].filter(Boolean);
-      return `<div class="dm-body ap">${head}<div class="ap-box"><h3 class="ap-h">⚡ מילוי אוטומטי ב-${esc(ATS_NAME[job.ats] || 'טופס ההגשה')}</h3><ol class="ap-list">${items.map(([cls, t]) => `<li class="ap-i ${cls}">${esc(t)}</li>`).join('')}</ol></div>${rule}${done}</div>`;
+      box = `<h3 class="ap-h">⚡ מילוי אוטומטי ${at}</h3><ol class="ap-list">${items.map(([cls, t]) => `<li class="ap-i ${cls}">${esc(t)}</li>`).join('')}</ol>`;
+    } else if (ap.reason === 'no_profile') {
+      box = `<h3 class="ap-h">📎 המשרה נפתחה בלשונית הסמוכה</h3><p class="ap-p">כדי שנמלא את טופס ההגשה צריך קודם לאשר את הפרטים למילוי טפסים.</p>
+        <button type="button" class="btn btn-secondary" data-act="profile">אישור פרטים למילוי</button>`;
+    } else if (ev.kind === 'no_access') {
+      box = `<h3 class="ap-h">🔐 אישור חד-פעמי למילוי באתרי החברות</h3>
+        <p class="ap-p">טופס ההגשה נפתח ${at}. כדי שנמלא אותו, וגם את הטפסים באתרי הקריירה של חברות מעכשיו, Chrome יבקש לאשר לתוסף גישה לאתרים. נוגעים רק בטופס שפתחת מהחפיסה, ולעולם לא שולחים אותו.</p>
+        <button type="button" class="btn btn-primary" data-act="grant-fill">⚡ לאשר ולמלא</button>`;
+    } else if (ev.kind === 'blocked' || ap.mode === 'signin') {
+      box = `<h3 class="ap-h">🔐 ${ap.mode === 'signin' ? 'Workday דורש חשבון באתר החברה' : `${site} מבקש להתחבר או ליצור חשבון`}</h3>
+        <p class="ap-p">את זה עושים רק בעצמך: אנחנו לא נכנסים לחשבונות, לא יוצרים חשבונות ולא מזינים סיסמאות. אחרי שתתחבר/י, נמלא את הטופס.</p>${fillNow}`;
+    } else if (ev.kind === 'board' && /linkedin/i.test(ev.host || '')) {
+      box = `<h3 class="ap-h">🔗 המשרה נפתחה בלינקדאין</h3>
+        <p class="ap-p">אם יש שם <b>Easy Apply</b>, לינקדאין ממלא את הפרטים בעצמו: רק צרפ/י את קובץ קורות החיים מלמטה. אם <b>Apply</b> מוביל לאתר החברה, נמלא שם את הטופס אוטומטית.</p>`;
+    } else if (ev.kind === 'board') {
+      box = `<h3 class="ap-h">🔗 המשרה נפתחה ${at}</h3>
+        <p class="ap-p">אם Apply מוביל לאתר החברה, נמלא שם את הטופס אוטומטית. אם ההגשה נשארת באתר הזה, צרפ/י את הקובץ מלמטה.</p>`;
+    } else {
+      box = `<h3 class="ap-h">⏳ מחכים לטופס ההגשה</h3>
+        <p class="ap-p">ברגע שטופס ההגשה ייפתח בלשונית הסמוכה, גם אחרי לחיצה על Apply באתר, נמלא אותו אוטומטית.</p>${ev.kind === 'no_form' ? fillNow : ''}`;
     }
-    const signin = ap.mode === 'signin';
-    const title = signin ? '🔐 Workday דורש חשבון באתר החברה' : `📎 הכל מוכן להגשה ב-${esc(ATS_NAME[job.ats] || 'אתר החברה')}`;
-    const note = signin
-      ? 'אנחנו לא יוצרים חשבונות ולא מזינים סיסמאות. אחרי שתתחבר/י בעצמך, הכל מוכן כאן:'
-      : !DM.apply.canAutofill(job.ats)
-        ? 'מילוי אוטומטי לאתר הזה עדיין לא זמין. בינתיים: גרור/י את הקובץ לטופס והעתק/י את הפרטים.'
-        : ap.reason === 'form_not_found' ? 'לא מצאנו את טופס ההגשה בעמוד (אולי צריך ללחוץ שם קודם על Apply). בינתיים:'
-          : ap.reason ? 'המילוי האוטומטי לא הצליח בעמוד הזה. בינתיים:'
-            : 'כדי למלא אוטומטית צריך קודם לאשר את הפרטים למילוי טפסים. בינתיים:';
     const profile = ap.profile || {};
     const rows = [['שם מלא', profile.fullName], ['אימייל', profile.email], ['טלפון', profile.phone], ['LinkedIn', profile.linkedin]]
       .filter(([, v]) => v).map(([k, v]) => `<div class="cp-row"><span class="cp-k">${k}</span><bdi dir="ltr" class="cp-v">${esc(v)}</bdi><button type="button" class="cp-btn" data-act="copy" data-copy="${esc(v)}">העתקה</button></div>`).join('');
     const dl = ap.hasFile ? `<button type="button" class="dl-btn" data-act="download">⬇️ הורדת ${esc(label)}</button>` : '<div class="dm-nofile"><p class="dm-fine">לגרסה הזו אין עדיין קובץ להורדה.</p><button type="button" class="btn btn-secondary" data-act="library">📄 הוספת קובץ בספריית הקו״ח</button></div>';
-    return `<div class="dm-body ap">${head}<div class="ap-box"><h3 class="ap-h">${title}</h3><p class="ap-p">${note}</p>${dl}${rows ? `<div class="cp">${rows}</div>` : '<button type="button" class="link-btn" data-act="profile">הוספת פרטים להעתקה</button>'}</div>${rule}${done}</div>`;
+    const kit = `<div class="ap-box"><h3 class="ap-h">📎 להגשה ידנית</h3>${dl}${rows ? `<div class="cp">${rows}</div>` : '<button type="button" class="link-btn" data-act="profile">הוספת פרטים להעתקה</button>'}</div>`;
+    return `<div class="dm-body ap">${head}<div class="ap-box">${box}</div>${r && r.attached ? '' : kit}${rule}${done}</div>`;
   }
 
   function end() {
@@ -407,10 +437,12 @@
     const p = state.profileDraft || {};
     const field = (key, label, type = 'text', dir = 'ltr') => `<label class="fld"><span>${label}</span><input data-field="${key}" type="${type}" dir="${dir}" value="${esc(p[key] || '')}" maxlength="200"></label>`;
     return `${topBar('📝 פרטים למילוי טפסים')}<div class="dm-body">
-      <p class="dm-muted">אלה הפרטים שהתוסף ממלא בטפסים נתמכים. הם נשמרים רק בדפדפן שלך. שדה ריק נשאר ריק בטופס.</p>
+      <p class="dm-muted">אלה הפרטים שהתוסף ממלא בטופסי ההגשה. הם נשמרים רק בדפדפן שלך. שדה ריק נשאר ריק בטופס.</p>
       ${field('fullName', 'שם מלא', 'text', 'auto')}${field('email', 'אימייל', 'email')}${field('phone', 'טלפון', 'tel')}
       ${field('location', 'מיקום נוכחי (עיר)', 'text', 'auto')}${field('company', 'חברה נוכחית', 'text', 'auto')}${field('linkedin', 'LinkedIn', 'url')}
-      <div class="dm-stack"><button type="button" class="btn btn-primary" data-act="save-profile">${state.pendingApply ? 'שמירה והמשך להגשה' : 'שמירה'}</button>${back()}</div></div>`;
+      ${state.allSites ? '' : `<label class="pf-sites"><input type="checkbox" id="pfSites" checked><span>למלא גם באתרי הקריירה של החברות (רוב המשרות מלינקדאין מובילות לשם). Chrome יבקש אישור פעם אחת.</span></label>`}
+      <div class="dm-stack"><button type="button" class="btn btn-primary" data-act="save-profile">${state.pendingApply ? 'שמירה והמשך להגשה' : 'שמירה'}</button>
+        ${state.pendingApply ? '<button type="button" class="link-btn" data-act="skip-profile">בלי מילוי, רק לפתוח את המשרה</button>' : ''}${back()}</div></div>`;
   }
 
   // ── deck mechanics ──────────────────────────────────────────────────────────
@@ -622,26 +654,38 @@
     }
   }
 
-  async function startApply() {
+  // What the apply tab is up to (dm-apply.js follow): waiting, on LinkedIn,
+  // needs access, filled… The view redraws as it moves.
+  function onFillEvent(ev) {
+    if (!state.applying) return;
+    state.applying.event = ev;
+    if (state.view === 'apply') render();
+  }
+
+  async function startApply(withoutDetails) {
     const card = state.cards[state.idx];
     if (!card) return;
     const cvId = selectedCv(card);
-    if (card.job && DM.apply.canAutofill(card.job.ats) && !(await DM.apply.getProfile())) {
+    // The details are asked for once, before the first apply: most jobs lead
+    // to a form that can be filled.
+    if (!withoutDetails && card.job && card.job.ats !== 'workday' && !(await DM.apply.getProfile())) {
       state.pendingApply = true;
       return openProfile();
     }
     state.applying = { card, cvId, mode: 'opening' };
     setView('apply');
     let info;
-    try { info = await DM.apply.open(card, cvId); } catch (_) { info = { mode: 'manual' }; }
+    try { info = await DM.apply.open(card, cvId, onFillEvent); } catch (_) { info = { mode: 'manual' }; }
     const profileData = (await DM.apply.getProfile()) || (await DM.apply.suggestProfile());
     const file = await DM.cvLibrary.getFile(cvId);
-    state.applying = { card, cvId, ...info, profile: profileData, hasFile: !!file };
+    if (!state.applying || state.applying.card !== card) return;
+    state.applying = { ...state.applying, card, cvId, ...info, profile: profileData, hasFile: !!file };
     if (state.view === 'apply') render();
   }
 
   async function openProfile() {
     state.profileDraft = (await DM.apply.getProfile()) || (await DM.apply.suggestProfile());
+    state.allSites = await DM.apply.hasAllSites();
     state.prevView = state.view === 'profile' ? state.prevView : state.view;
     setView('profile');
   }
@@ -703,7 +747,20 @@
       }
       case 'open-job': return card && chrome.tabs.create({ url: card.job.url });
       case 'open-saved': return chrome.tabs.create({ url: btn.dataset.url });
+      case 'fill-now': return DM.apply.fillOpenForm(onFillEvent);
+      case 'grant-fill': {
+        const asked = DM.apply.requestAccess(); // first, inside the click: Chrome asks only for a gesture
+        if (!(await asked)) { toast('בלי האישור נשאר לצרף ולהעתיק ידנית (למטה).'); return undefined; }
+        state.allSites = true;
+        return DM.apply.fillOpenForm(onFillEvent);
+      }
+      case 'skip-profile':
+        state.pendingApply = false;
+        state.prevView = null;
+        setView('deck');
+        return startApply(true);
       case 'applied': {
+        DM.apply.stopFollowing();
         const c = state.applying && state.applying.card;
         if (!c) return setView('deck');
         c.user_action = 'applied';
@@ -797,9 +854,12 @@
         return openLibrary();
       }
       case 'save-profile': {
+        const sites = $('#pfSites');
+        const asked = sites && sites.checked ? DM.apply.requestAccess() : null; // inside the click, before any await
         const draft = {};
         document.querySelectorAll('[data-field]').forEach(inp => { draft[inp.dataset.field] = inp.value; });
         await DM.apply.saveProfile(draft);
+        if (asked) state.allSites = await asked;
         if (state.pendingApply) {
           state.pendingApply = false;
           state.prevView = null;
@@ -864,6 +924,7 @@
     document.addEventListener('keydown', onKey);
     if (chrome.storage && chrome.storage.onChanged) chrome.storage.onChanged.addListener(onStorage);
     setView('loading');
+    setTimeout(() => { const wake = document.getElementById('dmWake'); if (wake) wake.hidden = false; }, 3000);
     await markOpened().catch(() => {});
     await refresh();
   }

@@ -19,7 +19,7 @@ function ok(name, cond, detail) {
 }
 const tick = (ms = 60) => new Promise(r => setTimeout(r, ms));
 
-async function boot({ status, storage = {}, sidePanel = true, fetchFails = false }) {
+async function boot({ status, storage = {}, sidePanel = true, fetchFails = false, fetchHangs = false, gated = false }) {
   const dom = new JSDOM(
     '<div class="header"><div class="header-logo">Job Match AI</div></div>' +
     '<div class="screen active" id="screen-ready"><div class="ready-wrap"><div class="ready-title">מוכן לניתוח</div></div></div>' +
@@ -31,6 +31,12 @@ async function boot({ status, storage = {}, sidePanel = true, fetchFails = false
   window.fetch = (url, opts) => {
     log.fetches.push({ url: String(url), opts });
     if (fetchFails) return Promise.reject(new TypeError('Failed to fetch'));
+    if (fetchHangs) return new Promise(() => {}); // the free server, asleep
+    if (gated) { // the server wakes up when the test says so
+      return new Promise(resolve => {
+        log.answer = (st) => resolve({ ok: true, status: 200, json: () => Promise.resolve(st) });
+      });
+    }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(status) });
   };
   window.crypto.randomUUID = () => '11111111-2222-3333-4444-555555555555';
@@ -56,6 +62,8 @@ async function boot({ status, storage = {}, sidePanel = true, fetchFails = false
   window.eval(AUTH);
   window.eval(API);
   window.eval(ENTRY);
+  // The card draws before the status call; wait for the call, then its answer.
+  for (let waited = 0; !log.fetches.length && waited < 3000; waited += 10) await tick(10);
   await tick();
   return { window, doc: window.document, log, storage };
 }
@@ -113,7 +121,8 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
   ctx = await boot({ status: { enabled: false, reason: 'off' } });
   ok('disabled feature adds nothing', !ctx.doc.getElementById('jma-dm-hero') && !ctx.doc.getElementById('jma-dm-strip'));
   ctx = await boot({ status: SUB, fetchFails: true });
-  ok('unreachable server adds nothing and throws nothing', !ctx.doc.getElementById('jma-dm-hero'));
+  ok('an unreachable server leaves the first-look card and throws nothing',
+     ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent === '✨ חדש');
 
   // ── dismissed strip stays dismissed today ─────────────────────────────────────
   ctx = await boot({ status: SUB, storage: { jma_dm_ui: { stripDismissedOn: new Date().toDateString() } } });
@@ -131,7 +140,10 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
   ctx = await boot({ status: TRIAL });
   let ann = ctx.doc.getElementById('jma-dm-announce');
   ok('someone who can try it sees the announcement', ann && ann.getAttribute('role') === 'dialog' &&
-     ann.textContent.includes('ניסיון אחד עלינו') && ann.querySelectorAll('.dm-ann-steps li').length === 3);
+     ann.textContent.includes('ניסיון אחד עלינו') && ann.querySelectorAll('.dm-ann-steps li').length === 4);
+  ok('it says what the feature is: most new jobs, a quick-apply reel, the right CV, autofill',
+     ['רוב המשרות החדשות בהייטק', 'גלגלת הגשה מהירה', 'גרסת קורות החיים המתאימה', 'אוטומטית כשאפשר']
+       .every(t => ann.textContent.includes(t)));
   ann.querySelector('[data-ann="go"]').click();
   await tick();
   ok('"try it" opens the deck and starts the free run', ctx.log.sidePanel.length === 1 &&
@@ -166,6 +178,57 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
   ok('no announcement once the free run is used', !ctx.doc.getElementById('jma-dm-announce'));
   ctx = await boot({ status: { ...TRIAL, today: { status: 'done', cards: 3 } } });
   ok('no announcement over a deck that is already waiting', !ctx.doc.getElementById('jma-dm-announce'));
+
+  // ── instant: the last known status draws the card before the server answers ──
+  const later = new Date(Date.now() + 3600e3).toISOString();
+  const cache = (status, extra = {}) => ({ jma_dm_status_cache: { at: Date.now(), status: { ...status, next_reset_at: later, ...extra } } });
+  ctx = await boot({ status: SUB, fetchHangs: true, storage: cache(TRIAL) });
+  ok('a cached status shows the card at once, even while the server sleeps',
+     !!ctx.doc.getElementById('jma-dm-hero') && ctx.doc.getElementById('jma-dm-hero').classList.contains('is-gift') &&
+     !!ctx.doc.getElementById('jma-dm-announce'));
+  ctx = await boot({ status: SUB, fetchHangs: true,
+    storage: cache(SUB, { today: { status: 'done', cards: 4 }, next_reset_at: new Date(Date.now() - 1000).toISOString() }) });
+  ok('yesterday\'s "deck ready" is never shown as today\'s', !ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('בחפיסה'));
+  ctx = await boot({ status: { enabled: false, reason: 'off' }, storage: cache(TRIAL) });
+  ok('the live answer wins: a switched-off feature removes the cached card',
+     !ctx.doc.getElementById('jma-dm-hero') && !ctx.doc.getElementById('jma-dm-announce'));
+  ctx = await boot({ status: { ...SUB, today: { status: 'done', cards: 7 } }, storage: cache(SUB) });
+  ok('and an updated status redraws it', ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent === '7 בחפיסה' &&
+     ctx.storage.jma_dm_status_cache.status.today.cards === 7);
+
+  // ── the first look: a new install, nothing cached, the server still asleep ──
+  ctx = await boot({ status: SUB, gated: true });
+  hero = ctx.doc.getElementById('jma-dm-hero');
+  ann = ctx.doc.getElementById('jma-dm-announce');
+  ok('a new user sees the card and the dialog at once, before the server answers',
+     hero && hero.classList.contains('is-gift') && hero.querySelector('.dm-pill').textContent === '✨ חדש' &&
+     hero.textContent.includes('גלגלת הגשה מהירה') && ann && ann.dataset.kind === 'first');
+  ok('the first look promises only what is true for everyone',
+     ann.querySelector('.dm-ann-gift').textContent.includes('מי שעוד לא ניסה') && !ctx.doc.getElementById('jma-dm-strip'));
+  ctx.log.answer(TRIAL);
+  await tick();
+  ok('the answer refines the open dialog in place: the free run', ctx.doc.getElementById('jma-dm-announce') === ann &&
+     ann.dataset.kind === 'trial' && ann.querySelector('.dm-ann-gift').textContent.includes('ניסיון אחד עלינו') &&
+     ann.querySelector('[data-ann="go"]').textContent === 'לנסות עכשיו בחינם' &&
+     ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('ניסיון חינם'));
+
+  ctx = await boot({ status: SUB, gated: true });
+  ctx.log.answer({ ...SUB, entitlement: 'locked', reason: 'trial_used' });
+  await tick();
+  ok('someone whose free run is used gets the locked card, and the dialog goes',
+     ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('למנויים') && !ctx.doc.getElementById('jma-dm-announce'));
+
+  ctx = await boot({ status: SUB, gated: true });
+  ctx.doc.getElementById('btnDmOpen').click();
+  await tick();
+  ok('"try it" works before the server answers: the deck opens and builds when it can',
+     ctx.log.sidePanel.length === 1 && ctx.storage.jma_dm_ui.autoStartAt > 0);
+
+  ctx = await boot({ status: SUB, gated: true });
+  ctx.doc.querySelector('.dm-ann-later').click();
+  await tick();
+  ok('"later" on the first look waits until tomorrow, like the trial',
+     ctx.storage.jma_dm_ui.annDismissedOn === new Date().toDateString() && !ctx.storage.jma_dm_ui.annSeen);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

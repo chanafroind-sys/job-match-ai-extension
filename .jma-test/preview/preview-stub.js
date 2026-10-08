@@ -1,6 +1,7 @@
 // Preview harness for the Daily Matches side panel: fakes chrome.* and the
 // backend so the real daily/*.js + dm-styles.css render in a normal browser
-// tab. Pick a scenario with ?state=deck|ready|building|quiet|library|paywall|end|disabled.
+// tab. Pick a scenario with ?state=deck|ready|building|quiet|library|paywall|end|disabled,
+// or an apply step: apply-linkedin | apply-access | apply-filled.
 // Sample data only: companies, people and jobs are fictional.
 (function () {
   'use strict';
@@ -14,6 +15,11 @@
     jma_dm_cv_library: { versions: [{ id: 'vdata', label: 'Data', fileName: 'Data_Engineer_CV.pdf', text: 'Spark Airflow SQL '.repeat(30), hasFile: true }], mainLabel: 'Backend' },
   };
   if (scenario === 'building') storage.jma_dm_ui = { autoStartAt: Date.now() };
+  const applying = scenario.startsWith('apply-');
+  if (applying) {
+    storage.jma_dm_apply_profile = { fullName: 'Noa Levi', email: 'noa.levi@example.com', phone: '050-1234567',
+      location: '', company: '', linkedin: 'https://linkedin.com/in/noa-levi' };
+  }
 
   const reqs = (rows) => rows.map(([text, status, importance]) => ({ text, status, importance }));
   const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
@@ -55,6 +61,10 @@
       reqs: [['Terraform / IaC', 'met', 'must'], ['Kubernetes operations', 'partial', 'must'], ['On-call and SRE practices', 'missing', 'must']] },
       { category: 'DevOps', age: 2 }),
   ];
+  if (scenario === 'apply-linkedin') Object.assign(DECK[0].job, { ats: 'linkedin', url: 'https://www.linkedin.com/jobs/view/4466539338',
+    apply_url: 'https://www.linkedin.com/jobs/view/4466539338' });
+  if (scenario === 'apply-access') Object.assign(DECK[0].job, { ats: 'other', url: 'https://www.lusha.com/careers/co/tel-aviv/46.076/dev/',
+    apply_url: 'https://www.lusha.com/careers/co/tel-aviv/46.076/dev/' });
   if (scenario === 'end') DECK.forEach((c, i) => { c.user_action = ['applied', 'saved', 'skipped'][i]; });
 
   const STATUS = {
@@ -62,6 +72,8 @@
     quiet: { today: { status: 'done', cards: 0 } }, library: { today: null },
     ready: { today: null }, building: { today: null }, paywall: { entitlement: 'locked', reason: 'trial_used', last_run: { id: 1 } },
     disabled: null,
+    'apply-linkedin': { today: { status: 'done', cards: 3 } }, 'apply-access': { today: { status: 'done', cards: 3 } },
+    'apply-filled': { today: { status: 'done', cards: 3 } },
   };
   const status = scenario === 'disabled' ? { enabled: false, reason: 'off' } : {
     enabled: true, entitlement: 'subscription', reason: '', today: null,
@@ -98,6 +110,8 @@
     return Promise.reject(new Error('preview: unknown ' + p));
   };
 
+  let opened = '';
+  let access = scenario !== 'apply-access';
   window.chrome = {
     storage: {
       onChanged: { addListener: () => {} },
@@ -112,12 +126,21 @@
         remove: (k) => { delete storage[k]; return Promise.resolve(); },
       },
     },
-    tabs: { create: (o) => { console.log('[preview] tabs.create', o.url); return Promise.resolve({ id: 1 }); },
-      get: () => Promise.resolve({ status: 'complete' }), onUpdated: { addListener() {}, removeListener() {} } },
-    scripting: { executeScript: () => Promise.resolve([{ result: { found: true, filled: ['Full name', 'Email', 'Phone', 'LinkedIn'], left: ['Current location'], attached: true, fileName: 'Backend_CV.pdf' } }]) },
+    tabs: { create: (o) => { console.log('[preview] tabs.create', o.url); opened = o.url; return Promise.resolve({ id: 1 }); },
+      get: () => Promise.resolve({ id: 1, status: 'complete', url: opened }),
+      query: () => Promise.resolve([{ id: 1, url: opened }]),
+      onUpdated: { addListener() {}, removeListener() {} }, onCreated: { addListener() {}, removeListener() {} },
+      onRemoved: { addListener() {}, removeListener() {} } },
+    permissions: { contains: () => Promise.resolve(access), request: () => { access = true; return Promise.resolve(true); } },
+    scripting: { executeScript: () => Promise.resolve([{ frameId: 0, result: { found: true, filled: ['שם מלא', 'אימייל', 'טלפון', 'LinkedIn'],
+      left: ['מיקום'], attached: true, fileName: 'Backend_CV.pdf', questions: 2 } }]) },
     downloads: { download: () => Promise.resolve(1) },
     runtime: { getURL: (p) => p },
   };
+  if (applying) {
+    const go = () => { const b = document.querySelector('[data-act="apply"]'); if (b) b.click(); else setTimeout(go, 100); };
+    setTimeout(go, 400);
+  }
   if (scenario === 'library') {
     const open = () => { const b = document.querySelector('[data-act="library"]'); if (b) b.click(); else setTimeout(open, 100); };
     setTimeout(open, 300);

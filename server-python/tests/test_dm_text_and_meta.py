@@ -74,14 +74,39 @@ class TestJobsMeta:
         assert apply_url_for("lever", url, "Acme", None) == url + "/apply"
         assert apply_url_for("lever", url + "/apply", "Acme", None) == url + "/apply"
 
-    def test_greenhouse_company_page_becomes_hosted_form(self):
+    def test_greenhouse_company_page_becomes_greenhouse_form(self):
         url = "https://www.wiz.io/careers/job/123?gh_jid=4567"
         assert ats_for("Wiz", url) == "greenhouse"
-        assert apply_url_for("greenhouse", url, "Wiz", "4567") == "https://job-boards.greenhouse.io/wizinc/jobs/4567"
+        assert apply_url_for("greenhouse", url, "Wiz", "4567") == \
+            "https://job-boards.greenhouse.io/embed/job_app?for=wizinc&token=4567"
 
-    def test_greenhouse_unknown_company_keeps_url(self):
-        url = "https://boards.greenhouse.io/someco/jobs/1"
+    def test_greenhouse_board_comes_from_the_hosted_url(self):
+        # Any company, including registry boards: the hosted URL names the board.
+        for url in ("https://boards.greenhouse.io/someco/jobs/1", "https://job-boards.greenhouse.io/someco/jobs/1"):
+            assert apply_url_for("greenhouse", url, "Some Co", "1") == \
+                "https://job-boards.greenhouse.io/embed/job_app?for=someco&token=1"
+
+    def test_greenhouse_without_a_board_keeps_url(self):
+        url = "https://careers.someco.com/jobs/1?gh_jid=1"
         assert apply_url_for("greenhouse", url, "Some Co", "1") == url
+
+    def test_a_linkedin_listing_is_never_the_companys_board(self):
+        # Gong has a Greenhouse board; its LinkedIn listing must not get a
+        # Greenhouse link built from LinkedIn's job id.
+        url = "https://www.linkedin.com/jobs/view/4466539338"
+        assert ats_for("Gong", url) == "linkedin"
+        assert apply_url_for("linkedin", url, "Gong", "4466539338") == url
+        assert ats_for("NVIDIA", "https://il.indeed.com/viewjob?jk=1") == "indeed"
+
+    def test_more_ats_hosts(self):
+        assert ats_for("X", "https://www.comeet.co/jobs/73.00B/46.076") == "comeet"
+        assert ats_for("X", "https://www.comeet.com/jobs/acme/73.00B/dev/46.076") == "comeet"
+        assert ats_for("X", "https://jobs.smartrecruiters.com/ServiceNow/744000154095662") == "smartrecruiters"
+        assert ats_for("X", "https://career.teamtailor.com/jobs/1-dev") == "teamtailor"
+        workable = "https://apply.workable.com/acme/j/DB4D7C0EC8/"
+        assert ats_for("X", workable) == "workable"
+        assert apply_url_for("workable", workable, "X", None) == "https://apply.workable.com/acme/j/DB4D7C0EC8/apply/"
+        assert apply_url_for("workable", workable + "apply/", "X", None) == workable + "apply/"
 
     def test_workday_and_ashby(self):
         assert ats_for("X", "https://nvidia.wd5.myworkdayjobs.com/External/job/1") == "workday"

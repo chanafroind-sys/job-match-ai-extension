@@ -49,7 +49,7 @@ const SUB = (today) => ({ enabled: true, entitlement: 'subscription', reason: ''
   next_reset_at: '2026-10-05T00:00:00+03:00' });
 
 async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_size: 1284 }, cards: DECK, entitlement: 'subscription' },
-  runEvents = [], storage = {}, injection = null }) {
+  runEvents = [], storage = {}, injection = null, access = true, grantOnAsk = true }) {
   const dom = new JSDOM('<main id="dm-app"></main>', { runScripts: 'outside-only', pretendToBeVisual: true,
     url: 'chrome-extension://abc/daily/daily.html' });
   const { window } = dom;
@@ -57,7 +57,8 @@ async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_siz
   window.TextEncoder = TextEncoder;
   if (!window.crypto || !window.crypto.subtle) Object.defineProperty(window, 'crypto', { value: webcrypto, configurable: true });
   window.__JMA_DM_NO_AUTOBOOT = true;
-  const log = { requests: [], tabs: [], scripting: [], downloads: [] };
+  const log = { requests: [], tabs: [], scripting: [], downloads: [], asks: 0 };
+  const lastUrl = () => (log.tabs[log.tabs.length - 1] || {}).url;
   const statusQueue = [...statuses];
   const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
   window.fetch = (url, opts = {}) => {
@@ -94,10 +95,17 @@ async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_siz
     },
     tabs: {
       create: (o) => { log.tabs.push(o); return Promise.resolve({ id: 5 }); },
-      get: () => Promise.resolve({ id: 5, status: 'complete' }),
+      get: () => Promise.resolve({ id: 5, status: 'complete', url: lastUrl() }),
+      query: () => Promise.resolve([{ id: 5, url: lastUrl() }]),
       onUpdated: { addListener: () => {}, removeListener: () => {} },
+      onCreated: { addListener: () => {}, removeListener: () => {} },
+      onRemoved: { addListener: () => {}, removeListener: () => {} },
     },
-    scripting: { executeScript: (o) => { log.scripting.push(o); return Promise.resolve([{ result: injection }]); } },
+    permissions: {
+      contains: () => Promise.resolve(access),
+      request: () => { log.asks++; access = access || grantOnAsk; return Promise.resolve(grantOnAsk); },
+    },
+    scripting: { executeScript: (o) => { log.scripting.push(o); return Promise.resolve([{ frameId: 0, result: injection }]); } },
     downloads: { download: (o) => { log.downloads.push(o); return Promise.resolve(1); } },
     runtime: { getURL: (p) => `chrome-extension://abc/${p}` },
   };
@@ -211,7 +219,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ctx = await boot({ statuses: [{ enabled: false, reason: 'off' }] });
   ok('a disabled feature says so', ctx.app.state.view === 'disabled');
 
-  // ── apply: Lever auto-fill needs a confirmed profile first ────────────────────
+  // ── apply: the form details are confirmed once, before the first apply ────────
   ctx = await boot({ statuses: [SUB({ status: 'done', cards: 3 })], storage: { cvText: CV },
     injection: { found: true, filled: ['Full name', 'Email'], left: ['Current location'], attached: false, fileName: '' } });
   ctx.doc.querySelector('[data-act="apply"]').click();
@@ -221,9 +229,11 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
      ctx.doc.querySelector('[data-field="fullName"]').value === 'Noa Levi');
   ctx.doc.querySelector('[data-act="save-profile"]').click();
   await tick(250);
-  const inj = ctx.log.scripting[0];
-  ok('after confirming, the Lever form is filled in its own tab', ctx.log.tabs[0].url === 'https://jobs.lever.co/acme/1/apply' &&
-     inj && inj.func.name === 'leverFill' && inj.target.tabId === 5 && inj.args[0].email === 'noa.levi@example.com');
+  const [look, fill] = ctx.log.scripting;
+  ok('after confirming, the Lever form opens and every frame is looked at first', ctx.log.tabs[0].url === 'https://jobs.lever.co/acme/1/apply' &&
+     look && look.func.name === 'formFill' && look.target.tabId === 5 && look.target.allFrames && look.args[2].dry === true);
+  ok('then only the frame with the form is filled', fill && fill.target.frameIds[0] === 0 && !fill.args[2].dry &&
+     fill.args[0].email === 'noa.levi@example.com');
   ok('the apply view reports what was filled and what was left', ctx.app.state.view === 'apply' &&
      ctx.doc.body.textContent.includes('מולאו 2 שדות') && ctx.doc.body.textContent.includes('Current location'));
   ok('the hard rule is stated on screen', ctx.doc.querySelector('.ap-rule').textContent.includes('Submit'));
@@ -231,7 +241,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   await tick(800);
   ok('"I applied" records it and moves on', actions(ctx.log).includes('1:applied') && ctx.doc.getElementById('dmCount').textContent === '2 / 3');
 
-  // ── apply: Greenhouse is filled by the React-aware filler ─────────────────────
+  // ── apply: Greenhouse, the same filler ───────────────────────────────────────
   ctx = await boot({ statuses: [SUB({ status: 'done', cards: 3 })], storage: { cvText: CV },
     injection: { found: true, filled: ['First name', 'Last name', 'Email'], left: ['Phone'], attached: false, fileName: '' } });
   ctx.app.goTo(2, false);
@@ -241,24 +251,48 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('first Greenhouse apply asks to confirm the form details too', ctx.app.state.view === 'profile');
   ctx.doc.querySelector('[data-act="save-profile"]').click();
   await tick(250);
-  const gh = ctx.log.scripting[0];
+  const gh = ctx.log.scripting[1];
   ok('Greenhouse opens the hosted application form', ctx.log.tabs[0].url === 'https://job-boards.greenhouse.io/datavine/jobs/9');
-  ok('and runs the React filler for Greenhouse', gh && gh.func.name === 'reactFill' && gh.args[0] === 'greenhouse' &&
-     gh.args[1].email === 'noa.levi@example.com');
+  ok('and fills it with the same filler', gh && gh.func.name === 'formFill' && gh.args[0].email === 'noa.levi@example.com');
   ok('the result names the site', ctx.doc.querySelector('.ap-h').textContent.includes('Greenhouse') &&
      ctx.doc.body.textContent.includes('מולאו 3 שדות'));
 
-  // ── apply: a site without auto-fill gets download-and-copy ────────────────────
-  const otherDeck = [card(7, 80, 'Backend Developer', { job: { title: 'Backend Developer', company: 'Papaya', category: 'Backend',
-    seniority: 'Mid', url: 'https://www.comeet.com/jobs/papaya/B2.00B/be/9A.1F3', apply_url: 'https://www.comeet.com/jobs/papaya/B2.00B/be/9A.1F3',
-    ats: 'other', excerpt: '' } })];
-  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV },
-    today: { run: { id: 8, status: 'done', candidates: 4 }, cards: otherDeck, entitlement: 'subscription' } });
+  // ── apply: LinkedIn, company sites, and skipping the details ────────────────────
+  const PROFILE_SAVED = { jma_dm_apply_profile: { fullName: 'Noa Levi', email: 'noa.levi@example.com', phone: '050-1234567',
+    location: '', company: '', linkedin: '' } };
+  const oneJob = (url, ats) => ({ run: { id: 8, status: 'done', candidates: 4 }, entitlement: 'subscription',
+    cards: [card(7, 80, 'Backend Developer', { job: { title: 'Backend Developer', company: 'Papaya', category: 'Backend',
+      seniority: 'Mid', url, apply_url: url, ats, excerpt: '' } })] });
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV, ...PROFILE_SAVED },
+    today: oneJob('https://www.linkedin.com/jobs/view/4466539338', 'linkedin'), injection: { found: true, filled: ['אימייל'], left: [] } });
+  ok('a LinkedIn card promises to fill the company\'s form when reached', ctx.doc.getElementById('applySub').textContent.includes('כשתגיע/י אליו'));
   ctx.doc.querySelector('[data-act="apply"]').click();
   await tick(200);
-  ok('a site without auto-fill opens and offers details to copy', ctx.log.tabs[0].url.includes('comeet.com') &&
-     ctx.log.scripting.length === 0 && ctx.doc.querySelectorAll('.cp-row').length >= 2 &&
-     ctx.doc.body.textContent.includes('עדיין לא זמין'));
+  ok('LinkedIn opens, is never touched, and the view explains Easy Apply vs the company site',
+     ctx.log.tabs[0].url.includes('linkedin.com') && ctx.log.scripting.length === 0 &&
+     ctx.doc.body.textContent.includes('Easy Apply') && ctx.doc.querySelectorAll('.cp-row').length >= 2);
+
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV, ...PROFILE_SAVED }, access: false,
+    today: oneJob('https://careers.papaya.dev/jobs/1', 'other'), injection: { found: true, filled: ['אימייל', 'טלפון'], left: [], attached: false } });
+  ctx.doc.querySelector('[data-act="apply"]').click();
+  await tick(200);
+  ok('a company site the extension can\'t reach asks for the one-time access', ctx.log.scripting.length === 0 &&
+     !!ctx.doc.querySelector('[data-act="grant-fill"]') && ctx.doc.body.textContent.includes('careers.papaya.dev'));
+  ctx.doc.querySelector('[data-act="grant-fill"]').click();
+  await tick(250);
+  ok('granting it fills the form that is open', ctx.log.asks === 1 && ctx.log.scripting.length === 2 &&
+     ctx.doc.body.textContent.includes('מולאו 2 שדות'));
+
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV }, access: false, grantOnAsk: false,
+    today: oneJob('https://careers.papaya.dev/jobs/1', 'other') });
+  ctx.doc.querySelector('[data-act="apply"]').click();
+  await tick();
+  ok('the details screen offers company sites too, and a way to skip', !!ctx.doc.getElementById('pfSites') &&
+     !!ctx.doc.querySelector('[data-act="skip-profile"]'));
+  ctx.doc.querySelector('[data-act="skip-profile"]').click();
+  await tick(200);
+  ok('skipping only opens the job, with the CV and details to copy', ctx.log.tabs[0].url.includes('papaya.dev') &&
+     ctx.log.scripting.length === 0 && ctx.app.state.view === 'apply' && !!ctx.doc.querySelector('.dl-btn, .dm-nofile'));
 
   // ── focus, level and the run payload ──────────────────────────────────────────
   ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV } });
