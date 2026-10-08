@@ -187,7 +187,8 @@
 
   const STATUS_ICON = { met: ['✓', 'מתקיימת'], partial: ['◐', 'חלקית'], missing: ['✕', 'חסרה'] };
   const ACTION_RIBBON = { applied: ['✓ הוגש', 's-applied'], saved: ['🔖 נשמר', 's-saved'], skipped: ['דולג', 's-skipped'] };
-  const MODEL_NAME = { 'claude-sonnet-5-5': 'Sonnet 5.5' };
+  const MODEL_NAME = { 'claude-sonnet-5-5': 'Sonnet 5.5', 'openrouter:deepseek/deepseek-v4.1-flash': 'DeepSeek V4.1 Flash' };
+  const modelName = (m) => MODEL_NAME[m] || String(m || '').replace(/^openrouter:/, '');
 
   function postedLabel(iso) {
     const t = Date.parse(iso || '');
@@ -250,7 +251,9 @@
       const hard = reqs.some(r => r.status === 'missing' && r.importance === 'must');
       const compare = scores.length > 1 ? `<button type="button" class="link-btn" data-act="cmp" aria-expanded="false">השוואת גרסאות</button>` : '';
       const dl = `<button type="button" class="cv-dl" data-act="dl-cv" title="הורדת הגרסה הזו"${hasCvFile(sel) ? '' : ' hidden'}>⬇️ הורדה</button>`;
-      const alt = a.compare ? `<p class="dm-alt">🧪 ${esc(MODEL_NAME[a.compare.model] || a.compare.model)}: <b>${esc(a.compare.match_score)}</b>${a.compare.fit_summary_he ? ` · ${esc(a.compare.fit_summary_he)}` : ''}</p>` : '';
+      const alt = !a.compare ? '' : a.compare.failed
+        ? `<p class="dm-alt">🧪 ${esc(modelName(a.compare.model))}: לא החזיר תשובה תקינה</p>`
+        : `<p class="dm-alt">🧪 ${esc(modelName(a.compare.model))}: <b>${esc(a.compare.match_score)}</b>${a.compare.fit_summary_he ? ` · ${esc(a.compare.fit_summary_he)}` : ''}</p>`;
       body = `${alt}
         <div class="dm-cv"><div class="dm-cv-row"><span class="dm-cv-ico" aria-hidden="true">📄</span><div class="dm-cv-main"><div class="dm-cv-k">${sel === card.best_cv_id ? 'מומלץ להגיש עם' : 'נבחר להגשה'}</div><div class="dm-cv-v"><strong>${esc(cvLabel(card, sel))}</strong>${selScore != null ? ` · התאמה ${selScore}` : ''}</div></div>${dl}${compare}</div>
           ${a.cv_choice_reason_he ? `<p class="dm-cv-reason">${esc(a.cv_choice_reason_he)}</p>` : ''}
@@ -282,11 +285,30 @@
     return parts.join(' · ');
   }
 
+  // Admins only: how the comparison model did against Haiku on every job the
+  // run analyzed (the numbers to decide a switch on).
+  function compareBox() {
+    const c = state.compare;
+    if (!c || !isAdmin()) return '';
+    const sign = (x) => (x > 0 ? `+${x}` : `${x}`);
+    const rows = [
+      ['משרות שנבדקו', `${c.jobs}${c.failed ? ` (${c.failed} בלי תשובה תקינה)` : ''}`],
+      ['הפרש ממוצע בציון', c.mean_abs_diff == null ? '—' : `${c.mean_abs_diff} נק׳ (בממוצע ${sign(c.mean_diff)})`],
+      ['עד 10 נק׳ הפרש', c.within_10 == null ? '—' : `${c.within_10}%`],
+      ['אותה קטגוריה (חזקה/הצצה/מוסתרת)', c.same_tier == null ? '—' : `${c.same_tier}%`],
+      ['היו מוצגות', `Haiku ${c.shown_main} · ${modelName(c.model)} ${c.shown_other} · שניהם ${c.shown_both}`],
+      ['עלות הריצה', `Haiku $${c.cost_main_usd} · ${modelName(c.model)} $${c.cost_other_usd}`],
+    ];
+    return `<details class="dm-cmp-sum"><summary>🧪 השוואה: Haiku מול ${esc(modelName(c.model))}</summary>
+      <dl>${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd dir="auto">${esc(v)}</dd></div>`).join('')}</dl></details>`;
+  }
+
   function deck() {
     const n = state.cards.length;
     return `<div class="dm" tabindex="-1">
       <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div></div>
         <div class="dm-nav"><button type="button" class="icon-btn" data-act="library" aria-label="גרסאות קורות החיים" title="גרסאות קורות החיים">📄</button><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
+      ${compareBox()}
       <div class="dm-progress" aria-hidden="true">${state.cards.map(() => '<span class="dm-seg"></span>').join('')}</div>
       <div class="dm-track" id="dmTrack" role="region" aria-roledescription="קרוסלה" aria-label="משרות שהותאמו לך">${state.cards.map((c, i) => cardHtml(c, i, n)).join('')}</div>
       <div class="dm-toast" id="dmToast" role="status"></div>
@@ -599,6 +621,7 @@
       return showError({ title: 'לא הצלחנו לטעון את החפיסה', message: root.JMA_Auth ? root.JMA_Auth.friendly(e.message) : e.message, retry: 'reload' });
     }
     state.run = data.run;
+    state.compare = data.compare || null;
     state.cards = data.cards || [];
     state.readOnly = data.entitlement === 'locked';
     if (!state.cards.length) {

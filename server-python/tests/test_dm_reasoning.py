@@ -257,3 +257,69 @@ class TestModels:
 
 async def _no_sleep():
     return None
+
+
+class TestOpenRouter:
+    """The comparison path: same rubric, CVs and schema, through OpenRouter."""
+
+    @pytest.fixture
+    def fake(self, monkeypatch):
+        from tests.dm_openrouter import FakeOpenRouter
+        fake = FakeOpenRouter()
+        monkeypatch.setattr(config, "OPENROUTER_KEY", "or-test-key")
+        monkeypatch.setattr(reasoning, "_openrouter_transport", fake.transport())
+        monkeypatch.setattr(reasoning, "_retry_pause", _no_pause)
+        return fake
+
+    def test_the_request_keeps_cvs_away_from_retaining_hosts(self):
+        body = reasoning.openrouter_body("deepseek/deepseek-v4.1-flash", "SYSTEM", reasoning.tool_schema(["cv1"]),
+                                         reasoning.JobForPrompt("j1", "JOB"))
+        assert body["provider"]["zdr"] is True and body["provider"]["data_collection"] == "deny"
+        assert "deepseek" in body["provider"]["ignore"]  # never DeepSeek's own servers
+        assert body["provider"]["require_parameters"] is True
+        fn = body["tools"][0]["function"]
+        assert fn["name"] == reasoning.TOOL_NAME and fn["strict"] is True
+        assert fn["parameters"] == reasoning.tool_schema(["cv1"])["input_schema"]  # the very same schema
+        assert body["tool_choice"] == {"type": "function", "function": {"name": reasoning.TOOL_NAME}}
+        assert body["messages"][0] == {"role": "system", "content": "SYSTEM"} and body["usage"] == {"include": True}
+        assert "reasoning" not in body
+
+    def test_reasoning_effort_is_a_setting(self, monkeypatch):
+        monkeypatch.setattr(config, "OPENROUTER_REASONING", "low")
+        body = reasoning.openrouter_body("m", "S", reasoning.tool_schema(["cv1"]), reasoning.JobForPrompt("j", "J"))
+        assert body["reasoning"] == {"effort": "low"}
+
+    async def test_analyzes_with_the_same_rubric_and_reports_cost(self, fake):
+        results, usage = await reasoning.analyze_jobs(CVS, _jobs(3), model="openrouter:deepseek/deepseek-v4.1-flash")
+        assert set(results) == {"j0", "j1", "j2"} and all(r and isinstance(r["match_score"], int) for r in results.values())
+        assert fake.requests[0]["model"] == "deepseek/deepseek-v4.1-flash"
+        assert reasoning.build_system_text(CVS) == fake.requests[0]["messages"][0]["content"]
+        assert fake.headers[0]["authorization"] == "Bearer or-test-key"
+        assert results["j0"]["_cost_usd"] == pytest.approx(0.0004) and results["j0"]["_provider"] == "DeepInfra"
+        assert usage["cost_usd"] == pytest.approx(0.0012) and config.usage_cost(usage, "x") == pytest.approx(0.0012)
+        assert usage["cache_read_tokens"] == 3 * 4100 and usage["input_tokens"] == 3 * 1100
+
+    async def test_a_busy_host_is_retried_once(self, fake):
+        fake.fail_status, fake.fail_times = 429, 1
+        results, _ = await reasoning.analyze_jobs(CVS, _jobs(1), model="openrouter:m")
+        assert results["j0"] is not None and len(fake.requests) == 2
+
+    async def test_no_tool_call_is_a_failed_job_not_a_failed_run(self, fake):
+        fake.no_tool_for = "Backend 1"
+        results, _ = await reasoning.analyze_jobs(CVS, _jobs(3), model="openrouter:m")
+        assert results["j1"] is None and results["j0"] and results["j2"]
+
+    async def test_half_failing_is_systemic(self, fake):
+        fake.fail_status, fake.fail_times = 401, None
+        with pytest.raises(RuntimeError):
+            await reasoning.analyze_jobs(CVS, _jobs(2), model="openrouter:m")
+
+    async def test_without_a_key_it_never_calls(self, fake, monkeypatch):
+        monkeypatch.setattr(config, "OPENROUTER_KEY", "")
+        with pytest.raises(RuntimeError, match="DM_OPENROUTER_KEY"):
+            await reasoning.analyze_jobs(CVS, _jobs(1), model="openrouter:m")
+        assert fake.requests == []
+
+
+async def _no_pause():
+    return None

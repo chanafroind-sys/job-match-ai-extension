@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 import main as main_module
 import daily_matches.models  # noqa: F401  (registers dm_* tables before conftest's create_all)
 from app.models.job_pool import DailyJobPool
-from daily_matches import config, cv_text, embeddings, pool_embedding, service, store
+from daily_matches import config, cv_text, embeddings, pool_embedding, reasoning, service, store
 from daily_matches.entitlement import Access, resolve_access
 from daily_matches.models import DmCvEmbedding, DmJobEmbedding, DmRun, DmRunResult, DmTrial
 from tests.dm_helpers import BACKEND_CV, DATA_CV, FakeClaude, FakeEmbedder, seed_jobs, standard_pool
@@ -383,3 +383,53 @@ class TestRetention:
         await db.commit()
         report = await pool_embedding.purge_retention(db)
         assert report["deck_cards"] > 0 and report["cv_vectors"] == 1 and report["orphan_job_vectors"] == 1
+
+
+class TestCompareThroughOpenRouter:
+    ADMIN = Access("subscription", subject="lic:admin", is_admin=True)
+
+    async def test_deepseek_verdicts_sit_next_to_haikus(self, db, env):
+        from tests.dm_openrouter import FakeOpenRouter
+        fake = FakeOpenRouter()
+        mp = env["monkeypatch"]
+        mp.setattr(config, "COMPARE_MODEL", "openrouter:deepseek/deepseek-v4.1-flash")
+        mp.setattr(config, "OPENROUTER_KEY", "or-test-key")
+        mp.setattr(reasoning, "_openrouter_transport", fake.transport())
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), self.ADMIN)
+        assert len(fake.requests) == 5 and {c["model"] for c in env["claude"].calls} == {config.LLM_MODEL}
+        rows = (await db.execute(select(DmRunResult))).scalars().all()
+        alt = rows[0].analysis["compare"]
+        assert alt["model"] == "openrouter:deepseek/deepseek-v4.1-flash" and isinstance(alt["match_score"], int)
+        assert alt["tier"] == service.tier_for(alt["match_score"]) and alt["cost_usd"] == pytest.approx(0.0004)
+        assert alt["requirements"] and alt["provider"] == "DeepInfra"
+        summary = service.compare_summary(rows, (await db.execute(select(DmRun))).scalar_one())
+        assert summary["jobs"] == 5 and summary["failed"] == 0 and summary["cost_other_usd"] == pytest.approx(0.002)
+        assert 0 <= summary["same_tier"] <= 100 and summary["mean_abs_diff"] is not None and summary["cost_main_usd"] > 0
+
+    async def test_a_failed_comparison_never_touches_the_deck(self, db, env):
+        from tests.dm_openrouter import FakeOpenRouter
+        fake = FakeOpenRouter(fail_status=500, fail_times=None)
+        mp = env["monkeypatch"]
+        mp.setattr(config, "COMPARE_MODEL", "openrouter:m")
+        mp.setattr(config, "OPENROUTER_KEY", "k")
+        mp.setattr(reasoning, "_openrouter_transport", fake.transport())
+        mp.setattr(reasoning, "_retry_pause", _instant)
+        await _seed_and_embed(db)
+        events = await _collect(_cvs(BACKEND_CV), self.ADMIN)
+        assert events[-1]["type"] == "done" and events[-1]["analyzed"] == 5
+        rows = (await db.execute(select(DmRunResult))).scalars().all()
+        assert all("compare" not in (r.analysis or {}) for r in rows)
+
+    def test_merge_marks_jobs_the_other_model_missed(self):
+        analyses = {"a": {"match_score": 80}, "b": {"match_score": 50}, "c": None}
+        other = {"a": {"match_score": 72, "best_cv_ref": "main", "fit_summary_he": "x", "requirements": [],
+                       "_cost_usd": 0.001, "_provider": "P"}, "b": None, "c": None}
+        service.merge_compare(analyses, other)
+        assert analyses["a"]["compare"]["tier"] == "strong" and analyses["a"]["compare"]["cost_usd"] == 0.001
+        assert analyses["b"]["compare"] == {"model": config.COMPARE_MODEL, "failed": True}
+        assert analyses["c"] is None
+
+
+async def _instant():
+    return None

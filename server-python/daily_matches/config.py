@@ -52,6 +52,22 @@ WARMUP_DELAY_S = 1.2
 # worth it, on real decks.
 COMPARE_MODEL = (os.getenv("DM_COMPARE_MODEL", "") or "").strip()
 
+# ── Comparing a cheaper non-Anthropic model (through OpenRouter) ──────────────
+# DM_COMPARE_MODEL=openrouter:<OpenRouter model id>, for example
+# openrouter:deepseek/deepseek-v4.1-flash, plus DM_OPENROUTER_KEY. Only hosts
+# that keep nothing and train on nothing are used (OpenRouter's ZDR and
+# data_collection=deny), and never the providers in DM_OPENROUTER_IGNORE:
+# by default DeepSeek's own servers, which process in China.
+OPENROUTER_PREFIX = "openrouter:"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_KEY = (os.getenv("DM_OPENROUTER_KEY", "") or "").strip()
+OPENROUTER_IGNORE = tuple(p.strip() for p in (os.getenv("DM_OPENROUTER_IGNORE", "deepseek") or "").split(",") if p.strip())
+# Empty: the model's default. Otherwise an effort (none, low, medium, high);
+# reasoning is billed as output.
+OPENROUTER_REASONING = (os.getenv("DM_OPENROUTER_REASONING", "") or "").strip().lower()
+OPENROUTER_CONCURRENCY = _int("DM_OPENROUTER_CONCURRENCY", 10)
+OPENROUTER_TIMEOUT_S = 90.0
+
 # ── Matching ──────────────────────────────────────────────────────────────────
 # A deck holds only jobs published in the last FRESH_WINDOW that this person
 # was never shown or analyzed for: for a daily user, the last day's jobs.
@@ -104,6 +120,8 @@ PRICE_IN, PRICE_OUT, PRICE_CACHE_READ, PRICE_CACHE_WRITE = PRICES[LLM_MODEL]
 
 
 def usage_cost(usage: dict, model: str = LLM_MODEL) -> float:
+    if usage.get("cost_usd") is not None:  # OpenRouter reports what each call cost
+        return float(usage["cost_usd"])
     p_in, p_out, p_read, p_write = PRICES.get(model, PRICES[LLM_MODEL])
     return ((usage.get("input_tokens") or 0) * p_in + (usage.get("output_tokens") or 0) * p_out
             + (usage.get("cache_read_tokens") or 0) * p_read

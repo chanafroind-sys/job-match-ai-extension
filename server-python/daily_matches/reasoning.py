@@ -22,6 +22,10 @@ short one there. Output tokens are the larger share of a call's cost.
 Failure policy: a single failed job is left out of the deck. If half or more
 fail, the cause is systemic (no credit, rate limit, outage), so the whole run
 fails with the mapped user-facing error and is retryable.
+
+A model named openrouter:<id> (admins' comparison only, config.COMPARE_MODEL)
+gets the same rubric, CVs and tool schema through OpenRouter's OpenAI-style
+API instead, so the two verdicts are comparable.
 """
 import asyncio
 import importlib
@@ -31,6 +35,7 @@ import weakref
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+import httpx
 from pydantic import BaseModel, ValidationError
 
 from daily_matches import config
@@ -592,11 +597,109 @@ async def _retry_pause() -> None:
     await asyncio.sleep(1.5)
 
 
+# ── OpenRouter (comparison only) ───────────────────────────────────────────────
+_openrouter_transport = None  # tests put an httpx.MockTransport here
+
+
+def openrouter_body(slug: str, system_text: str, tool: dict, job: JobForPrompt) -> dict:
+    body = {
+        "model": slug,
+        "max_tokens": config.LLM_MAX_TOKENS,
+        "messages": [{"role": "system", "content": system_text}, {"role": "user", "content": job.text}],
+        "tools": [{"type": "function", "function": {
+            "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"], "strict": True}}],
+        "tool_choice": {"type": "function", "function": {"name": TOOL_NAME}},
+        # CVs are personal data: only hosts that keep nothing and train on
+        # nothing, never the ignored ones, and only hosts that honor the tool call.
+        "provider": {"zdr": True, "data_collection": "deny", "ignore": list(config.OPENROUTER_IGNORE),
+                     "require_parameters": True},
+        "usage": {"include": True},
+    }
+    if config.OPENROUTER_REASONING:
+        body["reasoning"] = {"effort": config.OPENROUTER_REASONING}
+    return body
+
+
+async def _call_openrouter(http: httpx.AsyncClient, sem: asyncio.Semaphore, slug: str, system_text: str,
+                           tool: dict, job: JobForPrompt, cvs: list[CvForPrompt], usage: dict) -> dict | None:
+    body = openrouter_body(slug, system_text, tool, job)
+    for attempt in range(2):
+        try:
+            async with sem:
+                resp = await http.post(config.OPENROUTER_URL, json=body)
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt:
+                raise
+            await _retry_pause()
+            continue
+        if resp.status_code in (408, 429, 500, 502, 503, 504) and not attempt:
+            await _retry_pause()
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        used = data.get("usage") or {}
+        cached = int(((used.get("prompt_tokens_details") or {}).get("cached_tokens")) or 0)
+        cost = float(used.get("cost") or 0)
+        usage["input_tokens"] += int(used.get("prompt_tokens") or 0) - cached
+        usage["cache_read_tokens"] += cached
+        usage["output_tokens"] += int(used.get("completion_tokens") or 0)
+        usage["cost_usd"] += cost
+        message = ((data.get("choices") or [{}])[0].get("message")) or {}
+        call = next((c for c in message.get("tool_calls") or []
+                     if (c.get("function") or {}).get("name") == TOOL_NAME), None)
+        if call is None:
+            logger.warning("[DM] %s gave no tool call for job %s", slug, job.job_id)
+            return None
+        args = call["function"].get("arguments") or "{}"
+        try:
+            raw = json.loads(args) if isinstance(args, str) else dict(args)
+        except ValueError:
+            logger.warning("[DM] %s returned unparsable arguments for job %s", slug, job.job_id)
+            return None
+        analysis = normalize_analysis(raw, cvs)
+        if analysis is not None:
+            analysis["_cost_usd"] = cost
+            analysis["_provider"] = data.get("provider") or ""
+        return analysis
+    return None
+
+
+async def _analyze_openrouter(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
+                              slug: str) -> tuple[dict[str, dict | None], dict]:
+    if not config.OPENROUTER_KEY:
+        raise RuntimeError("DM_OPENROUTER_KEY is not set")
+    system_text = build_system_text(cvs)
+    tool = tool_schema([cv.alias for cv in cvs])
+    usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_usd": 0.0}
+    results: dict[str, dict | None] = {}
+    errors: list[Exception] = []
+    sem = asyncio.Semaphore(config.OPENROUTER_CONCURRENCY)
+    headers = {"Authorization": f"Bearer {config.OPENROUTER_KEY}", "X-Title": "Job Match AI"}
+    async with httpx.AsyncClient(timeout=config.OPENROUTER_TIMEOUT_S, headers=headers,
+                                 transport=_openrouter_transport) as http:
+        async def run(job: JobForPrompt):
+            try:
+                results[job.job_id] = await _call_openrouter(http, sem, slug, system_text, tool, job, cvs, usage)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[DM] %s job %s failed: %s", slug, job.job_id, type(exc).__name__)
+                errors.append(exc)
+                results[job.job_id] = None
+        await asyncio.gather(*(run(job) for job in jobs))
+    if jobs and len(errors) * 2 >= len(jobs):
+        raise RuntimeError(f"{slug}: {len(errors)} of {len(jobs)} calls failed ({type(errors[0]).__name__})")
+    logger.warning("[DM] %s analyzed %d jobs (%d failed) in=%d cached=%d out=%d cost=$%.4f", slug, len(jobs),
+                   len(errors), usage["input_tokens"], usage["cache_read_tokens"], usage["output_tokens"],
+                   usage["cost_usd"])
+    return results, usage
+
+
 async def analyze_jobs(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
                        on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
                        model: str | None = None) -> tuple[dict[str, dict | None], dict]:
     """Returns ({job_id: analysis or None}, usage totals). Raises the mapped
     HTTPException (main.ai_error) when the failure is systemic."""
+    if model and model.startswith(config.OPENROUTER_PREFIX):
+        return await _analyze_openrouter(cvs, jobs, model[len(config.OPENROUTER_PREFIX):])
     main = _main()
     client = main._ac()
     model = model or config.LLM_MODEL

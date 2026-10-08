@@ -351,6 +351,23 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   dlBtn.click();
   await tick();
   ok('and the download goes out under the file\'s own name', ctx.log.downloads.length === 1 && ctx.log.downloads[0].filename === 'cv.pdf');
+  ok('no comparison box for anyone but admins', !ctx.doc.querySelector('.dm-cmp-sum'));
+
+  // ── the model comparison, for admins ──────────────────────────────────────────
+  const vsDeepSeek = [card(1, 84, 'Backend Engineer', { tier: 'strong', analysis: { ...card(1, 84, 'x').analysis,
+    compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', match_score: 79, fit_summary_he: 'מתאים ברובו.' } } }),
+  card(2, 64, 'Platform Engineer', { tier: 'maybe', analysis: { ...card(2, 64, 'x').analysis,
+    compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', failed: true } } })];
+  ctx = await boot({ statuses: [{ ...SUB({ status: 'done', cards: 2 }), is_admin: true }], storage: { cvText: CV },
+    today: { run: { id: 4, status: 'done', candidates: 40 }, cards: vsDeepSeek, entitlement: 'subscription',
+      compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', jobs: 40, failed: 1, mean_abs_diff: 6.4, mean_diff: -2.1,
+        within_10: 82, same_tier: 88, shown_main: 9, shown_other: 8, shown_both: 7, cost_other_usd: 0.021, cost_main_usd: 0.118 } } });
+  const box = ctx.doc.querySelector('.dm-cmp-sum');
+  ok('admins get the comparison over the whole run', box && box.textContent.includes('DeepSeek V4.1 Flash') &&
+     box.textContent.includes('6.4') && box.textContent.includes('88%') && box.textContent.includes('$0.021') &&
+     box.textContent.includes('$0.118') && box.textContent.includes('1 בלי תשובה תקינה'), box && box.textContent);
+  ok('each card names the model and says when it failed', ctx.doc.querySelectorAll('.dm-slide')[0].querySelector('.dm-alt').textContent.includes('79') &&
+     ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.dm-alt').textContent.includes('לא החזיר'));
 
   // ── the score's arithmetic, shown on the card ─────────────────────────────────
   const explained = card(11, 61, 'Backend Engineer', { tier: 'maybe', analysis: { ...card(11, 61, 'x').analysis,

@@ -78,7 +78,13 @@
   const status = scenario === 'disabled' ? { enabled: false, reason: 'off' } : {
     enabled: true, entitlement: 'subscription', reason: '', today: null,
     pool: { active: 1284, embedded: 1280, fresh: 47 }, next_reset_at: '2026-10-05T00:00:00+03:00', ...(STATUS[scenario] || {}),
+    is_admin: params.get('admin') === '1',
   };
+  // ?admin=1: the deck carries a DeepSeek comparison, as an admin's run does.
+  const COMPARE = params.get('admin') === '1' ? { model: 'openrouter:deepseek/deepseek-v4.1-flash', jobs: 40, failed: 1,
+    mean_abs_diff: 6.4, mean_diff: -2.1, within_10: 82, same_tier: 88, shown_main: 9, shown_other: 8, shown_both: 7,
+    cost_other_usd: 0.021, cost_main_usd: 0.118 } : undefined;
+  if (COMPARE) DECK.forEach((c, i) => { c.analysis.compare = { model: COMPARE.model, match_score: c.match_score - 4 + i, fit_summary_he: 'מתאים ברובו, חסר ניסיון בתפעול.' }; });
 
   const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
   let built = scenario !== 'building';
@@ -90,7 +96,7 @@
     if (p === '/status') return json(built && scenario === 'building' ? { ...status, today: { status: 'done', cards: 3 } } : status);
     if (p === '/today') {
       if (scenario === 'quiet') return json({ run: { id: 1, status: 'done', pool_size: 1284, fresh: 18, candidates: 18, cards: 0 }, cards: [], entitlement: 'subscription' });
-      return json({ run: { id: 1, status: 'done', pool_size: 1284, fresh: 31, candidates: 23, cards: 3 }, cards: DECK, entitlement: 'subscription' });
+      return json({ run: { id: 1, status: 'done', pool_size: 1284, fresh: 31, candidates: 23, cards: 3 }, cards: DECK, entitlement: 'subscription', compare: COMPARE });
     }
     if (p.startsWith('/results/')) return json({ ok: true });
     if (p === '/saved') return json({ cards: [] });

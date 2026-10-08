@@ -171,3 +171,22 @@ async def test_admin_metrics(client):
     body = (await client.get("/api/daily-matches/admin/metrics")).json()
     assert body["days"][0]["done"] == 1 and body["avg_cost_per_run_usd"] > 0
     assert sum(b["shown"] for b in body["actions_by_band"].values()) >= 1
+
+
+async def test_admins_see_the_model_comparison_over_every_analyzed_job(client, monkeypatch):
+    from daily_matches import config, reasoning
+    from tests.dm_openrouter import FakeOpenRouter
+    fake = FakeOpenRouter()
+    monkeypatch.setattr(config, "COMPARE_MODEL", "openrouter:deepseek/deepseek-v4.1-flash")
+    monkeypatch.setattr(config, "OPENROUTER_KEY", "or-test-key")
+    monkeypatch.setattr(reasoning, "_openrouter_transport", fake.transport())
+    monkeypatch.setattr(main_module, "STATIC_ADMIN_KEYS", {"GOOD-KEY"})
+    _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
+    deck = (await client.get("/api/daily-matches/today", headers=SUB)).json()
+    summary = deck["compare"]
+    assert summary["model"] == "openrouter:deepseek/deepseek-v4.1-flash"
+    assert summary["jobs"] == 5 > len(deck["cards"])  # hidden jobs count too
+    assert summary["cost_other_usd"] > 0 and summary["cost_main_usd"] > 0
+
+    monkeypatch.setattr(main_module, "STATIC_ADMIN_KEYS", set())
+    assert "compare" not in (await client.get("/api/daily-matches/today", headers=SUB)).json()

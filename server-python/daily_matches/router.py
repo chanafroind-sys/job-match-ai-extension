@@ -204,11 +204,17 @@ async def today(request: Request, latest: bool = False,
     if run_row is None:
         return {"run": None, "cards": [], "entitlement": access.kind}
     cards = []
+    out = {"run": _run_json(run_row), "cards": cards, "entitlement": access.kind}
     if run_row.status == "done":
         rows = await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id, _shown())
                                 .order_by(DmRunResult.rank))
-        cards = [_card_json(r) for r in rows.scalars()]
-    return {"run": _run_json(run_row), "cards": cards, "entitlement": access.kind}
+        cards.extend(_card_json(r) for r in rows.scalars())
+        if access.is_admin:  # the model comparison, over every analyzed job (shown or not)
+            every = (await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id))).scalars().all()
+            summary = service.compare_summary(list(every), run_row)
+            if summary:
+                out["compare"] = summary
+    return out
 
 
 @router.post("/results/{result_id}/action")

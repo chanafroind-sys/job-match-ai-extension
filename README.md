@@ -158,7 +158,7 @@ Every row below is implemented and traced to concrete code in this repository (f
 | 52 | Focused CV versions with per-job recommendation and download | `daily/dm-cv-library.js`, `dm-app.js` |
 | 53 | Auto-fill on any application form, following LinkedIn's Apply to the company site (never submits) | `daily/dm-apply.js` `formFill`, `follow` |
 | 54 | One free trial, atomic reservation, once-a-day DB lock | `daily_matches/entitlement.py`, `service.claim_run` |
-| 55 | Admin model comparison and same-day rebuild | `DM_COMPARE_MODEL`, `service._compare`, `claim_run` |
+| 55 | Admin model comparison (Claude or any OpenRouter model) and same-day rebuild | `DM_COMPARE_MODEL`, `service.compare_summary`, `claim_run` |
 
 ---
 
@@ -361,6 +361,8 @@ The rubric (≈4.3K tokens) teaches the *judgment*: what counts as primary, what
 | Fixed platform cost | — | **$0** on top of the existing hosting |
 
 `DM_COMPARE_MODEL=claude-sonnet-5-5` makes administrators' decks also show Sonnet 5.5's verdict next to each card, so a model upgrade is judged on real decks before it is paid for — Sonnet 5.5 rejects forced `tool_choice`, so that path uses `auto` + a strict tool, with thinking switched off.
+
+A cheaper non-Anthropic model is judged the same way: `DM_COMPARE_MODEL=openrouter:deepseek/deepseek-v4.1-flash` plus `DM_OPENROUTER_KEY` sends the same rubric, CVs (contact details already removed) and tool schema through OpenRouter, alongside Haiku rather than after it. CVs are personal data, so every request asks OpenRouter for zero-data-retention hosts that don't collect data (`zdr`, `data_collection: deny`) and skips the providers in `DM_OPENROUTER_IGNORE` — by default DeepSeek's own servers. Admins' decks then open with a summary over every job the run analyzed, shown or not: mean score difference, share within 10 points, share in the same tier, how many each model would have shown, and each model's cost for the run (OpenRouter reports its own).
 
 ### 5. CV versions and applying
 
