@@ -6,8 +6,8 @@
 
 <p align="center">
   <strong>An in-browser inference engine that closes the signal gap between candidate and job description —<br/>
-  real-time fit scoring, LLM-orchestrated CV tailoring, community recruiting, employee referrals, and closed-loop
-  engagement analytics, entirely inside a Manifest V3 extension.</strong>
+  real-time fit scoring, a daily AI-matched job deck, LLM-orchestrated CV tailoring, community recruiting, employee referrals,
+  and closed-loop engagement analytics, entirely inside a Manifest V3 extension.</strong>
 </p>
 
 <p align="center">
@@ -15,6 +15,8 @@
   <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/Claude-Anthropic-D97706?style=flat-square&logo=anthropic&logoColor=white" alt="Anthropic" />
   <img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="Postgres" />
+  <img src="https://img.shields.io/badge/pgvector-semantic_search-336791?style=flat-square" alt="pgvector" />
+  <img src="https://img.shields.io/badge/GitHub_Actions-daily_pipeline-2088FF?style=flat-square&logo=githubactions&logoColor=white" alt="GitHub Actions" />
   <img src="https://img.shields.io/badge/Frontend-Vanilla--JS-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="No framework" />
   <img src="https://img.shields.io/badge/License-Proprietary-lightgrey?style=flat-square" alt="License" />
 </p>
@@ -41,6 +43,9 @@
      does not exist yet). Recommended: <8MB, 800px wide, captured with ScreenToGif/Kap/Peek at 12-15fps.
      No path update needed if you keep the exact filename above. -->
 
+> [!TIP]
+> **New — [Daily Matches](#daily-matches--the-once-a-day-ai-job-deck).** Every morning the extension prepares a swipe deck of the day's new tech jobs in Israel that genuinely fit you: fresh-only, never repeated, scored per job with a visible calculation, each with the CV version to send and auto-fill on supported forms.
+
 ---
 
 ## Table of Contents
@@ -48,6 +53,13 @@
 - [Why This Exists](#why-this-exists)
 - [Complete Feature Inventory](#complete-feature-inventory)
 - [System Architecture](#system-architecture)
+- [Daily Matches — the once-a-day AI job deck](#daily-matches--the-once-a-day-ai-job-deck)
+  - [The morning pipeline](#1-the-morning-pipeline--collect-everything-once)
+  - [Stage 1 — the funnel](#2-stage-1--a-funnel-that-only-lets-real-candidates-through)
+  - [Stage 2 — the model classifies, code scores](#3-stage-2--the-model-classifies-code-scores)
+  - [Cost engineering](#4-cost-engineering)
+  - [CV versions and applying](#5-cv-versions-and-applying)
+  - [Isolation](#6-isolation--a-new-product-inside-a-live-one)
 - [Request Lifecycles](#request-lifecycles)
 - [Engineering Deep Dives](#engineering-deep-dives)
   - [A. Local Intelligence Layer](#a-local-intelligence-layer--matcherjs)
@@ -77,7 +89,7 @@ The system is built around three constraints that shape almost every design deci
 
 1. **Perceived-zero latency** — a provisional match score renders synchronously, from a local rules engine, before any network request is even sent.
 2. **LLM cost discipline** — a multi-tier model strategy, aggressive prompt caching, and local-first heuristics (validation, page-fit, diffing) keep token spend far below a naïve single-call design.
-3. **Graceful degradation on a free-tier host** — the backend cold-starts on Render's free plan and has no cron scheduler; the client assumes every request might time out or sleep, and background jobs (Google Sheet sync, referral expiry) run lazily on request instead of on a schedule.
+3. **Graceful degradation on a free-tier host** — the backend cold-starts on Render's free plan and runs no scheduler of its own; the client assumes every request might time out or sleep, and background jobs (Google Sheet sync, referral expiry) run lazily on request. The one job that must run on a clock — the 06:00 daily job pipeline — runs on free GitHub Actions instead.
 
 ---
 
@@ -137,6 +149,16 @@ Every row below is implemented and traced to concrete code in this repository (f
 | 43 | 13-screen popup UI state machine with resume-on-reopen | `popup.js` `showScreen`, `routeToCorrectScreen`, `wizard_step` |
 | 44 | Debounced per-job save-flow with 5-slot LRU + 4h TTL | `content.js`/`popup.js` `saveJobState`/`loadJobState`, `jma_recent_jobs` |
 | 45 | FAB hover-to-reveal reason bullets | `content.js` `_showFabReasons`, `mouseenter`/`mouseleave` handlers |
+| 46 | **Daily Matches** — once-a-day AI job deck in Chrome's side panel | `daily/dm-app.js`, `server-python/daily_matches/`, `/api/daily-matches/*` |
+| 47 | 06:00 daily job pipeline (collect + embed, DST-proof, self-verifying) | `.github/workflows/daily-pipeline.yml`, `daily_matches/daily_pipeline.py` |
+| 48 | Extra job sources: LinkedIn + Indeed IL, JSearch, self-growing board registry | `daily_matches/sources/` (`aggregators.py`, `registry.py`, `dedupe.py`) |
+| 49 | Semantic retrieval with pgvector (JSON fallback) | `daily_matches/store.py`, `embeddings.py` (Voyage `voyage-4`) |
+| 50 | Deterministic, explainable match scoring | `daily_matches/reasoning.py` `score_of`, card "🧮" breakdown |
+| 51 | Fresh-only, never-twice decks with strong / maybe / hidden tiers | `service.py` `job_filters`, `rank_results`; `dm_run_results.tier` |
+| 52 | Focused CV versions with per-job recommendation and download | `daily/dm-cv-library.js`, `dm-app.js` |
+| 53 | Auto-fill on Lever, Greenhouse and Ashby (never submits) | `daily/dm-apply.js` `leverFill`, `reactFill` |
+| 54 | One free trial, atomic reservation, once-a-day DB lock | `daily_matches/entitlement.py`, `service.claim_run` |
+| 55 | Admin model comparison and same-day rebuild | `DM_COMPARE_MODEL`, `service._compare`, `claim_run` |
 
 ---
 
@@ -203,9 +225,164 @@ Three design choices stand out as deliberate, not incidental:
 
 - **Everything upstream of the network boundary is optimistic.** `matcher.js` computes a real (if approximate) score with zero HTTP calls, so the UI never shows a blank loading state on a page the user is already reading.
 - **The extension talks to itself through `chrome.runtime` messaging, not `window.postMessage`.** The in-page sidebar is literally `popup.html` rendered inside an injected `<iframe>`, and both it and the in-page deep-analysis panel reach `background.js`/`content.js` exclusively via the extension's own signed message bus — never a cross-frame `postMessage` reachable by the host page's own scripts.
-- **No feature requires a scheduler.** The backend has no cron job anywhere. Recurring work — the employees-sheet sync, referral expiry, click polling — is triggered lazily on the next relevant request or by a `chrome.alarms` tick, which is the correct adaptation to a free-tier host with no background worker.
+- **The backend itself has no scheduler.** Recurring work — the employees-sheet sync, referral expiry, click polling — is triggered lazily on the next relevant request or by a `chrome.alarms` tick, the correct adaptation to a free-tier host with no background worker. The single exception that genuinely needs a clock, the 06:00 job pipeline behind [Daily Matches](#daily-matches--the-once-a-day-ai-job-deck), runs outside the host on GitHub Actions and verifies its own result against the live API.
 
 ---
+
+## Daily Matches — the once-a-day AI job deck
+
+> **Every morning at 06:00 Israel time, every new tech job posted in Israel is collected, embedded and ready. When a subscriber opens the side panel, the jobs they have never seen are filtered to their fields and level, each one is analyzed by its own LLM call, and only real matches make the deck — each with the CV version to send, ready to download or auto-attach.**
+
+<table>
+<tr>
+<td width="25%" align="center"><h3>🌅</h3><b>Fresh only</b><br/><sub>Jobs published in the last 3 days that this person was never shown or analyzed for. Nothing repeats.</sub></td>
+<td width="25%" align="center"><h3>🎯</h3><b>Funnel, not a firehose</b><br/><sub>Hard filters → vector ranking → one LLM call per job → plain sorting. Up to 40 jobs analyzed a day.</sub></td>
+<td width="25%" align="center"><h3>🧮</h3><b>Explainable scores</b><br/><sub>The model classifies; code computes. Same gaps, same score — and every card shows its own arithmetic.</sub></td>
+<td width="25%" align="center"><h3>📄</h3><b>Right CV, every time</b><br/><sub>Up to 5 focused CV versions. Each job names the version to submit and why.</sub></td>
+</tr>
+</table>
+
+### End-to-end flow
+
+```mermaid
+flowchart TB
+    subgraph Morning["⏰ 06:00 Israel time — GitHub Actions (free)"]
+        direction LR
+        S1["V1 company boards<br/>Greenhouse · Lever · Ashby<br/>SmartRecruiters · Workday"]
+        S2["Self-growing registry<br/>dm_sources"]
+        S3["LinkedIn + Indeed IL<br/>(JobSpy)"]
+        S4["JSearch<br/>(Google for Jobs)"]
+        D["Dedupe<br/>company + title,<br/>company board wins"]
+        E["Voyage voyage-4<br/>incremental embeddings"]
+        S1 & S2 & S3 & S4 --> D --> P[("daily_job_pool<br/>+ dm_job_embeddings<br/>pgvector on Neon")]
+        P --> E --> P
+    end
+
+    subgraph Click["🖱️ Subscriber opens the side panel"]
+        direction LR
+        F["Stage 1 — filter<br/>fresh · unseen · focus · level"]
+        V["Stage 1 — rank<br/>cosine similarity per CV version"]
+        L["Stage 2 — up to 40 parallel<br/>Claude Haiku 4.5 calls"]
+        C["score_of()<br/>deterministic arithmetic"]
+        T{"tier"}
+        F --> V --> L --> C --> T
+        T -->|"≥ 70"| Strong["⭐ match"]
+        T -->|"60–69"| Maybe["👀 worth a look"]
+        T -->|"< 60"| Hidden["stored, never shown,<br/>never analyzed again"]
+    end
+
+    P --> F
+    Strong & Maybe --> Deck["Swipe deck<br/>score · requirements · gaps<br/>recommended CV ⬇️ · auto-fill ⚡"]
+```
+
+### 1. The morning pipeline — collect everything, once
+
+`.github/workflows/daily-pipeline.yml` fires at 03:00 and 04:00 UTC; `daily_matches/daily_pipeline.py` acts only from 06:00 Israel time and only once per Israel day, which makes it exactly 06:00 through both DST seasons. It is idempotent end to end: a second firing finds today's sync done, and embedding is incremental (a job is re-embedded only when its text hash or the embedding model changes).
+
+| Source | How | Cost | Why it's there |
+|---|---|---|---|
+| **Company boards (V1 list)** | Public ATS JSON APIs | $0 | Full descriptions, official data, apply forms auto-fill can use |
+| **Discovered boards** — `dm_sources` | Same APIs, for every board found behind an aggregator's apply link | $0 | The registry **grows by itself**: a company found once on LinkedIn is read directly from its own board forever after |
+| **LinkedIn + Indeed Israel** | [JobSpy](https://github.com/speedyapply/JobSpy), last 26 hours, installed only in the workflow | $0 | Coverage of companies with no public board |
+| **JSearch** (RapidAPI) | Google for Jobs, `date_posted=today`, free 200-request plan | $0 | A second aggregator, budgeted to ~180 requests/month |
+
+Cross-source duplicates are dropped by a normalized company + title key (legal suffixes, locations and punctuation stripped), processing the best source first so the copy kept is the one with an application form. Hebrew job titles (`מפתח/ת Backend בכיר/ה`) get English hint words for the shared classifier, so they are categorized instead of silently dropped.
+
+The run **fails loudly** — and GitHub emails the owner — when the sync fetches nothing, when any active job is left without a vector, when the `dm_*` tables are missing, or when the live web service sees zero jobs the run just wrote (the two would be reading different databases). Any single source failing, blocked or missing is reported and the rest still land.
+
+### 2. Stage 1 — a funnel that only lets real candidates through
+
+```mermaid
+flowchart TB
+    A["Active pool<br/>(re-seen by a sync in the last 48h)"] --> B["Published in the last 3 days"]
+    B --> C["Never analyzed for this person<br/>(every analyzed job is kept, shown or not)"]
+    C --> D["In the categories of each CV version's focus<br/>Backend · Full Stack · AI / ML · DevOps · …"]
+    D --> E["Not excluded by the person's level<br/>junior ✕ Senior · senior ✕ Junior · lead ✕ Junior, Mid"]
+    E --> F["Top 40 by cosine similarity<br/>(each CV version guaranteed its own slots)"]
+    style F fill:#EEF2FF,stroke:#6366F1
+```
+
+Each CV version searches **its own focus**, so a Backend CV and a DevOps CV each bring their best jobs instead of one version taking every slot. A day with nothing new is a *quiet day*: it costs nothing, it never uses up the free trial, and it can be retried the same day after widening the focus.
+
+### 3. Stage 2 — the model classifies, code scores
+
+An early version let the model write `match_score` as the first field of its JSON. In a real deck most cards came back at exactly **72**: the model committed to a number before reading a single requirement, and justified it afterwards. The fix is structural, not a prompt tweak:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as service.py
+    participant H as Claude Haiku 4.5<br/>(one call per job)
+    participant C as score_of()
+    S->>H: rubric + every CV version (cached prefix)<br/>+ one job posting
+    Note over H: no score field exists in the schema
+    H-->>S: requirements[ importance · weight · status ]<br/>years_required · years_relevant<br/>caps · offsets · best CV version
+    S->>C: classifications
+    C-->>S: score, breakdown, applied cap
+    Note over S: tier = strong ≥ 70 · maybe 60–69 · hidden
+```
+
+| Classification | Missing | Partial |
+|---|---:|---:|
+| Must-have · **primary** (the role's main language or discipline) | −35 | −12 |
+| Must-have · **core** (used every day) | −20 | −8 |
+| Must-have · **supporting** | −12 | −5 |
+| Nice-to-have · significant advantage | −6 | −2 |
+| Nice-to-have · other *(15 points at most in total)* | −3 | −1 |
+| Years shortfall | (required − relevant) / required × 30 | |
+| Offsets: strong academics · adjacent skills · relevant projects | +5 each, ≤ 10, only against nice-to-have gaps | |
+| **Caps:** level unproven 65 · no people leadership 55 · overqualified 55 · domain mismatch 55 · hard blocker 40 · no stated requirements 65 | | |
+
+The rubric (≈4.3K tokens) teaches the *judgment*: what counts as primary, what evidence makes a skill met versus partial (a skills-list mention is a claim, a described role is evidence; a toy project never carries a primary skill), a table of technology equivalences (Kotlin ↔ Java, EKS ↔ Kubernetes, Pulumi ↔ Terraform…), Israeli specifics (8200/Mamram service as professional experience, Hebrew requirements), and 14 worked examples whose stated scores are exactly what `score_of()` returns — checked in the test suite. Every card carries its own receipt:
+
+```text
+🧮 How this score was computed
+ 100  starting point
+ −12  Swift · must-have, partial
+ −20  UIKit or SwiftUI · must-have, missing
+  68  score  →  👀 worth a look
+```
+
+**Why one call per job, not one call for all jobs.** Ranking a list inside a single prompt makes every score relative to its neighbours and lets the order of the list leak into the verdict. Independent calls make each score absolute, run in parallel under a server-wide semaphore, and turn the final selection into plain sorting.
+
+### 4. Cost engineering
+
+| Lever | Effect |
+|---|---|
+| **Prompt caching by design** | The rubric is deliberately long enough that rubric + tool schema alone pass Haiku 4.5's 4,096-token cache minimum. The first call writes the cache; the other 39 start ~1.2s later and pay a tenth of the input price for the shared prefix. |
+| **Short answers for hidden jobs** | When the primary skill is missing or a cap ≤ 55 applies, the Hebrew prose is cut to a line — output tokens are the expensive ones. |
+| **Filters before tokens** | Freshness, never-twice, focus and level are SQL, not LLM calls. |
+| **Free infrastructure** | GitHub Actions on a public repo; Voyage's 200M free tokens cover years of incremental embedding; no paid data source. |
+
+| | Per deck | Per active user / month |
+|---|---:|---:|
+| Haiku 4.5, up to 40 jobs | ≈ $0.12 | ≤ ≈ $3.6 (a deck every day) |
+| Fixed platform cost | — | **$0** on top of the existing hosting |
+
+`DM_COMPARE_MODEL=claude-sonnet-5-5` makes administrators' decks also show Sonnet 5.5's verdict next to each card, so a model upgrade is judged on real decks before it is paid for — Sonnet 5.5 rejects forced `tool_choice`, so that path uses `auto` + a strict tool, with thinking switched off.
+
+### 5. CV versions and applying
+
+- **Up to five focused versions** (e.g. *Backend*, *Full Stack + LLM*, *DevOps*), each with its focus categories. Until the person picks them, the focus is guessed from the CV text and shown as such.
+- Every card names the **recommended version**, why it fits this job, a per-version comparison, and a one-click **⬇️ download** of that file.
+- **Auto-fill** on the ATSes whose forms were probed live — **Lever** (native multipart form), **Greenhouse** and **Ashby** (React forms, filled through the prototype value setter so React's value tracker registers the change) — fills name, email, phone and LinkedIn and attaches the recommended CV. Workday's sign-in wall gets download-and-copy instead.
+- **The hard rule, enforced by a test that scans the source:** the extension never submits a form, never clicks a control, never creates an account and never invents an answer.
+
+### 6. Isolation — a new product inside a live one
+
+Daily Matches was built under a strict contract: **no existing endpoint, service or UI that current users rely on was modified.**
+
+| Layer | Isolation |
+|---|---|
+| API | Its own router, `/api/daily-matches/*`, mounted by three lines at the end of `main.py` |
+| Database | Only new `dm_*` tables (`dm_job_embeddings`, `dm_cv_embeddings`, `dm_runs`, `dm_run_results`, `dm_trials`, `dm_sources`); vectors live in a side table instead of a column on the shared `daily_job_pool`. Every migration is additive and never fails on a missing `pgvector` — it falls back to JSON vectors and Python cosine. |
+| Extension | Its own `daily/` folder and `jma_dm_*` storage keys, opened in Chrome's side panel; one `<script>` tag in `popup.html` |
+| Rollout | `DAILY_MATCHES_ENABLED` = `off` · `admins` · `on` |
+
+**Once a day, enforced by the database.** A unique `(subject, match_day)` row is the lock: a second click, tab or device gets the finished deck back. A failed run never uses up the day; the one free trial is reserved atomically and consumed only by a deck that has cards in it. Administrators can rebuild a finished day to judge a change immediately.
+
+---
+
 
 ## Request Lifecycles
 
@@ -536,6 +713,9 @@ A per-job tracker records status, CV-generation state, and recruiter link-open e
 | Outbound recruiter email | Client-opened Gmail compose tab | No OAuth, no Gmail API; billed only on tab-open, not on send |
 | External data sync | Google Sheets published-CSV endpoint | Lazily synced (no cron on free tier) into the `employees` referral roster |
 | Spreadsheet import/export | `openpyxl` + `pandas` (server); BOM-prefixed CSV (client) | Server-side `.xlsx` job/recruiter import is a real binary; client-side "Excel export" is CSV, Excel-openable |
+| Semantic search | Voyage AI `voyage-4` embeddings (1024-d) + `pgvector` cosine search | Side-table vectors, incremental by text hash; JSON + Python cosine fallback when `pgvector` is absent |
+| Scheduled pipeline | GitHub Actions (cron `0 3,4 * * *`, Israel-time gate) | Collects and embeds the day's jobs at 06:00 Israel time in both DST seasons; free on a public repo |
+| Job aggregation | Public ATS APIs · JobSpy (LinkedIn, Indeed) · JSearch (RapidAPI) | Cross-source dedupe; boards discovered from apply links are read through their own APIs afterwards |
 | Testing | `pytest` + `pytest-asyncio` | Referral lifecycle, points service, recruiters, sync service, admin import |
 | Hosting | Render (free tier, web service + managed Postgres) | Client-side retry/backoff absorbs cold-start latency instead of a keep-warm ping |
 
@@ -557,6 +737,8 @@ A per-job tracker records status, CV-generation state, and recruiter link-open e
 ├── dashboard.html              # Full-tab analytics page shell
 ├── create-icons.js             # Icon asset generation utility
 ├── icons/                      # Extension icons (16 / 48 / 128 px)
+├── daily/                      # Daily Matches side panel — deck, CV library, apply/auto-fill (isolated from V1)
+├── .github/workflows/          # daily-pipeline.yml — the 06:00 collect-and-embed job
 ├── server-python/              # Active backend — FastAPI
 │   ├── main.py                  # analyze · stream-questions · stream-deep-analysis · generate-cv ·
 │   │                             # rank-jobs · scrape/import-jobs · verify-license · /api/v1/track · /ws/clicks
@@ -564,6 +746,8 @@ A per-job tracker records status, CV-generation state, and recruiter link-open e
 │   │   ├── core/                 # db.py (async engine), deps.py (auth), models.py (SQLAlchemy), points_config.py
 │   │   ├── routes/                # recruiters.py · points.py · emails.py · referrals.py
 │   │   └── services/              # points_service · referral_service · sync_service · email_service
+│   ├── daily_matches/            # Daily Matches backend — router, pipeline, retrieval, scoring, sources/
+│   ├── scripts/                  # run_daily_pipeline.py — the workflow's entrypoint
 │   ├── alembic/                  # Database migrations, applied automatically on deploy
 │   │   └── versions/               # points/recruiting tables · sync_meta · send_log status constraint
 │   ├── tests/                     # pytest suite — referrals, points, recruiters, sync, admin import
@@ -618,6 +802,8 @@ A README that only lists strengths isn't credible engineering documentation. A f
 - **Several real, working code paths are not currently reachable from the UI**: the legacy `/api/analyze-stream` streaming screen (`runStreamingAnalysis` in `popup.js`) was superseded by the split questions/deep-analysis-overlay flow but never deleted; a parallel "armed CV button" optimization (`_armCvButton`/`cvGenPromise`) exists alongside the synchronous CV-generation path that's actually wired to the UI. These are marked explicitly rather than described as live features.
 - **The `claude-fable-5` model alias** is a real, live code path (`_resolve_model("fable")`) exposed as a user-facing model choice, but it is not independently verified here as a publicly documented Anthropic model identifier — it is reported as-is because that is what the code requests.
 - **No server-side keep-warm mechanism.** Render's free-tier cold starts are absorbed entirely by client-side retry/backoff (`fetchWithRetry`) rather than a scheduled self-ping, which keeps infrastructure cost at zero but means the very first request after idle can take noticeably longer.
+- **Aggregator coverage is best-effort.** LinkedIn and Indeed are read through JobSpy, which scrapes public listings: a blocked or changed site yields fewer jobs that day (reported in the run, never fatal), and the boards discovered through it keep being read through their own official APIs. Comeet boards are recorded but not yet fetched, and Workday's sign-in wall rules out auto-fill there.
+- **Daily Matches cost figures are estimates until measured.** Per-deck token usage is recorded on every run and reported by `GET /api/daily-matches/admin/metrics`; the numbers in this README come from measured job sizes and list prices, not from a month of production traffic.
 - **No scheduler anywhere in the backend.** The employees-sheet sync and referral auto-expiry are both triggered lazily by the next relevant HTTP request rather than a cron job, since Render's free tier provides no background worker — a deliberate, documented adaptation rather than a missing feature.
 
 ---
