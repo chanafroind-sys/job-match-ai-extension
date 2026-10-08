@@ -1,10 +1,14 @@
 # Daily job pipeline: collect today's jobs into daily_job_pool, then embed
 # them for Daily Matches (server-python/scripts/run_daily_pipeline.py).
 #
-# GitHub schedules in UTC and Israel moves between UTC+3 and UTC+2, so this
-# fires at 03:00 and 04:00 UTC. The script acts only from 06:00 Israel time and
-# only once per Israel day, which makes it 06:00 all year. A failed run makes
-# GitHub email the repo owner.
+# GitHub schedules in UTC and Israel moves between UTC+3 and UTC+2. The script
+# acts only from 06:00 Israel time and syncs only once per Israel day, so any
+# number of firings after 06:00 do the work exactly once. GitHub's schedule is
+# best effort: firings are delayed for hours or dropped when it's busy, most
+# of all on the hour (both 03:00 and 04:00 firings were dropped on 2026-10-08).
+# So it fires six times, off the hour, from 03:07 to 05:37 UTC: the first one
+# that runs after 06:00 Israel time syncs and embeds, the rest find the day
+# done and finish in seconds. A failed run makes GitHub email the repo owner.
 #
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   DATABASE_URL    the same value as the Render web service's DATABASE_URL
@@ -17,7 +21,7 @@ name: Daily job pipeline
 
 on:
   schedule:
-    - cron: "0 3,4 * * *"
+    - cron: "7,37 3,4,5 * * *"
   workflow_dispatch:
     inputs:
       force:

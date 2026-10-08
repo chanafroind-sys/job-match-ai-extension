@@ -14,6 +14,7 @@ and the daily budget back it up. Each fake trial still costs only one run.
 """
 import importlib
 import re
+import time
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
@@ -120,29 +121,47 @@ async def resolve_access(session: AsyncSession, license_key, install_id, ip: str
     return access
 
 
+_last_cleanup = {"at": 0.0}
+CLEANUP_EVERY_S = 60
+
+
+def _live():
+    return or_(DmTrial.status != "reserved",
+               DmTrial.created_at >= config.utcnow() - config.TRIAL_RESERVATION_TTL)
+
+
+async def _drop_abandoned(session: AsyncSession, *where) -> None:
+    await session.execute(delete(DmTrial).where(
+        DmTrial.status == "reserved",
+        DmTrial.created_at < config.utcnow() - config.TRIAL_RESERVATION_TTL, *where,
+    ))
+
+
 async def trial_block_reason(session: AsyncSession, install_hash: str, ip_hash: str,
                              cv_fingerprint: str | None) -> str:
     """'' when a trial is available, else why not."""
     # A reservation outlives its run only if the process died mid-run; let it go.
-    await session.execute(delete(DmTrial).where(
-        DmTrial.status == "reserved",
-        DmTrial.created_at < config.utcnow() - config.TRIAL_RESERVATION_TTL,
-    ))
-    await session.commit()
+    # Every popup opening asks this, so the cleanup (a write) runs once a minute
+    # at most, not on every call; a reservation is minutes old by then anyway.
+    if time.monotonic() - _last_cleanup["at"] >= CLEANUP_EVERY_S:
+        _last_cleanup["at"] = time.monotonic()
+        await _drop_abandoned(session)
+        await session.commit()
+    live = _live()  # an abandoned reservation never counts, cleaned up yet or not
 
     same = [DmTrial.install_hash == install_hash]
     if cv_fingerprint:
         same.append(DmTrial.cv_fingerprint == cv_fingerprint)
-    if (await session.execute(select(func.count()).select_from(DmTrial).where(or_(*same)))).scalar():
+    if (await session.execute(select(func.count()).select_from(DmTrial).where(or_(*same), live))).scalar():
         return "trial_used"
     per_ip = (await session.execute(select(func.count()).select_from(DmTrial).where(
         DmTrial.ip_hash == ip_hash,
-        DmTrial.created_at >= config.utcnow() - config.TRIAL_IP_WINDOW,
+        DmTrial.created_at >= config.utcnow() - config.TRIAL_IP_WINDOW, live,
     ))).scalar()
     if per_ip >= config.TRIAL_IP_MAX:
         return "trial_limit"
     today = (await session.execute(select(func.count()).select_from(DmTrial).where(
-        DmTrial.created_at >= config.il_day_start_utc(),
+        DmTrial.created_at >= config.il_day_start_utc(), live,
     ))).scalar()
     if today >= config.TRIAL_DAILY_BUDGET:
         return "trial_limit"
@@ -152,6 +171,9 @@ async def trial_block_reason(session: AsyncSession, install_hash: str, ip_hash: 
 async def reserve_trial(session: AsyncSession, access: Access, cv_fingerprint: str, run_id: int) -> None:
     """Atomic claim of the one free run. The unique install and CV columns make
     a second, parallel claim fail here even if both passed the checks above."""
+    # An abandoned reservation for this install or CV would hold the unique columns.
+    await _drop_abandoned(session, or_(DmTrial.install_hash == access.install_hash,
+                                       DmTrial.cv_fingerprint == cv_fingerprint))
     session.add(DmTrial(install_hash=access.install_hash, cv_fingerprint=cv_fingerprint,
                         ip_hash=access.ip_hash, run_id=run_id, status="reserved"))
     try:

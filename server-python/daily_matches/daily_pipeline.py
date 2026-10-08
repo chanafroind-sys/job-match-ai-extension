@@ -3,11 +3,12 @@ boards, then Daily Matches' own extra sources, daily_matches/sources), then
 embed them for Daily Matches. Runs once per Israel day, at 06:00 Israel time.
 
 GitHub schedules in UTC only, while Israel moves between UTC+3 (summer) and
-UTC+2 (winter). So the workflow fires at both 03:00 and 04:00 UTC, and this
-module decides:
-  - before 06:00 Israel time it does nothing (the winter 03:00 UTC firing);
+UTC+2 (winter), and GitHub delays or drops scheduled runs when it's busy. So
+the workflow fires several times between 03:07 and 05:37 UTC, and this module
+decides:
+  - before 06:00 Israel time it does nothing (the early winter firings);
   - the sync runs once per Israel day: a firing that finds today's sync
-    already done skips it (the summer 04:00 UTC firing);
+    already done skips it;
   - embedding is incremental, so a repeat run sends nothing to Voyage.
 Every run ends by reading back what it wrote, and by checking that the web
 service serves the same jobs. The cron and the web service each have their

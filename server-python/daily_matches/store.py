@@ -14,6 +14,7 @@ migration actually created.
 """
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -136,6 +137,21 @@ async def touch_cv_embeddings(session: AsyncSession, row_ids: list[int]) -> None
 
 
 # ── Pool counts ───────────────────────────────────────────────────────────────
+
+_counts_cache: dict = {"at": 0.0, "value": None}
+COUNTS_TTL_S = 60
+
+
+async def cached_pool_counts(session: AsyncSession) -> dict:
+    """pool_counts for the status call, which every popup opening makes. The
+    pool changes once a day, so a minute-old count is as good as a fresh one
+    and saves three queries per opening. Anything that writes the pool calls
+    pool_counts itself."""
+    if _counts_cache["value"] is None or time.monotonic() - _counts_cache["at"] >= COUNTS_TTL_S:
+        _counts_cache["value"] = await pool_counts(session, config.utcnow() - config.ACTIVE_WINDOW)
+        _counts_cache["at"] = time.monotonic()
+    return dict(_counts_cache["value"])
+
 
 async def pool_counts(session: AsyncSession, since: datetime, now: datetime | None = None) -> dict:
     """Active (still listed) jobs, how many have vectors, and how many of them

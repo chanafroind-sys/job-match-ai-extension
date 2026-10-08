@@ -3,6 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -37,3 +38,13 @@ async def user(db):
     await db.commit()
     await db.refresh(u)
     return u
+
+
+@pytest.fixture(autouse=True)
+def _reset_daily_matches_process_state():
+    """Daily Matches keeps two per-process timers (store.cached_pool_counts,
+    entitlement's reservation cleanup); each test starts with them cold."""
+    from daily_matches import entitlement, store
+    store._counts_cache.update(at=0.0, value=None)
+    entitlement._last_cleanup["at"] = 0.0
+    yield
