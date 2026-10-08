@@ -282,7 +282,7 @@ flowchart TB
 | Source | How | Cost | Why it's there |
 |---|---|---|---|
 | **Company boards (V1 list)** | Public ATS JSON APIs | $0 | Full descriptions, official data, apply forms auto-fill can use |
-| **Discovered boards** — `dm_sources` | Same APIs, for every board found behind an aggregator's apply link | $0 | The registry **grows by itself**: a company found once on LinkedIn is read directly from its own board forever after |
+| **Discovered boards** — `dm_sources` | Same APIs, for every board found behind an aggregator's apply link, or guessed from the company's name and **trusted only if it lists the very same job in Israel** | $0 | The registry **grows by itself**: a company found once on LinkedIn is read directly from its own board forever after |
 | **LinkedIn + Indeed Israel** | [JobSpy](https://github.com/speedyapply/JobSpy), last 26 hours, installed only in the workflow | $0 | Coverage of companies with no public board |
 | **JSearch** (RapidAPI) | Google for Jobs, `date_posted=today`, free 200-request plan | $0 | A second aggregator, budgeted to ~180 requests/month |
 

@@ -1,7 +1,8 @@
 """Daily Matches' own job sources, added to daily_job_pool after V1's sync.
 
 V1's sync reads a fixed list of ~60 company boards. This adds:
-  registry     company boards discovered from aggregators' apply links, read
+  registry     company boards discovered from aggregators' apply links, or
+               guessed from the company's name and verified (probe.py), read
                through their public ATS APIs (registry.py)
   linkedin     jobs posted in Israel in the last day, through JobSpy
   jsearch      Google for Jobs through RapidAPI, when DM_JSEARCH_KEY is set
@@ -21,7 +22,7 @@ from sqlalchemy import select
 
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
-from daily_matches.sources import aggregators, registry
+from daily_matches.sources import aggregators, probe, registry
 from daily_matches.sources.dedupe import drop_copies, job_key
 
 logger = logging.getLogger(__name__)
@@ -66,8 +67,12 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None) -> dict
         ats: sum(1 for r in new_rows if r.ats == ats) for ats in sorted({r.ats for r in new_rows})}
     await session.commit()
 
+    # Companies whose board the links didn't reveal: guessed by name, kept only when verified.
+    probed_rows, probed_records, report["probe"] = await probe.probe_companies(session, linkedin + jsearch + indeed)
+    await session.commit()
+
     batch, dropped = [], 0
-    for recs in (board_records, new_board_records, linkedin, jsearch, indeed):  # best copy first
+    for recs in (board_records, new_board_records, probed_records, linkedin, jsearch, indeed):  # best copy first
         kept, n = drop_copies(recs, known)
         batch += kept
         dropped += n

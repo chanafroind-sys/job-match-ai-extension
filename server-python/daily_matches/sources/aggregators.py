@@ -59,14 +59,15 @@ INDEED_SEARCHES = _env_list("DM_INDEED_SEARCHES", ["software engineer", "develop
 INDEED_RESULTS = _int("DM_INDEED_RESULTS", 100)
 HOURS_OLD = 26  # a day plus slack, so consecutive 06:00 runs overlap instead of leaving a gap
 
-JSEARCH_URL = "https://jsearch.p.rapidapi.com/search"
+# /search answers 404 since JSearch moved to /search-v2 (cursor paging, one credit per page).
+JSEARCH_URL = "https://jsearch.p.rapidapi.com/search-v2"
 JSEARCH_HOST = "jsearch.p.rapidapi.com"
-# The free plan is 200 requests a month; a request for 2-10 pages counts twice.
-# Three queries of ten pages: 6 a day, about 180 a month.
+# The free plan is 200 credits a month and every page of ten jobs costs one.
+# Three queries of two pages: 6 a day, about 180 a month.
 JSEARCH_QUERIES = _env_list("DM_JSEARCH_QUERIES", [
     "software engineer in Israel", "developer in Israel", "devops OR data OR QA engineer in Israel",
 ])
-JSEARCH_PAGES = _int("DM_JSEARCH_PAGES", 10)
+JSEARCH_PAGES = _int("DM_JSEARCH_PAGES", 2)
 
 
 def _as_utc(value) -> datetime | None:
@@ -107,8 +108,15 @@ def hebrew_hints(title: str) -> str:
     return " ".join(word for pattern, word in _HEBREW_HINTS if re.search(pattern, title))
 
 
+MIN_DESCRIPTION = 300  # chars; LinkedIn sometimes serves a job page without its text
+
+
 def _record(company, title, url, direct, description, posted, external_id) -> dict | None:
-    """Every search here is already limited to Israel, so there is no location check."""
+    """Every search here is already limited to Israel, so there is no location
+    check. A listing whose description didn't come through is dropped: with
+    only a title there is nothing to match against."""
+    if len((description or "").strip()) < MIN_DESCRIPTION:
+        return None
     # The company's own page when there is one: the apply button and auto-fill need it.
     best_url = direct if direct and direct.startswith("http") else url
     hints = hebrew_hints(title)
@@ -191,16 +199,17 @@ async def fetch_jsearch(key: str | None = None, transport: httpx.AsyncBaseTransp
     records: dict[str, dict] = {}
     async with httpx.AsyncClient(transport=transport, timeout=60) as client:
         for query in JSEARCH_QUERIES:
-            params = {"query": query, "country": "il", "date_posted": "today", "page": "1",
-                      "num_pages": str(JSEARCH_PAGES)}
+            params = {"query": query, "country": "il", "date_posted": "today", "num_pages": str(JSEARCH_PAGES)}
             try:
                 resp = await client.get(JSEARCH_URL, params=params, headers=headers)
-                report["requests_charged"] += 1 if JSEARCH_PAGES == 1 else 2 if JSEARCH_PAGES <= 10 else 3
+                report["requests_charged"] += JSEARCH_PAGES
                 if resp.status_code == 429:
                     report["errors"].append("monthly quota used up (HTTP 429)")
                     break
                 resp.raise_for_status()
-                data = resp.json().get("data") or []
+                body = resp.json().get("data") or []
+                # v2 nests the jobs next to the paging cursor.
+                data = (body.get("jobs") or body.get("data") or []) if isinstance(body, dict) else body
             except Exception as exc:  # noqa: BLE001
                 report["errors"].append(f"{query}: {type(exc).__name__}: {exc}"[:200])
                 continue

@@ -278,7 +278,7 @@
     const n = state.cards.length;
     return `<div class="dm" tabindex="-1">
       <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div></div>
-        <div class="dm-nav"><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
+        <div class="dm-nav"><button type="button" class="icon-btn" data-act="library" aria-label="גרסאות קורות החיים" title="גרסאות קורות החיים">📄</button><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
       <div class="dm-progress" aria-hidden="true">${state.cards.map(() => '<span class="dm-seg"></span>').join('')}</div>
       <div class="dm-track" id="dmTrack" role="region" aria-roledescription="קרוסלה" aria-label="משרות שהותאמו לך">${state.cards.map((c, i) => cardHtml(c, i, n)).join('')}</div>
       <div class="dm-toast" id="dmToast" role="status"></div>
@@ -303,7 +303,7 @@
       const r = ap.result || {};
       const items = [
         ['is-done', 'טופס ההגשה נפתח בלשונית הסמוכה'],
-        r.attached ? ['is-done', `צירפנו את ${r.fileName}`] : ['is-info', 'לא צירפנו קובץ: לגרסה הזו אין קובץ שמור. אפשר להוסיף אותה בספריית הקו״ח.'],
+        r.attached ? ['is-done', `צירפנו את ${r.fileName}`] : ['is-info', 'לא צירפנו קובץ: לגרסה הזו אין קובץ שמור. אפשר להוסיף אותו בספריית הקו״ח (📄 בראש החפיסה).'],
         r.filled && r.filled.length ? ['is-done', `מולאו ${r.filled.length} שדות: ${r.filled.join(', ')}`] : null,
         r.left && r.left.length ? ['is-info', `נשארו לך: ${r.left.join(', ')}. אנחנו לא ממציאים תשובות.`] : null,
         ['is-you', 'עבר/י על הטופס ולחץ/י Submit בעצמך'],
@@ -322,7 +322,7 @@
     const profile = ap.profile || {};
     const rows = [['שם מלא', profile.fullName], ['אימייל', profile.email], ['טלפון', profile.phone], ['LinkedIn', profile.linkedin]]
       .filter(([, v]) => v).map(([k, v]) => `<div class="cp-row"><span class="cp-k">${k}</span><bdi dir="ltr" class="cp-v">${esc(v)}</bdi><button type="button" class="cp-btn" data-act="copy" data-copy="${esc(v)}">העתקה</button></div>`).join('');
-    const dl = ap.hasFile ? `<button type="button" class="dl-btn" data-act="download">⬇️ הורדת ${esc(label)}</button>` : '<p class="dm-fine">לגרסה הזו אין קובץ שמור להורדה. אפשר להוסיף קובץ בספריית הקו״ח.</p>';
+    const dl = ap.hasFile ? `<button type="button" class="dl-btn" data-act="download">⬇️ הורדת ${esc(label)}</button>` : '<div class="dm-nofile"><p class="dm-fine">לגרסה הזו אין עדיין קובץ להורדה.</p><button type="button" class="btn btn-secondary" data-act="library">📄 הוספת קובץ בספריית הקו״ח</button></div>';
     return `<div class="dm-body ap">${head}<div class="ap-box"><h3 class="ap-h">${title}</h3><p class="ap-p">${note}</p>${dl}${rows ? `<div class="cp">${rows}</div>` : '<button type="button" class="link-btn" data-act="profile">הוספת פרטים להעתקה</button>'}</div>${rule}${done}</div>`;
   }
 

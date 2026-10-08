@@ -344,6 +344,15 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ctx = await boot({ statuses: [SUB({ status: 'done', cards: 3 })] });
   ok('nobody else sees the rebuild button', !ctx.doc.querySelector('[data-act="rebuild"]'));
 
+  // ── the CV library is reachable from the deck ─────────────────────────────────
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 3 })], storage: { cvText: CV } });
+  ctx.doc.querySelector('.dm-nav [data-act="library"]').click();
+  await tick();
+  ok('the deck opens the CV library', ctx.app.state.view === 'library' && !!ctx.doc.querySelector('#mainFile'));
+  ctx.doc.querySelector('[data-act="back"]').click();
+  await tick();
+  ok('and comes back to the same deck', ctx.app.state.view === 'deck' && ctx.doc.querySelectorAll('.dm-slide').length === 3);
+
   // ── a quiet day ───────────────────────────────────────────────────────────────
   ctx = await boot({ statuses: [SUB({ status: 'done', cards: 0 })], storage: { cvText: CV },
     today: { run: { id: 4, status: 'done', candidates: 12, fresh: 12, cards: 0 }, cards: [], entitlement: 'subscription' } });

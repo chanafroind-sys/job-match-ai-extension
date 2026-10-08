@@ -7,13 +7,13 @@ from datetime import date, datetime, timezone
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 import daily_matches.models  # noqa: F401  (registers dm_* tables before conftest's create_all)
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
 from daily_matches.models import DmSource
-from daily_matches.sources import aggregators, collect_extra, registry
+from daily_matches.sources import aggregators, collect_extra, probe, registry
 from daily_matches.sources.dedupe import drop_copies, job_key
 
 
@@ -28,7 +28,10 @@ class _Frame:
         return [dict(r) for r in self.rows]
 
 
-def _li(job_id, title, company, direct="", description="Requirements:\n• Python, AWS", posted=None):
+LONG_DESCRIPTION = "Requirements:\n• Python, AWS\n" + "We build backend services for payments at scale. " * 8
+
+
+def _li(job_id, title, company, direct="", description=LONG_DESCRIPTION, posted=None):
     return {"id": job_id, "site": "linkedin", "job_url": f"https://www.linkedin.com/jobs/view/{job_id}",
             "job_url_direct": direct or math.nan, "title": title, "company": company,
             "location": "Tel Aviv-Yafo, Tel Aviv District, Israel", "date_posted": posted or date.today(),
@@ -100,6 +103,12 @@ class TestJobSpy:
         call = scrape.calls[0]
         assert call["location"] == "Israel" and call["hours_old"] == aggregators.HOURS_OLD and call["fetch_description"]
 
+    async def test_a_listing_without_its_description_is_dropped(self):
+        scrape = FakeScrape({"linkedin": [_li("5", "Backend Engineer", "NoText", description="Backend Engineer"),
+                                          _li("6", "Backend Engineer", "WithText")]})
+        records, _ = await aggregators.fetch_jobspy("linkedin", ["software"], scrape=scrape)
+        assert [r["company"] for r in records] == ["WithText"]
+
     async def test_a_blocked_search_leaves_the_others(self):
         scrape = FakeScrape({"indeed": [_li("9", "Python Developer", "Gamma")]}, fail_terms={"developer"})
         records, report = await aggregators.fetch_jobspy("indeed", ["developer", "software engineer"], scrape=scrape)
@@ -149,14 +158,16 @@ class TestJSearch:
         def handler(request: httpx.Request):
             seen.append(dict(request.url.params))
             assert request.headers["X-RapidAPI-Key"] == "k"
-            return httpx.Response(200, json={"data": [{
+            assert request.url.path == "/search-v2"  # /search answers 404 since JSearch v2
+            return httpx.Response(200, json={"data": {"cursor": "c1", "jobs": [{
                 "job_id": "j1", "job_title": "Backend Developer", "employer_name": "Delta",
-                "job_apply_link": "https://jobs.lever.co/delta/abc", "job_description": "Python",
-                "job_posted_at_datetime_utc": "2026-10-07T08:00:00.000Z"}]})
+                "job_apply_link": "https://jobs.lever.co/delta/abc", "job_description": LONG_DESCRIPTION,
+                "job_posted_at_datetime_utc": "2026-10-07T08:00:00.000Z"}]}})
         records, report = await aggregators.fetch_jsearch(key="k", transport=httpx.MockTransport(handler))
         assert seen[0]["country"] == "il" and seen[0]["date_posted"] == "today"
         assert len(records) == 1 and records[0]["url"] == "https://jobs.lever.co/delta/abc"
-        assert report["requests_charged"] == 2 * len(aggregators.JSEARCH_QUERIES)  # 10 pages count twice
+        assert report["requests_charged"] == aggregators.JSEARCH_PAGES * len(aggregators.JSEARCH_QUERIES)
+        assert "page" not in seen[0] and seen[0]["num_pages"] == str(aggregators.JSEARCH_PAGES)
 
     async def test_quota_exhausted_stops_asking(self):
         calls = []
@@ -168,7 +179,78 @@ class TestJSearch:
         assert len(calls) == 1 and "429" in report["errors"][0]
 
 
+def _fake_fetchers(monkeypatch, boards: dict):
+    """boards: {(ats, slug): [titles]}; anything else answers like a missing board."""
+    calls = []
+
+    def make(ats):
+        async def fetch(client, company, params):
+            slug = params.get("board") or params.get("site")
+            calls.append((ats, slug))
+            if (ats, slug) not in boards:
+                raise httpx.HTTPStatusError("404", request=httpx.Request("GET", "https://x"),
+                                            response=httpx.Response(404))
+            return [agg.build_record(company=company, title=t, url=f"https://{ats}.example/{slug}/{i}",
+                                     description=LONG_DESCRIPTION, published_at=datetime.now(timezone.utc),
+                                     external_id=str(i)) for i, t in enumerate(boards[(ats, slug)])]
+        return fetch
+    for ats in ("greenhouse", "lever", "ashby"):
+        monkeypatch.setitem(agg.FETCHERS, ats, make(ats))
+    return calls
+
+
+def _rec(company, title):
+    return agg.build_record(company=company, title=title, url=f"https://www.linkedin.com/jobs/view/{company}-{title}",
+                            description=LONG_DESCRIPTION, published_at=None, external_id=None)
+
+
+class TestProbe:
+    def test_board_names_from_a_company_name(self):
+        assert probe.slug_candidates("Acme Labs Ltd.") == ["acme", "acmelabsltd"]
+        assert probe.slug_candidates("Check Point") == ["checkpoint", "check-point"]
+        assert probe.slug_candidates("חברה בע\"מ") == []
+
+    async def test_a_board_is_trusted_only_when_it_lists_the_same_job(self, db, monkeypatch):
+        calls = _fake_fetchers(monkeypatch, {
+            ("greenhouse", "newco"): ["Backend Engineer", "Data Engineer"],
+            ("lever", "acme"): ["Senior Accountant", "Chip Designer"],  # someone else's "acme"
+        })
+        rows, records, report = await probe.probe_companies(db, [_rec("NewCo", "Backend Engineer"),
+                                                                 _rec("Acme", "Backend Developer")])
+        await db.commit()
+        assert [(r.ats, r.slug) for r in rows] == [("greenhouse", "newco")]
+        assert {r["title"] for r in records} == {"Backend Engineer", "Data Engineer"}  # the whole board
+        assert report == {"companies": 2, "verified": 1, "missed": 1, "skipped_known": 0}
+        stored = {(s.ats, s.slug) for s in (await db.execute(select(DmSource))).scalars()}
+        assert ("probe_miss", "acme") in stored and ("lever", "acme") not in stored
+        assert ("lever", "acme") in calls  # it was found, and rejected
+
+    async def test_known_companies_and_recent_misses_are_not_probed(self, db, monkeypatch):
+        calls = _fake_fetchers(monkeypatch, {})
+        await probe.probe_companies(db, [_rec("Gamma", "Backend Developer"), _rec("Wiz", "Backend Engineer")])
+        await db.commit()
+        assert {slug for _, slug in calls} == {"gamma"}  # Wiz is on V1's list
+        calls.clear()
+        _, _, report = await probe.probe_companies(db, [_rec("Gamma", "Backend Developer")])
+        assert calls == [] and report["skipped_known"] == 1
+        miss = (await db.execute(select(DmSource).where(DmSource.ats == "probe_miss"))).scalar_one()
+        miss.first_seen_at = datetime.now(timezone.utc) - probe.PROBE_RETRY_AFTER * 2
+        await db.commit()
+        await probe.probe_companies(db, [_rec("Gamma", "Backend Developer")])
+        await db.commit()
+        assert calls and (await db.execute(select(func.count()).select_from(DmSource))).scalar() == 1  # replaced
+
+
 class TestCollectExtra:
+    async def test_a_verified_board_replaces_the_linkedin_copy(self, db, monkeypatch):
+        _fake_fetchers(monkeypatch, {("ashby", "deltaai"): ["ML Engineer"]})
+        monkeypatch.setenv("DM_JSEARCH_KEY", "")
+        scrape = FakeScrape({"linkedin": [_li("7", "ML Engineer", "Delta AI")]})
+        report = await collect_extra(db, scrape=scrape)
+        urls = [r.url for r in (await db.execute(select(DailyJobPool))).scalars()]
+        assert urls == ["https://ashby.example/deltaai/0"] and report["probe"]["verified"] == 1
+        assert report["copies_dropped"] == 1
+
     async def test_end_to_end(self, db, monkeypatch):
         now = datetime.now(timezone.utc)
         db.add(DailyJobPool(id="ats-1", title="Backend Engineer", company="Acme", category="Backend",
@@ -186,9 +268,13 @@ class TestCollectExtra:
             fetched.append(params["board"])
             if params["board"] == "oldco":
                 raise httpx.ConnectError("down")
+            if params["board"] != "newco":  # the name probe finds no other board
+                raise httpx.HTTPStatusError("404", request=httpx.Request("GET", "https://x"),
+                                            response=httpx.Response(404))
             return [agg.build_record(company=company, title="Backend Engineer",
                                      url=f"https://job-boards.greenhouse.io/{params['board']}/jobs/1",
                                      description="Python", published_at=now, external_id="1")]
+        _fake_fetchers(monkeypatch, {})  # lever and ashby: no boards
         monkeypatch.setitem(agg.FETCHERS, "greenhouse", fake_greenhouse)
         monkeypatch.setenv("DM_JSEARCH_KEY", "")
         scrape = FakeScrape({"linkedin": [
