@@ -768,7 +768,7 @@ document.getElementById('btnTracker').addEventListener('click', () => {
 
 // Show NEW dot on tracker button if extension badge is currently set
 chrome.action.getBadgeText({}, (text) => {
-  if (text && text.trim()) {
+  if (text && text.trim() === 'NEW') { // Daily Matches shows its own badge text
     document.getElementById('trackerNewDot').style.display = 'block';
   }
 });

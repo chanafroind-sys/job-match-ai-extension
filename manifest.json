@@ -165,6 +165,7 @@
         "jma-auth.js",
         "matcher.js",
         "content.js",
+        "daily/dm-fab.js",
         "v2/v2_content.js"
       ],
       "run_at": "document_idle",

@@ -291,6 +291,21 @@
     const ui = (await chrome.storage.local.get(UI_KEY))[UI_KEY] || {};
     if (ui.stripDismissedOn !== new Date().toDateString()) renderStrip(lastStatus);
     if (shouldAnnounce(lastStatus, ui)) renderAnnouncement(lastStatus);
+    syncBadge(lastStatus, ui).catch(() => {});
+  }
+
+  // The toolbar's "חדש" until the deck is first opened (daily/dm-bg.js sets it
+  // at install; this keeps it right). Never over V1's own "NEW".
+  async function syncBadge(s, ui) {
+    if (!chrome.action || !chrome.action.getBadgeText) return;
+    const want = !ui.panelOpened && (s.entitlement === 'trial' || s.entitlement === 'subscription');
+    const current = await chrome.action.getBadgeText({});
+    if (want && !current) {
+      await chrome.action.setBadgeText({ text: 'חדש' });
+      await chrome.action.setBadgeBackgroundColor({ color: '#7C3AED' });
+    } else if (!want && current === 'חדש') {
+      await chrome.action.setBadgeText({ text: '' });
+    }
   }
 
   window.JMA_DM_ENTRY = { init, cardModel, shouldAnnounce };

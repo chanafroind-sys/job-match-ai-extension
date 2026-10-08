@@ -864,7 +864,17 @@
     document.addEventListener('keydown', onKey);
     if (chrome.storage && chrome.storage.onChanged) chrome.storage.onChanged.addListener(onStorage);
     setView('loading');
+    await markOpened().catch(() => {});
     await refresh();
+  }
+
+  // The deck has been seen: the "new" badge and the FAB tag can go.
+  async function markOpened() {
+    const ui = (await chrome.storage.local.get(UI_KEY))[UI_KEY] || {};
+    if (!ui.panelOpened) await chrome.storage.local.set({ [UI_KEY]: { ...ui, panelOpened: true } });
+    if (chrome.action && chrome.action.getBadgeText && (await chrome.action.getBadgeText({})) === 'חדש') {
+      await chrome.action.setBadgeText({ text: '' });
+    }
   }
 
   DM.app = { state, boot, render, goTo, build, loadDeck, refresh, setView };

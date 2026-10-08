@@ -1,4 +1,5 @@
 importScripts('jma-auth.js');
+importScripts('daily/dm-bg.js'); // Daily Matches: its badge and the FAB tag's helpers
 
 const BACKEND_URL = 'https://job-match-ai-extension.onrender.com';
 

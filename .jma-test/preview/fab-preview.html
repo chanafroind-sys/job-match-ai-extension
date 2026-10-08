@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FAB tag preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;600;700;800&display=swap" rel="stylesheet">
+<!-- A job page with a FAB shaped like content.js's (#jma-fab-wrap), and
+     daily/dm-fab.js on top. Serve the repo root and open
+     /.jma-test/preview/fab-preview.html -->
+<style>
+  body { margin: 0; font-family: Arial, sans-serif; background: #F3F2EF; }
+  .job { max-width: 720px; margin: 40px auto; background: #fff; border-radius: 8px; padding: 24px; color: #333; line-height: 1.6; }
+  #jma-fab-wrap { position: fixed; bottom: 32px; right: 32px; width: 84px; height: 84px; border-radius: 50%; z-index: 99999;
+    background: radial-gradient(circle at 40% 35%, #A78BFA 0%, #5B21B6 100%); box-shadow: 0 5px 16px rgba(91,33,182,.45);
+    display: grid; place-items: center; color: #fff; font: 700 13px/1.2 Rubik, Arial; text-align: center; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="job"><h2>Senior Backend Engineer</h2><p>Acme · Tel Aviv</p><p>We're looking for a backend engineer with 5+ years of Python, Kafka and AWS…</p></div>
+<script>
+  const store = {};
+  window.chrome = {
+    storage: { onChanged: { addListener() {} }, local: {
+      get: (k) => { const o = {}; [].concat(k).forEach(x => { if (store[x] !== undefined) o[x] = store[x]; }); return Promise.resolve(o); },
+      set: (o) => { Object.assign(store, o); return Promise.resolve(); } } },
+    runtime: { sendMessage: (m, cb) => setTimeout(() => cb(m.action === 'dmFabStatus' ? { invited: true } : { ok: true }), 50) },
+  };
+  setTimeout(() => {
+    const fab = document.createElement('div');
+    fab.id = 'jma-fab-wrap';
+    fab.innerHTML = '<div id="jma-fab-inner">72%<br><span style="font-size:10px">התאמה מעמיקה ➔</span></div>';
+    document.body.appendChild(fab);
+  }, 300);
+  const s = document.createElement('script'); s.src = '../../daily/dm-fab.js?t=' + Date.now(); document.body.appendChild(s);
+</script>
+</body>
+</html>
