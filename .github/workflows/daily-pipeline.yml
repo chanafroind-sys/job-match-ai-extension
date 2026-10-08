@@ -12,7 +12,7 @@
 # and reads one optional one:
 #   RAPIDAPI_KEY    a RapidAPI key subscribed to JSearch (the free Basic plan
 #                   is enough). Without it, JSearch is skipped.
-# LinkedIn and Indeed come through the JobSpy library, installed only here.
+# Indeed comes through the JobSpy library, installed only here.
 name: Daily job pipeline
 
 on:
@@ -61,7 +61,7 @@ jobs:
         working-directory: server-python
         run: pip install -r requirements.txt
 
-      # Optional: without it LinkedIn and Indeed are skipped and the rest runs.
+      # Optional: without it Indeed is skipped and the rest runs.
       # The version daily_matches/sources/aggregators.py expects.
       - name: Install JobSpy
         if: steps.gate.outputs.run == 'true'

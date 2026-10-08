@@ -4,7 +4,8 @@ V1's sync reads a fixed list of ~60 company boards. This adds:
   registry     company boards discovered from aggregators' apply links, or
                guessed from the company's name and verified (probe.py), read
                through their public ATS APIs (registry.py)
-  linkedin     jobs posted in Israel in the last day, through JobSpy
+  linkedin     jobs posted in Israel in the last day, from LinkedIn's public
+               search, one query per field (linkedin.py)
   jsearch      Google for Jobs through RapidAPI, when DM_JSEARCH_KEY is set
   indeed       Indeed Israel, through JobSpy
 
@@ -22,7 +23,7 @@ from sqlalchemy import select
 
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
-from daily_matches.sources import aggregators, probe, registry
+from daily_matches.sources import aggregators, linkedin as linkedin_source, probe, registry
 from daily_matches.sources.dedupe import drop_copies, job_key
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,8 @@ def _strip(records: list[dict]) -> list[dict]:
     return [{k: v for k, v in r.items() if not k.startswith("_")} for r in records]
 
 
-async def collect_extra(session, *, scrape=None, jsearch_transport=None) -> dict:
+async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedin_transport=None,
+                        sleep=asyncio.sleep) -> dict:
     """Fetches every extra source and upserts what's new. Never raises for a
     source's failure; the report says what happened to each."""
     report: dict = {}
@@ -50,9 +52,9 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None) -> dict
     await session.commit()  # board health (failures, last_count)
 
     (linkedin, report["linkedin"]), (jsearch, report["jsearch"]), (indeed, report["indeed"]) = await asyncio.gather(
-        aggregators.fetch_jobspy("linkedin", aggregators.LINKEDIN_SEARCHES, scrape=scrape),
+        linkedin_source.fetch_linkedin(set(known.values()), transport=linkedin_transport, sleep=sleep),
         aggregators.fetch_jsearch(transport=jsearch_transport),
-        aggregators.fetch_jobspy("indeed", aggregators.INDEED_SEARCHES, scrape=scrape),
+        aggregators.fetch_jobspy("indeed", aggregators.INDEED_SEARCHES, scrape=scrape, sleep=sleep),
     )
 
     # Boards behind today's aggregator links: recorded for every day to come,

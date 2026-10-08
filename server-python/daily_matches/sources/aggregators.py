@@ -1,6 +1,6 @@
-"""Aggregator sources: jobs posted in Israel in the last day, from LinkedIn and
-Indeed (through the JobSpy library) and from JSearch (Google for Jobs, on
-RapidAPI).
+"""Aggregator sources: jobs posted in Israel in the last day, from Indeed
+(through the JobSpy library) and from JSearch (Google for Jobs, on RapidAPI).
+LinkedIn has its own collector (linkedin.py); the shared helpers live here.
 
 Each returns daily_job_pool records built by V1's build_record, so the
 classification (category, seniority, tech-only) is the same as everywhere
@@ -47,16 +47,14 @@ def _int(name: str, default: int) -> int:
         return default
 
 
-# LinkedIn rate-limits a single IP after roughly ten result pages, so a few
-# broad searches beat many narrow ones. Each search is a LinkedIn boolean query.
-LINKEDIN_SEARCHES = _env_list("DM_LINKEDIN_SEARCHES", [
-    'software OR developer OR programmer',
-    'engineer NOT sales NOT mechanical NOT civil',
-    'devops OR "data engineer" OR "machine learning" OR "QA automation"',
+# One search per field: a broad search stops at the site's result limit long
+# before it has every job.
+INDEED_SEARCHES = _env_list("DM_INDEED_SEARCHES", [
+    "software engineer", "developer", "backend", "frontend", "full stack", "devops", "data engineer",
+    "QA automation", "machine learning", "embedded", "mobile developer", "מפתח", "מהנדס תוכנה",
 ])
-LINKEDIN_RESULTS = _int("DM_LINKEDIN_RESULTS", 150)  # per search
-INDEED_SEARCHES = _env_list("DM_INDEED_SEARCHES", ["software engineer", "developer"])
 INDEED_RESULTS = _int("DM_INDEED_RESULTS", 100)
+SEARCH_PAUSE = 3  # seconds between one site's searches
 HOURS_OLD = 26  # a day plus slack, so consecutive 06:00 runs overlap instead of leaving a gap
 
 # /search answers 404 since JSearch moved to /search-v2 (cursor paging, one credit per page).
@@ -133,10 +131,7 @@ def _record(company, title, url, direct, description, posted, external_id) -> di
 def _jobspy_rows(scrape, site: str, term: str) -> list[dict]:
     kwargs = dict(site_name=[site], search_term=term, hours_old=HOURS_OLD, description_format="markdown",
                   verbose=0)
-    if site == "linkedin":
-        kwargs.update(location="Israel", results_wanted=LINKEDIN_RESULTS, fetch_description=True)
-    else:
-        kwargs.update(location="Israel", country_indeed="israel", results_wanted=INDEED_RESULTS)
+    kwargs.update(location="Israel", country_indeed="israel", results_wanted=INDEED_RESULTS)
     frame = scrape(**kwargs)
     return frame.to_dict("records") if hasattr(frame, "to_dict") else list(frame or [])
 
@@ -149,9 +144,9 @@ def _jobspy_record(row: dict) -> dict | None:
     )
 
 
-async def fetch_jobspy(site: str, searches: list[str], scrape=None) -> tuple[list[dict], dict]:
+async def fetch_jobspy(site: str, searches: list[str], scrape=None, sleep=asyncio.sleep) -> tuple[list[dict], dict]:
     """One site's searches, one after another (gentler on rate limits)."""
-    report: dict = {"searches": len(searches), "rows": 0, "jobs": 0, "errors": []}
+    report: dict = {"searches": [], "rows": 0, "jobs": 0, "errors": []}
     if scrape is None:
         try:
             from jobspy import scrape_jobs as scrape  # noqa: PLC0415 — optional, pipeline-only dependency
@@ -159,7 +154,9 @@ async def fetch_jobspy(site: str, searches: list[str], scrape=None) -> tuple[lis
             report["skipped"] = f"python-jobspy not installed (pip install python-jobspy=={JOBSPY_VERSION})"
             return [], report
     records: dict[str, dict] = {}
-    for term in searches:
+    for n, term in enumerate(searches):
+        if n:
+            await sleep(SEARCH_PAUSE)
         try:
             rows = await asyncio.to_thread(_jobspy_rows, scrape, site, term)
         except Exception as exc:  # noqa: BLE001 — a blocked search leaves the others
@@ -167,6 +164,7 @@ async def fetch_jobspy(site: str, searches: list[str], scrape=None) -> tuple[lis
             logger.warning("[DM] %s search %r failed: %s", site, term, exc)
             continue
         report["rows"] += len(rows)
+        report["searches"].append({"query": term, "rows": len(rows)})
         for row in rows:
             rec = _jobspy_record(row)
             if rec:

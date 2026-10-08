@@ -250,7 +250,7 @@ flowchart TB
         direction LR
         S1["V1 company boards<br/>Greenhouse · Lever · Ashby<br/>SmartRecruiters · Workday"]
         S2["Self-growing registry<br/>dm_sources"]
-        S3["LinkedIn + Indeed IL<br/>(JobSpy)"]
+        S3["LinkedIn public search<br/>+ Indeed IL"]
         S4["JSearch<br/>(Google for Jobs)"]
         D["Dedupe<br/>company + title,<br/>company board wins"]
         E["Voyage voyage-4<br/>incremental embeddings"]
@@ -283,7 +283,8 @@ flowchart TB
 |---|---|---|---|
 | **Company boards (V1 list)** | Public ATS JSON APIs | $0 | Full descriptions, official data, apply forms auto-fill can use |
 | **Discovered boards** — `dm_sources` | Same APIs, for every board found behind an aggregator's apply link, or guessed from the company's name and **trusted only if it lists the very same job in Israel** | $0 | The registry **grows by itself**: a company found once on LinkedIn is read directly from its own board forever after |
-| **LinkedIn + Indeed Israel** | [JobSpy](https://github.com/speedyapply/JobSpy), last 26 hours, installed only in the workflow | $0 | Coverage of companies with no public board |
+| **LinkedIn** | Its public search, one query per field (Backend, DevOps, Data…), paced and paged until each runs dry; full descriptions fetched only for new, technical listings | $0 | The widest single view of the market |
+| **Indeed Israel** | [JobSpy](https://github.com/speedyapply/JobSpy), one search per field, installed only in the workflow | $0 | Listings that never reach LinkedIn |
 | **JSearch** (RapidAPI) | Google for Jobs, `date_posted=today`, free 200-request plan | $0 | A second aggregator, budgeted to ~180 requests/month |
 
 Cross-source duplicates are dropped by a normalized company + title key (legal suffixes, locations and punctuation stripped), processing the best source first so the copy kept is the one with an application form. Hebrew job titles (`מפתח/ת Backend בכיר/ה`) get English hint words for the shared classifier, so they are categorized instead of silently dropped.
@@ -715,7 +716,7 @@ A per-job tracker records status, CV-generation state, and recruiter link-open e
 | Spreadsheet import/export | `openpyxl` + `pandas` (server); BOM-prefixed CSV (client) | Server-side `.xlsx` job/recruiter import is a real binary; client-side "Excel export" is CSV, Excel-openable |
 | Semantic search | Voyage AI `voyage-4` embeddings (1024-d) + `pgvector` cosine search | Side-table vectors, incremental by text hash; JSON + Python cosine fallback when `pgvector` is absent |
 | Scheduled pipeline | GitHub Actions (cron `0 3,4 * * *`, Israel-time gate) | Collects and embeds the day's jobs at 06:00 Israel time in both DST seasons; free on a public repo |
-| Job aggregation | Public ATS APIs · JobSpy (LinkedIn, Indeed) · JSearch (RapidAPI) | Cross-source dedupe; boards discovered from apply links are read through their own APIs afterwards |
+| Job aggregation | Public ATS APIs · LinkedIn public search · JobSpy (Indeed) · JSearch (RapidAPI) | Cross-source dedupe; boards discovered from apply links are read through their own APIs afterwards |
 | Testing | `pytest` + `pytest-asyncio` | Referral lifecycle, points service, recruiters, sync service, admin import |
 | Hosting | Render (free tier, web service + managed Postgres) | Client-side retry/backoff absorbs cold-start latency instead of a keep-warm ping |
 
@@ -802,7 +803,7 @@ A README that only lists strengths isn't credible engineering documentation. A f
 - **Several real, working code paths are not currently reachable from the UI**: the legacy `/api/analyze-stream` streaming screen (`runStreamingAnalysis` in `popup.js`) was superseded by the split questions/deep-analysis-overlay flow but never deleted; a parallel "armed CV button" optimization (`_armCvButton`/`cvGenPromise`) exists alongside the synchronous CV-generation path that's actually wired to the UI. These are marked explicitly rather than described as live features.
 - **The `claude-fable-5` model alias** is a real, live code path (`_resolve_model("fable")`) exposed as a user-facing model choice, but it is not independently verified here as a publicly documented Anthropic model identifier — it is reported as-is because that is what the code requests.
 - **No server-side keep-warm mechanism.** Render's free-tier cold starts are absorbed entirely by client-side retry/backoff (`fetchWithRetry`) rather than a scheduled self-ping, which keeps infrastructure cost at zero but means the very first request after idle can take noticeably longer.
-- **Aggregator coverage is best-effort.** LinkedIn and Indeed are read through JobSpy, which scrapes public listings: a blocked or changed site yields fewer jobs that day (reported in the run, never fatal), and the boards discovered through it keep being read through their own official APIs. Comeet boards are recorded but not yet fetched, and Workday's sign-in wall rules out auto-fill there.
+- **Aggregator coverage is best-effort.** LinkedIn's public search and Indeed (through JobSpy) are read the way a logged-out browser reads them: a blocked or changed site yields fewer jobs that day (reported in the run, never fatal), and the boards discovered through it keep being read through their own official APIs. Comeet boards are recorded but not yet fetched, and Workday's sign-in wall rules out auto-fill there.
 - **Daily Matches cost figures are estimates until measured.** Per-deck token usage is recorded on every run and reported by `GET /api/daily-matches/admin/metrics`; the numbers in this README come from measured job sizes and list prices, not from a month of production traffic.
 - **No scheduler anywhere in the backend.** The employees-sheet sync and referral auto-expiry are both triggered lazily by the next relevant HTTP request rather than a cron job, since Render's free tier provides no background worker — a deliberate, documented adaptation rather than a missing feature.
 
