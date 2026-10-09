@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -209,6 +209,10 @@ async def today(request: Request, latest: bool = False,
         rows = await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id, _shown())
                                 .order_by(DmRunResult.rank))
         cards.extend(_card_json(r) for r in rows.scalars())
+        # Every job with a usable analysis has a row (shown or not); one whose
+        # analysis failed has none, and comes back next time.
+        out["run"]["analyzed_ok"] = (await db.execute(
+            select(func.count()).select_from(DmRunResult).where(DmRunResult.run_id == run_row.id))).scalar()
         if access.is_admin:  # the model comparison, over every analyzed job (shown or not)
             every = (await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id))).scalars().all()
             summary = service.compare_summary(list(every), run_row)

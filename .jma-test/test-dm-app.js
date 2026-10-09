@@ -110,6 +110,7 @@ async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_siz
     runtime: { getURL: (p) => `chrome-extension://abc/${p}` },
   };
   for (const src of SCRIPTS) window.eval(src);
+  Object.assign(window.JMA_DM.apply.timing, { settle: 0, poll: 10 }); // the real waits are for real pages
   await window.JMA_DM.app.boot();
   await tick();
   return { window, doc: window.document, log, storage, app: window.JMA_DM.app };
@@ -226,12 +227,14 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   await tick();
   ok('first Lever apply asks to confirm the form details', ctx.app.state.view === 'profile' &&
      ctx.doc.querySelector('[data-field="email"]').value === 'noa.levi@example.com' &&
-     ctx.doc.querySelector('[data-field="fullName"]').value === 'Noa Levi');
+     ctx.doc.querySelector('[data-field="firstName"]').value === 'Noa' && ctx.doc.querySelector('[data-field="lastName"]').value === 'Levi');
   ctx.doc.querySelector('[data-act="save-profile"]').click();
   await tick(250);
-  const [look, fill] = ctx.log.scripting;
-  ok('after confirming, the Lever form opens and every frame is looked at first', ctx.log.tabs[0].url === 'https://jobs.lever.co/acme/1/apply' &&
-     look && look.func.name === 'formFill' && look.target.tabId === 5 && look.target.allFrames && look.args[2].dry === true);
+  const looks = ctx.log.scripting.slice(0, -1);
+  const fill = ctx.log.scripting[ctx.log.scripting.length - 1];
+  ok('after confirming, the Lever form opens and every frame is looked at, twice, before anything is filled',
+     ctx.log.tabs[0].url === 'https://jobs.lever.co/acme/1/apply' && looks.length === 2 &&
+     looks.every(l => l.func.name === 'formFill' && l.target.tabId === 5 && l.target.allFrames && l.args[2].dry === true));
   ok('then only the frame with the form is filled', fill && fill.target.frameIds[0] === 0 && !fill.args[2].dry &&
      fill.args[0].email === 'noa.levi@example.com');
   ok('the apply view reports what was filled and what was left', ctx.app.state.view === 'apply' &&
@@ -251,7 +254,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('first Greenhouse apply asks to confirm the form details too', ctx.app.state.view === 'profile');
   ctx.doc.querySelector('[data-act="save-profile"]').click();
   await tick(250);
-  const gh = ctx.log.scripting[1];
+  const gh = ctx.log.scripting[ctx.log.scripting.length - 1];
   ok('Greenhouse opens the hosted application form', ctx.log.tabs[0].url === 'https://job-boards.greenhouse.io/datavine/jobs/9');
   ok('and fills it with the same filler', gh && gh.func.name === 'formFill' && gh.args[0].email === 'noa.levi@example.com');
   ok('the result names the site', ctx.doc.querySelector('.ap-h').textContent.includes('Greenhouse') &&
@@ -280,7 +283,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
      !!ctx.doc.querySelector('[data-act="grant-fill"]') && ctx.doc.body.textContent.includes('careers.papaya.dev'));
   ctx.doc.querySelector('[data-act="grant-fill"]').click();
   await tick(250);
-  ok('granting it fills the form that is open', ctx.log.asks === 1 && ctx.log.scripting.length === 2 &&
+  ok('granting it fills the form that is open', ctx.log.asks === 1 && ctx.log.scripting.length === 3 &&
      ctx.doc.body.textContent.includes('מולאו 2 שדות'));
 
   ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV }, access: false, grantOnAsk: false,
@@ -293,6 +296,44 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   await tick(200);
   ok('skipping only opens the job, with the CV and details to copy', ctx.log.tabs[0].url.includes('papaya.dev') &&
      ctx.log.scripting.length === 0 && ctx.app.state.view === 'apply' && !!ctx.doc.querySelector('.dl-btn, .dm-nofile'));
+
+  // ── the application details page ──────────────────────────────────────────────
+  ctx = await boot({ statuses: [SUB(null)], storage: { cvText: CV } });
+  const detailsBtn = [...ctx.doc.querySelectorAll('[data-act="profile"]')].find(b => b.textContent.includes('פרטי הגשה'));
+  ok('the ready screen points to the details, and says they are not filled yet', detailsBtn &&
+     detailsBtn.textContent.includes('עוד לא מולא'));
+  detailsBtn.click();
+  await tick();
+  const sections = [...ctx.doc.querySelectorAll('.pf-sec h2')].map(h => h.textContent);
+  ok('the details are one page in clear sections', ctx.app.state.view === 'profile' && sections.length === 5 &&
+     ['פרטים אישיים', 'קישורים', 'עבודה', 'שאלות נפוצות', 'מכתב מקדים'].every((t, i) => sections[i].includes(t)));
+  ok('it starts from the CV and says it never invents answers', ctx.doc.querySelector('[data-field="firstName"]').value === 'Noa' &&
+     ctx.doc.querySelector('[data-field="linkedin"]').value === 'https://linkedin.com/in/noa-levi' &&
+     ctx.doc.querySelector('.pf-intro').textContent.includes('לא ממציאים'));
+  const setField = (sel, value) => { const el = ctx.doc.querySelector(sel); el.value = value; };
+  setField('[data-field="gender"]', 'female');
+  setField('[data-field="workAuth"]', 'yes');
+  setField('[data-field="firstNameHe"]', 'נועה');
+  setField('[data-field="years"]', '6');
+  setField('[data-letter="general"]', 'Hello, I am Noa.');
+  ctx.doc.querySelector('[data-act="save-profile"]').click();
+  await tick(200);
+  const saved = ctx.storage.jma_dm_apply_profile;
+  ok('saving keeps every answer, the lists and the letter too', saved.firstName === 'Noa' && saved.lastName === 'Levi' &&
+     saved.firstNameHe === 'נועה' && saved.gender === 'female' && saved.workAuth === 'yes' && saved.sponsorship === '' &&
+     saved.years === '6' && saved.coverLetter === 'Hello, I am Noa.' && !('fullName' in saved), JSON.stringify(saved));
+  await ctx.app.refresh();
+  await tick();
+  const back2 = [...ctx.doc.querySelectorAll('[data-act="profile"]')].find(b => b.textContent.includes('פרטי הגשה'));
+  ok('and the ready screen shows how much is filled', back2 && /\d+\/\d+/.test(back2.textContent));
+
+  ctx = await boot({ statuses: [SUB(null)], storage: { cvText: CV, jma_dm_cv_library: { versions: [
+    { id: 'be', label: 'Backend', text: CV, createdAt: 1 }, { id: 'data', label: 'Data', text: CV, createdAt: 2 }] } } });
+  [...ctx.doc.querySelectorAll('[data-act="profile"]')].pop().click();
+  await tick();
+  const versionBoxes = [...ctx.doc.querySelectorAll('.pf-more [data-letter]')].map(t => t.dataset.letter);
+  ok('with two CV versions, each can have its own cover letter', versionBoxes.length >= 2 && versionBoxes.includes('data'),
+     JSON.stringify(versionBoxes));
 
   // ── focus, level and the run payload ──────────────────────────────────────────
   ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV } });
@@ -351,6 +392,10 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   dlBtn.click();
   await tick();
   ok('and the download goes out under the file\'s own name', ctx.log.downloads.length === 1 && ctx.log.downloads[0].filename === 'cv.pdf');
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 2 })], storage: { cvText: CV },
+    today: { run: { id: 3, status: 'done', candidates: 40, analyzed_ok: 31 }, cards: tiered, entitlement: 'subscription' } });
+  ok('when some analyses failed, the header says how many really came back', ctx.doc.querySelector('.dm-date').textContent.includes('31 מתוך 40') &&
+     ctx.doc.querySelector('.dm-date').textContent.includes('ייבדקו שוב'));
   ok('no comparison box for anyone but admins', !ctx.doc.querySelector('.dm-cmp-sum'));
 
   // ── the model comparison, for admins ──────────────────────────────────────────

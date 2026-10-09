@@ -232,10 +232,74 @@ class TestFanOut:
         assert results["j0"] is not None and len(fake.calls) == 2
 
     async def test_truncated_output_is_not_trusted(self, monkeypatch):
-        fake = FakeClaude(stop_reason="max_tokens")
+        fake = FakeClaude()
+        real = fake.messages.create
+
+        async def create(**kwargs):
+            message = await real(**kwargs)
+            if "Backend 1" in kwargs["messages"][0]["content"]:
+                message.stop_reason = "max_tokens"
+            return message
+        monkeypatch.setattr(fake.messages, "create", create)
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        results, _ = await reasoning.analyze_jobs(CVS, _jobs(4))
+        assert results["j1"] is None and all(results[j] for j in ("j0", "j2", "j3"))
+
+    async def test_a_cut_off_answer_is_asked_again_with_room_to_finish(self, monkeypatch):
+        fake = FakeClaude()
+        real = fake.messages.create
+        tries = {}
+
+        async def create(**kwargs):
+            message = await real(**kwargs)
+            job = kwargs["messages"][0]["content"]
+            tries[job] = tries.get(job, 0) + 1
+            if "Backend 1" in job and tries[job] == 1:
+                message.stop_reason = "max_tokens"
+            return message
+        monkeypatch.setattr(fake.messages, "create", create)
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        results, usage = await reasoning.analyze_jobs(CVS, _jobs(3))
+        assert all(results.values())
+        again = [c for c in fake.calls if "Backend 1" in c["messages"][0]["content"]]
+        assert [c["max_tokens"] for c in again] == [config.LLM_MAX_TOKENS, config.LLM_MAX_TOKENS_AUTO]
+        assert usage["output_tokens"] == 4 * 300  # both answers are paid for
+
+    async def test_an_answer_without_the_tool_call_is_asked_again(self, monkeypatch):
+        fake = FakeClaude()
+        real = fake.messages.create
+        first = []
+
+        async def create(**kwargs):
+            message = await real(**kwargs)
+            if not first:
+                first.append(1)
+                message.content = []
+            return message
+        monkeypatch.setattr(fake.messages, "create", create)
         monkeypatch.setattr(main_module, "_ac", lambda: fake)
         results, _ = await reasoning.analyze_jobs(CVS, _jobs(1))
-        assert results["j0"] is None
+        assert results["j0"] and len(fake.calls) == 2
+
+    async def test_unusable_answers_count_as_failures_too(self, monkeypatch):
+        # A deck must never be built quietly from the few answers that got through.
+        fake = FakeClaude(stop_reason="max_tokens")
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        with pytest.raises(HTTPException):
+            await reasoning.analyze_jobs(CVS, _jobs(4))
+
+    async def test_answers_without_the_tool_call_count_too(self, monkeypatch):
+        fake = FakeClaude()
+        real = fake.messages.create
+
+        async def create(**kwargs):
+            message = await real(**kwargs)
+            message.content = []
+            return message
+        monkeypatch.setattr(fake.messages, "create", create)
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        with pytest.raises(HTTPException):
+            await reasoning.analyze_jobs(CVS, _jobs(3))
 
 
 class TestModels:

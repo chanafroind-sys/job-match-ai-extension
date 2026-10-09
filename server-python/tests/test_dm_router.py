@@ -190,3 +190,25 @@ async def test_admins_see_the_model_comparison_over_every_analyzed_job(client, m
 
     monkeypatch.setattr(main_module, "STATIC_ADMIN_KEYS", set())
     assert "compare" not in (await client.get("/api/daily-matches/today", headers=SUB)).json()
+
+
+async def test_the_deck_says_how_many_analyses_actually_came_back(client, monkeypatch):
+    from tests.dm_helpers import FakeClaude
+    fake = FakeClaude()
+    real = fake.messages.create
+    unlucky = []
+
+    async def create(**kwargs):
+        message = await real(**kwargs)
+        job = kwargs["messages"][0]["content"]
+        if not unlucky:
+            unlucky.append(job)
+        if job == unlucky[0]:  # one job's answer is cut off, every time it's asked
+            message.stop_reason = "max_tokens"
+        return message
+    monkeypatch.setattr(fake.messages, "create", create)
+    monkeypatch.setattr(main_module, "_ac", lambda: fake)
+    events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
+    assert events[-1]["analyzed"] == 5 and events[-1]["analyzed_ok"] == 4
+    deck = (await client.get("/api/daily-matches/today", headers=SUB)).json()
+    assert deck["run"]["candidates"] == 5 and deck["run"]["analyzed_ok"] == 4

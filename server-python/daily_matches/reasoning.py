@@ -18,9 +18,13 @@ prefix that is still too short isn't marked, and every call goes at once.
 Output: below MAYBE_SCORE the analysis is never shown, so the rubric asks for a
 short one there. Output tokens are the larger share of a call's cost.
 
-Failure policy: a single failed job is left out of the deck. If half or more
-fail, the cause is systemic (no credit, rate limit, outage), so the whole run
-fails with the mapped user-facing error and is retryable.
+Failure policy: a passing error is retried once, and an answer that can't be
+used (cut off at max_tokens, no tool call, arguments that don't validate) is
+asked for once more, with room to finish if it was cut off. A job that still
+fails is left out of the deck and analyzed again next time.
+Both kinds count: if half or more of the jobs fail, the cause is systemic, so
+the whole run fails with a user-facing error and is retryable, rather than a
+deck built from the few that got through.
 
 A model named openrouter:<id> (admins' comparison only, config.COMPARE_MODEL)
 gets the same rubric, CVs and tool schema through OpenRouter's OpenAI-style
@@ -572,7 +576,10 @@ def _refuses_forced_tool(exc: Exception) -> bool:
     return getattr(exc, "status_code", 0) == 400 and "tool_choice" in str(exc).lower()
 
 
-async def _create(client, model: str, system_blocks: list, tool: dict, job: JobForPrompt):
+async def _create(client, model: str, system_blocks: list, tool: dict, job: JobForPrompt,
+                  max_tokens: int | None = None):
+    max_tokens = max_tokens or config.LLM_MAX_TOKENS
+
     def send(kwargs: dict, max_tokens: int):
         return client.messages.create(model=model, max_tokens=max_tokens, system=system_blocks, tools=[tool],
                                       messages=[{"role": "user", "content": job.text}], **kwargs)
@@ -581,7 +588,7 @@ async def _create(client, model: str, system_blocks: list, tool: dict, job: JobF
     if forced and model in _forced_tool_refused:
         return await send({"tool_choice": {"type": "auto"}}, config.LLM_MAX_TOKENS_AUTO)
     try:
-        return await send(kwargs, config.LLM_MAX_TOKENS)
+        return await send(kwargs, max_tokens)
     except Exception as exc:  # noqa: BLE001
         if not (forced and _refuses_forced_tool(exc)):
             raise
@@ -591,32 +598,51 @@ async def _create(client, model: str, system_blocks: list, tool: dict, job: JobF
 
 
 async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
-                    cvs: list[CvForPrompt], usage: dict, model: str) -> dict | None:
+                    cvs: list[CvForPrompt], usage: dict, model: str, dropped: dict | None = None) -> dict | None:
+    def drop(reason: str) -> None:
+        logger.warning("[DM] %s job %s: no usable answer (%s)", model, job.job_id, reason)
+        if dropped is not None:
+            dropped[reason] = dropped.get(reason, 0) + 1
+
     main = _main()
     last_exc: Exception | None = None
-    for attempt in range(2):
+    errors_seen = 0
+    asked_again = False  # an unusable answer is asked for once more before it counts
+    max_tokens = config.LLM_MAX_TOKENS
+    cost = 0.0
+    while True:
         try:
             async with _sem():
-                message = await _create(client, model, system_blocks, tool, job)
-            for key, value in _usage_of(message).items():
-                usage[key] += value
-            if getattr(message, "stop_reason", "") == "max_tokens":
-                logger.warning("[DM] job %s: output hit max_tokens", job.job_id)
-                return None
-            block = next((b for b in message.content
-                          if getattr(b, "type", "") == "tool_use" and getattr(b, "name", "") == TOOL_NAME), None)
-            if block is None:
-                return None
-            analysis = normalize_analysis(dict(block.input), cvs)
-            if analysis is not None:
-                analysis["_cost_usd"] = config.usage_cost(_usage_of(message), model)  # for the model comparison
-            return analysis
+                message = await _create(client, model, system_blocks, tool, job, max_tokens)
         except Exception as exc:  # noqa: BLE001 — classified below
             last_exc = exc
-            if not main._retryable(exc) or attempt == 1:
-                break
+            errors_seen += 1
+            if not main._retryable(exc) or errors_seen == 2:
+                raise
             await _retry_pause()
-    raise last_exc  # type: ignore[misc]
+            continue
+        for key, value in _usage_of(message).items():
+            usage[key] += value
+        cost += config.usage_cost(_usage_of(message), model)
+        reason, analysis = None, None
+        if getattr(message, "stop_reason", "") == "max_tokens":
+            reason = "max_tokens"
+        else:
+            block = next((b for b in message.content
+                          if getattr(b, "type", "") == "tool_use" and getattr(b, "name", "") == TOOL_NAME), None)
+            analysis = normalize_analysis(dict(block.input), cvs) if block is not None else None
+            reason = "no_tool" if block is None else "invalid" if analysis is None else None
+        if reason is None:
+            analysis["_cost_usd"] = cost  # for the model comparison
+            return analysis
+        if asked_again:
+            drop(reason)
+            return None
+        asked_again = True
+        logger.info("[DM] %s job %s: %s, asking again", model, job.job_id, reason)
+        if reason == "max_tokens":
+            max_tokens = config.LLM_MAX_TOKENS_AUTO  # room to finish
+    raise last_exc  # type: ignore[misc]  # unreachable
 
 
 async def _retry_pause() -> None:
@@ -647,7 +673,13 @@ def openrouter_body(slug: str, system_text: str, tool: dict, job: JobForPrompt) 
 
 
 async def _call_openrouter(http: httpx.AsyncClient, sem: asyncio.Semaphore, slug: str, system_text: str,
-                           tool: dict, job: JobForPrompt, cvs: list[CvForPrompt], usage: dict) -> dict | None:
+                           tool: dict, job: JobForPrompt, cvs: list[CvForPrompt], usage: dict,
+                           dropped: dict | None = None) -> dict | None:
+    def drop(reason: str) -> None:
+        logger.warning("[DM] %s job %s: no usable answer (%s)", slug, job.job_id, reason)
+        if dropped is not None:
+            dropped[reason] = dropped.get(reason, 0) + 1
+
     body = openrouter_body(slug, system_text, tool, job)
     for attempt in range(2):
         try:
@@ -674,18 +706,20 @@ async def _call_openrouter(http: httpx.AsyncClient, sem: asyncio.Semaphore, slug
         call = next((c for c in message.get("tool_calls") or []
                      if (c.get("function") or {}).get("name") == TOOL_NAME), None)
         if call is None:
-            logger.warning("[DM] %s gave no tool call for job %s", slug, job.job_id)
+            drop("no_tool")
             return None
         args = call["function"].get("arguments") or "{}"
         try:
             raw = json.loads(args) if isinstance(args, str) else dict(args)
         except ValueError:
-            logger.warning("[DM] %s returned unparsable arguments for job %s", slug, job.job_id)
+            drop("invalid")
             return None
         analysis = normalize_analysis(raw, cvs)
-        if analysis is not None:
-            analysis["_cost_usd"] = cost
-            analysis["_provider"] = data.get("provider") or ""
+        if analysis is None:
+            drop("invalid")
+            return None
+        analysis["_cost_usd"] = cost
+        analysis["_provider"] = data.get("provider") or ""
         return analysis
     return None
 
@@ -699,20 +733,21 @@ async def _analyze_openrouter(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_usd": 0.0}
     results: dict[str, dict | None] = {}
     errors: list[Exception] = []
+    dropped: dict[str, int] = {}
     sem = asyncio.Semaphore(config.OPENROUTER_CONCURRENCY)
     headers = {"Authorization": f"Bearer {config.OPENROUTER_KEY}", "X-Title": "Job Match AI"}
     async with httpx.AsyncClient(timeout=config.OPENROUTER_TIMEOUT_S, headers=headers,
                                  transport=_openrouter_transport) as http:
         async def run(job: JobForPrompt):
             try:
-                results[job.job_id] = await _call_openrouter(http, sem, slug, system_text, tool, job, cvs, usage)
+                results[job.job_id] = await _call_openrouter(http, sem, slug, system_text, tool, job, cvs, usage, dropped)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[DM] %s job %s failed: %s", slug, job.job_id, type(exc).__name__)
                 errors.append(exc)
                 results[job.job_id] = None
         await asyncio.gather(*(run(job) for job in jobs))
-    if jobs and len(errors) * 2 >= len(jobs):
-        raise RuntimeError(f"{slug}: {len(errors)} of {len(jobs)} calls failed ({type(errors[0]).__name__})")
+    if jobs and (len(errors) + sum(dropped.values())) * 2 >= len(jobs):
+        raise RuntimeError(f"{slug}: {len(errors)} errors and {dropped} unusable answers of {len(jobs)} calls")
     logger.warning("[DM] %s analyzed %d jobs (%d failed) in=%d cached=%d out=%d cost=$%.4f", slug, len(jobs),
                    len(errors), usage["input_tokens"], usage["cache_read_tokens"], usage["output_tokens"],
                    usage["cost_usd"])
@@ -741,12 +776,13 @@ async def analyze_jobs(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
     results: dict[str, dict | None] = {}
     errors: list[Exception] = []
+    dropped: dict[str, int] = {}
     done = 0
 
     async def run(job: JobForPrompt):
         nonlocal done
         try:
-            results[job.job_id] = await _call_one(client, system_blocks, tool, job, cvs, usage, model)
+            results[job.job_id] = await _call_one(client, system_blocks, tool, job, cvs, usage, model, dropped)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[DM] job %s analysis failed: %s: %s", job.job_id, type(exc).__name__, exc)
             errors.append(exc)
@@ -765,10 +801,13 @@ async def analyze_jobs(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
     rest = [asyncio.create_task(run(job)) for job in jobs[1:]]
     await asyncio.gather(first, *rest)
 
-    if errors and len(errors) * 2 >= len(jobs):
-        raise main.ai_error(errors[0])
+    unusable = sum(dropped.values())
     logger.warning(
-        "[DM] %s analyzed %d jobs (%d failed) cacheable=%s in=%d out=%d cache_read=%d cache_write=%d cost=$%.4f",
-        model, len(jobs), len(errors), cacheable, usage["input_tokens"], usage["output_tokens"],
-        usage["cache_read_tokens"], usage["cache_write_tokens"], config.usage_cost(usage, model))
+        "[DM] %s analyzed %d jobs: %d ok, %d errors, %d unusable %s; cacheable=%s in=%d out=%d cache_read=%d "
+        "cache_write=%d cost=$%.4f",
+        model, len(jobs), len(jobs) - len(errors) - unusable, len(errors), unusable, dropped or "", cacheable,
+        usage["input_tokens"], usage["output_tokens"], usage["cache_read_tokens"], usage["cache_write_tokens"],
+        config.usage_cost(usage, model))
+    if jobs and (len(errors) + unusable) * 2 >= len(jobs):
+        raise main.ai_error(errors[0] if errors else RuntimeError(f"{unusable} of {len(jobs)} answers unusable: {dropped}"))
     return results, usage

@@ -157,7 +157,7 @@
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2>
         <div class="lvls" role="group" aria-label="רמת ניסיון">${levels}</div>
         <p class="dm-fine">${state.level ? 'משרות ברמה שלא מתאימה לך לא ייכנסו לחפיסה.' : 'בלי בחירה נבדוק משרות בכל הרמות.'}</p></div>
-      <button type="button" class="link-btn dm-link" data-act="profile">פרטים למילוי טפסים</button>
+      <button type="button" class="btn btn-secondary" data-act="profile">📝 פרטי הגשה ושאלות נפוצות${detailsNote()}</button>
     </div>`;
   }
 
@@ -276,13 +276,21 @@
       </article></div>`;
   }
 
+  function detailsNote() {
+    if (!state.details) return ' · עוד לא מולא';
+    const { done, total } = DM.apply.completeness(state.details);
+    return ` · ${done}/${total}`;
+  }
+
   function deckSummary() {
     const strong = state.cards.filter(c => c.tier !== 'maybe').length;
     const maybe = state.cards.length - strong;
     const parts = [`${strong} התאמות חזקות`];
     if (maybe) parts.push(`${maybe} שווה הצצה`);
     const run = state.run || {};
-    if (run.candidates) parts.push(`מתוך ${fmtInt(run.candidates)} משרות חדשות שנבדקו`);
+    const ok = run.analyzed_ok;
+    if (run.candidates && (ok == null || ok >= run.candidates)) parts.push(`מתוך ${fmtInt(run.candidates)} משרות חדשות שנבדקו`);
+    else if (run.candidates) parts.push(`${fmtInt(ok)} מתוך ${fmtInt(run.candidates)} משרות נותחו; השאר ייבדקו שוב בפעם הבאה`);
     return parts.join(' · ');
   }
 
@@ -309,7 +317,7 @@
     const n = state.cards.length;
     return `<div class="dm" tabindex="-1">
       <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div></div>
-        <div class="dm-nav"><button type="button" class="icon-btn" data-act="library" aria-label="גרסאות קורות החיים" title="גרסאות קורות החיים">📄</button><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
+        <div class="dm-nav"><button type="button" class="icon-btn" data-act="profile" aria-label="פרטי הגשה" title="פרטי הגשה">📝</button><button type="button" class="icon-btn" data-act="library" aria-label="גרסאות קורות החיים" title="גרסאות קורות החיים">📄</button><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
       ${compareBox()}
       <div class="dm-progress" aria-hidden="true">${state.cards.map(() => '<span class="dm-seg"></span>').join('')}</div>
       <div class="dm-track" id="dmTrack" role="region" aria-roledescription="קרוסלה" aria-label="משרות שהותאמו לך">${state.cards.map((c, i) => cardHtml(c, i, n)).join('')}</div>
@@ -348,13 +356,15 @@
             : ['is-info', 'לא צירפנו קובץ: לגרסה הזו אין קובץ שמור. אפשר להוסיף אותו בספריית הקו״ח (📄 בראש החפיסה).'],
         r.filled && r.filled.length ? ['is-done', `מולאו ${r.filled.length} שדות: ${r.filled.join(', ')}`] : null,
         left.length ? ['is-info', `נשארו לך: ${left.join(', ')}. אנחנו לא ממציאים תשובות.`] : null,
+        r.letter === 'typed' ? ['is-done', 'המכתב המקדים מולא'] : r.letter === 'attached' ? ['is-done', 'המכתב המקדים צורף כקובץ טקסט']
+          : r.letter === 'failed' ? ['is-info', 'את המכתב המקדים צריך לצרף בעצמך (אפשר להעתיק אותו למטה).'] : null,
         r.questions ? ['is-info', `ועוד ${r.questions} שאלות של החברה, שעליהן עונים בעצמך.`] : null,
         ['is-you', 'עבר/י על הטופס ולחץ/י Submit בעצמך'],
       ].filter(Boolean);
       box = `<h3 class="ap-h">⚡ מילוי אוטומטי ${at}</h3><ol class="ap-list">${items.map(([cls, t]) => `<li class="ap-i ${cls}">${esc(t)}</li>`).join('')}</ol>`;
     } else if (ap.reason === 'no_profile') {
-      box = `<h3 class="ap-h">📎 המשרה נפתחה בלשונית הסמוכה</h3><p class="ap-p">כדי שנמלא את טופס ההגשה צריך קודם לאשר את הפרטים למילוי טפסים.</p>
-        <button type="button" class="btn btn-secondary" data-act="profile">אישור פרטים למילוי</button>`;
+      box = `<h3 class="ap-h">📎 המשרה נפתחה בלשונית הסמוכה</h3><p class="ap-p">כדי שנמלא את טופס ההגשה צריך קודם למלא את פרטי ההגשה.</p>
+        <button type="button" class="btn btn-secondary" data-act="profile">📝 מילוי פרטי הגשה</button>`;
     } else if (ev.kind === 'no_access') {
       box = `<h3 class="ap-h">🔐 אישור חד-פעמי למילוי באתרי החברות</h3>
         <p class="ap-p">טופס ההגשה נפתח ${at}. כדי שנמלא אותו, וגם את הטפסים באתרי הקריירה של חברות מעכשיו, Chrome יבקש לאשר לתוסף גישה לאתרים. נוגעים רק בטופס שפתחת מהחפיסה, ולעולם לא שולחים אותו.</p>
@@ -373,11 +383,13 @@
         <p class="ap-p">ברגע שטופס ההגשה ייפתח בלשונית הסמוכה, גם אחרי לחיצה על Apply באתר, נמלא אותו אוטומטית.</p>${ev.kind === 'no_form' ? fillNow : ''}`;
     }
     const profile = ap.profile || {};
-    const rows = [['שם מלא', profile.fullName], ['אימייל', profile.email], ['טלפון', profile.phone], ['LinkedIn', profile.linkedin]]
+    const name = [profile.firstName, profile.lastName].filter(Boolean).join(' ') || [profile.firstNameHe, profile.lastNameHe].filter(Boolean).join(' ');
+    const letterText = (profile.coverLetters && profile.coverLetters[ap.cvId]) || profile.coverLetter || '';
+    const rows = [['שם מלא', name], ['אימייל', profile.email], ['טלפון', profile.phone], ['LinkedIn', profile.linkedin], ['מכתב', letterText]]
       .filter(([, v]) => v).map(([k, v]) => `<div class="cp-row"><span class="cp-k">${k}</span><bdi dir="ltr" class="cp-v">${esc(v)}</bdi><button type="button" class="cp-btn" data-act="copy" data-copy="${esc(v)}">העתקה</button></div>`).join('');
     const dl = ap.hasFile ? `<button type="button" class="dl-btn" data-act="download">⬇️ הורדת ${esc(label)}</button>` : '<div class="dm-nofile"><p class="dm-fine">לגרסה הזו אין עדיין קובץ להורדה.</p><button type="button" class="btn btn-secondary" data-act="library">📄 הוספת קובץ בספריית הקו״ח</button></div>';
-    const kit = `<div class="ap-box"><h3 class="ap-h">📎 להגשה ידנית</h3>${dl}${rows ? `<div class="cp">${rows}</div>` : '<button type="button" class="link-btn" data-act="profile">הוספת פרטים להעתקה</button>'}</div>`;
-    return `<div class="dm-body ap">${head}<div class="ap-box">${box}</div>${r && r.attached ? '' : kit}${rule}${done}</div>`;
+    const kit = `<div class="ap-box"><h3 class="ap-h">📎 להגשה ידנית</h3>${dl}${rows ? `<div class="cp">${rows}</div>` : '<button type="button" class="link-btn" data-act="profile">📝 פרטי הגשה</button>'}</div>`;
+    return `<div class="dm-body ap">${head}<div class="ap-box">${box}</div>${r && r.attached && r.letter !== 'failed' ? '' : kit}${rule}${done}</div>`;
   }
 
   function end() {
@@ -457,13 +469,45 @@
       ${back()}</div>`;
   }
 
+  // The application details: everything a form may ask that has one true
+  // answer for this person, in one place, each field saying where it goes.
   function profile() {
     const p = state.profileDraft || {};
-    const field = (key, label, type = 'text', dir = 'ltr') => `<label class="fld"><span>${label}</span><input data-field="${key}" type="${type}" dir="${dir}" value="${esc(p[key] || '')}" maxlength="200"></label>`;
-    return `${topBar('📝 פרטים למילוי טפסים')}<div class="dm-body">
-      <p class="dm-muted">אלה הפרטים שהתוסף ממלא בטופסי ההגשה. הם נשמרים רק בדפדפן שלך. שדה ריק נשאר ריק בטופס.</p>
-      ${field('fullName', 'שם מלא', 'text', 'auto')}${field('email', 'אימייל', 'email')}${field('phone', 'טלפון', 'tel')}
-      ${field('location', 'מיקום נוכחי (עיר)', 'text', 'auto')}${field('company', 'חברה נוכחית', 'text', 'auto')}${field('linkedin', 'LinkedIn', 'url')}
+    const field = (key, label, { type = 'text', dir = 'ltr', hint = '', ph = '' } = {}) =>
+      `<label class="fld"><span>${label}${hint ? ` <em class="fld-hint">${hint}</em>` : ''}</span><input data-field="${key}" type="${type}" dir="${dir}" value="${esc(p[key] || '')}" maxlength="200"${ph ? ` placeholder="${esc(ph)}"` : ''}></label>`;
+    const choice = (key, label, options) => `<label class="fld"><span>${label}</span><select data-field="${key}">${[['', '— לא למלא —'], ...options]
+      .map(([v, t]) => `<option value="${v}"${(p[key] || '') === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>`;
+    const letter = (key, label, value, ph) => `<label class="fld"><span>${label}</span><textarea data-letter="${esc(key)}" rows="6" dir="auto" maxlength="5000" placeholder="${esc(ph)}">${esc(value || '')}</textarea></label>`;
+    const { done, total } = DM.apply.completeness(p);
+    const perVersion = state.cvs.length > 1
+      ? `<details class="pf-more"><summary>מכתב שונה לכל גרסת קורות חיים (${state.cvs.length})</summary>
+        <p class="dm-fine">נשלח עם הגרסה שנבחרה למשרה. ריק: נשתמש במכתב הכללי.</p>
+        ${state.cvs.map(v => letter(v.id, `גרסת ${esc(v.label)}`, (p.coverLetters || {})[v.id], 'ריק: המכתב הכללי')).join('')}</details>` : '';
+    return `${topBar('📝 פרטי הגשה')}<div class="dm-body pf">
+      <div class="pf-intro"><p>מה שממולא כאן נכנס לטופסי ההגשה, <b>רק כשטופס שואל בדיוק את זה</b>. שדה ריק נשאר ריק בטופס: אנחנו לא ממציאים תשובות. הכל נשמר רק בדפדפן שלך.</p>
+        <div class="pf-progress" aria-hidden="true"><span style="width:${Math.round((100 * done) / total)}%"></span></div>
+        <p class="dm-fine">מולאו ${done} מתוך ${total}</p></div>
+      <section class="dm-card-plain pf-sec"><h2 class="dm-h2">👤 פרטים אישיים</h2>
+        <div class="pf-grid">${field('firstName', 'שם פרטי', { dir: 'auto', hint: 'כמו בקורות החיים' })}${field('lastName', 'שם משפחה', { dir: 'auto' })}</div>
+        <div class="pf-grid">${field('firstNameHe', 'שם פרטי בעברית', { dir: 'rtl', hint: 'לטפסים בעברית' })}${field('lastNameHe', 'שם משפחה בעברית', { dir: 'rtl' })}</div>
+        ${field('email', 'אימייל', { type: 'email' })}${field('phone', 'טלפון', { type: 'tel', ph: '050-1234567' })}
+        ${field('city', 'עיר מגורים', { dir: 'auto', ph: 'תל אביב' })}</section>
+      <section class="dm-card-plain pf-sec"><h2 class="dm-h2">🔗 קישורים</h2>
+        ${field('linkedin', 'LinkedIn', { type: 'url', ph: 'https://linkedin.com/in/…' })}${field('github', 'GitHub', { type: 'url', ph: 'https://github.com/…' })}
+        ${field('website', 'אתר אישי / תיק עבודות', { type: 'url' })}</section>
+      <section class="dm-card-plain pf-sec"><h2 class="dm-h2">💼 עבודה</h2>
+        ${field('company', 'חברה נוכחית', { dir: 'auto' })}${field('title', 'תפקיד נוכחי', { dir: 'auto', ph: 'Backend Developer' })}
+        <div class="pf-grid">${field('years', 'שנות ניסיון', { type: 'number', ph: '5' })}${field('noticePeriod', 'זמינות להתחלה', { dir: 'auto', ph: 'חודש' })}</div>
+        ${field('salary', 'ציפיות שכר', { dir: 'auto', hint: 'רשות. נמלא רק כשטופס שואל על שכר במפורש' })}</section>
+      <section class="dm-card-plain pf-sec"><h2 class="dm-h2">❓ שאלות נפוצות</h2>
+        <p class="dm-fine">נענה רק כשאחת האפשרויות בטופס אומרת בדיוק את התשובה שלך. "לא למלא" משאיר את השאלה לך.</p>
+        ${choice('gender', 'מגדר', [['female', 'אישה'], ['male', 'גבר'], ['decline', 'מעדיפ/ה לא לענות']])}
+        ${choice('workAuth', 'מורשה לעבוד בישראל', [['yes', 'כן'], ['no', 'לא']])}
+        ${choice('sponsorship', 'צריך/ה חסות לאשרת עבודה (ויזה)', [['no', 'לא'], ['yes', 'כן']])}
+        ${field('heardFrom', 'איך שמעת על המשרה', { dir: 'auto', ph: 'LinkedIn' })}</section>
+      <section class="dm-card-plain pf-sec"><h2 class="dm-h2">✉️ מכתב מקדים</h2>
+        <p class="dm-fine">נכנס לשדה המכתב המקדים בטופס, או מצורף כקובץ טקסט כשהטופס מבקש קובץ.</p>
+        ${letter('general', 'מכתב כללי', p.coverLetter, 'כמה שורות עליך, על הניסיון שלך ועל מה שמעניין אותך…')}${perVersion}</section>
       ${state.allSites ? '' : `<label class="pf-sites"><input type="checkbox" id="pfSites" checked><span>למלא גם באתרי הקריירה של החברות (רוב המשרות מלינקדאין מובילות לשם). Chrome יבקש אישור פעם אחת.</span></label>`}
       <div class="dm-stack"><button type="button" class="btn btn-primary" data-act="save-profile">${state.pendingApply ? 'שמירה והמשך להגשה' : 'שמירה'}</button>
         ${state.pendingApply ? '<button type="button" class="link-btn" data-act="skip-profile">בלי מילוי, רק לפתוח את המשרה</button>' : ''}${back()}</div></div>`;
@@ -659,6 +703,7 @@
     }
     state.cvs = await DM.cvLibrary.list();
     state.level = await DM.cvLibrary.getLevel();
+    state.details = await DM.apply.getProfile();
     const s = state.status;
     if (!s || s.enabled === false) return setView('disabled');
     if (s.error) return showError({ title: 'לא הצלחנו לאמת את המנוי', message: root.JMA_Auth ? root.JMA_Auth.friendly(s.error) : s.error, retry: 'reload' });
@@ -710,6 +755,7 @@
 
   async function openProfile() {
     state.profileDraft = (await DM.apply.getProfile()) || (await DM.apply.suggestProfile());
+    state.cvs = await DM.cvLibrary.list();
     state.allSites = await DM.apply.hasAllSites();
     state.prevView = state.view === 'profile' ? state.prevView : state.view;
     setView('profile');
@@ -881,9 +927,14 @@
       case 'save-profile': {
         const sites = $('#pfSites');
         const asked = sites && sites.checked ? DM.apply.requestAccess() : null; // inside the click, before any await
-        const draft = {};
+        const draft = { coverLetters: {} };
         document.querySelectorAll('[data-field]').forEach(inp => { draft[inp.dataset.field] = inp.value; });
+        document.querySelectorAll('[data-letter]').forEach(box => {
+          if (box.dataset.letter === 'general') draft.coverLetter = box.value;
+          else draft.coverLetters[box.dataset.letter] = box.value;
+        });
         await DM.apply.saveProfile(draft);
+        state.details = await DM.apply.getProfile();
         if (asked) state.allSites = await asked;
         if (state.pendingApply) {
           state.pendingApply = false;

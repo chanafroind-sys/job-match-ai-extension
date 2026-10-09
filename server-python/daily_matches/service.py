@@ -416,7 +416,7 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
                 await (consume_trial if strong + maybe else release_trial)(session, reserved_install)
             await session.commit()
             emit({"type": "done", "run_id": run_id, "count": strong + maybe, "strong": strong,
-                  "maybe": maybe, "analyzed": len(candidates), "fresh": fresh_total})
+                  "maybe": maybe, "analyzed": len(candidates), "analyzed_ok": len(ranked), "fresh": fresh_total})
 
         except DmError as exc:
             await _mark_failed(session, run_id, reserved_install, exc.code)

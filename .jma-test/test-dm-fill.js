@@ -42,8 +42,18 @@ function page(html, url = 'https://jobs.example-ats.com/acme/1/apply') {
   return window;
 }
 
-const PROFILE = { fullName: 'Noa Bat-Sheva Levi', email: 'noa@example.com', phone: '050-123-4567',
-  location: '', company: 'Lumen', linkedin: 'https://linkedin.com/in/noa' };
+const PROFILE = { firstName: 'Noa Bat-Sheva', lastName: 'Levi', email: 'noa@example.com', phone: '050-123-4567',
+  city: '', company: 'Lumen', linkedin: 'https://linkedin.com/in/noa' };
+// The real waits are for real pages; here a page answers at once.
+const FAST = { timing: { stick: 20, confirm: 20, retry: 20 } };
+// Pages that show a chosen file's name, as React upload widgets do.
+function showsFiles(window) {
+  window.document.querySelectorAll('input[type="file"]').forEach(input => input.addEventListener('change', () => {
+    const span = window.document.createElement('span');
+    span.textContent = input.files[0] ? input.files[0].name : '';
+    input.insertAdjacentElement('afterend', span);
+  }));
+}
 const FILE = { name: 'Noa_Levi_CV.pdf', type: 'application/pdf', b64: Buffer.from('%PDF-1.4 cv').toString('base64') };
 
 // Counts every way a form could be sent, so "never submits" is checked, not assumed.
@@ -71,13 +81,13 @@ function guard(window) {
   let sends = guard(w);
   const inputs = [];
   w.document.querySelectorAll('input').forEach(i => i.addEventListener('input', () => inputs.push(i.name)));
-  let r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  let r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   const val = (n) => w.document.querySelector(`[name="${n}"]`).value;
   ok('Lever: fills the person\'s own fields', val('name') === 'Noa Bat-Sheva Levi' && val('email') === 'noa@example.com' &&
      val('phone') === '050-123-4567' && val('urls[LinkedIn]') === 'https://linkedin.com/in/noa', JSON.stringify(r));
   ok('fires input events so the page sees the values', ['name', 'email', 'phone'].every(n => inputs.includes(n)));
   ok('never overwrites what the user already typed', val('org') === 'Already typed Ltd' && r.filled.includes('חברה נוכחית'));
-  ok('a field with no data stays empty and is reported', val('location') === '' && r.left.includes('מיקום'));
+  ok('a field with no data stays empty and is reported', val('location') === '' && r.left.includes('עיר'));
   ok('never answers free-text questions', w.document.querySelector('[name="comments"]').value === '');
   ok('attaches the CV to the resume input', r.attached && w.document.querySelector('[name="resume"]').files[0].name === 'Noa_Levi_CV.pdf');
   ok('and says so next to it when the page won\'t', !!w.document.getElementById('jma-dm-attached-note'));
@@ -110,7 +120,7 @@ function guard(window) {
   const events = [];
   first.addEventListener('input', () => events.push('input'));
   first.addEventListener('focusout', () => events.push('focusout'));
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   const gv = (id) => w.document.getElementById(id).value;
   ok('Greenhouse: splits the name and fills phone and LinkedIn', gv('first_name') === 'Noa Bat-Sheva' && gv('last_name') === 'Levi' &&
      gv('phone') === '050-123-4567' && gv('question_1') === 'https://linkedin.com/in/noa', JSON.stringify(r));
@@ -141,7 +151,7 @@ function guard(window) {
       </div>
     </div>`, 'https://monday.com/careers/1');
   sends = guard(w);
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   const d = w.document;
   ok('Ashby: fills the visible form', d.getElementById('_systemfield_name').value === 'Noa Bat-Sheva Levi' &&
      d.getElementById('_systemfield_email').value === 'noa@example.com' && d.getElementById('u-phone').value === '050-123-4567',
@@ -168,7 +178,7 @@ function guard(window) {
   const em = shadowField('personal', '<label for="email-input">Email</label><input type="email" id="email-input" autocomplete="email">');
   const cf = shadowField('personal', '<label for="confirm-email-input">Confirm your email</label><input type="email" id="confirm-email-input" autocomplete="email">');
   const cvRoot = shadowField('cv', '<oc-resume-upload><div>Choose a file or drop it here <input type="file" id="f1"></div></oc-resume-upload>');
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   ok('SmartRecruiters: reads and fills fields inside shadow roots', fn.getElementById('first-name-input').value === 'Noa Bat-Sheva' &&
      em.getElementById('email-input').value === 'noa@example.com' && cf.getElementById('confirm-email-input').value === 'noa@example.com',
      JSON.stringify(r));
@@ -186,7 +196,7 @@ function guard(window) {
       <label for="portfolio">Portfolio</label><input id="portfolio" name="portfolio" type="file">
       <label for="inputNote">Personal note</label><textarea id="inputNote" name="comment"></textarea>
       <button type="submit">Submit application</button></form>`, 'https://www.comeet.co/jobs/73.00B/46.076/apply');
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   const cd = w.document;
   ok('Comeet: name, email, phone and the CV, nothing else', cd.getElementById('inputLastName').value === 'Levi' &&
      cd.getElementById('inputTel').value === '050-123-4567' && cd.getElementById('cv').files.length === 1 &&
@@ -202,7 +212,7 @@ function guard(window) {
       <label for="CA_2">*Linkedin</label><textarea id="CA_2"></textarea>
       <label for="summary">Summary (Optional)</label><textarea id="summary"></textarea></form>`,
     'https://apply.workable.com/acme/j/1/apply/');
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   ok('Workable: LinkedIn asked in a text box is filled; other text boxes are questions',
      w.document.getElementById('CA_2').value === 'https://linkedin.com/in/noa' && w.document.getElementById('CA_1').value === '' &&
      w.document.getElementById('summary').value === '', JSON.stringify(r));
@@ -213,21 +223,154 @@ function guard(window) {
       <label for="c">דוא"ל</label><input id="c"><label for="d">טלפון נייד</label><input id="d">
       <label for="e">שם הממליץ</label><input id="e">
       <label for="f">קורות חיים</label><input id="f" type="file"></form>`, 'https://careers.acme.co.il/job/1');
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   const hv = (id) => w.document.getElementById(id).value;
   ok('a Hebrew form is read by its Hebrew labels', hv('a') === 'Noa Bat-Sheva' && hv('b') === 'Levi' && hv('c') === 'noa@example.com' &&
      hv('d') === '050-123-4567' && hv('e') === '' && w.document.getElementById('f').files.length === 1, JSON.stringify(r));
 
+  // ── the CV: confirmed by the page, retried once, never claimed ───────────────
+  const GH_UPLOAD = `<form id="application-form">
+      <label for="first_name">First Name*</label><input id="first_name" type="text">
+      <label for="email">Email*</label><input id="email" type="email">
+      <label for="resume">Attach</label><input id="resume" type="file" style="display:none">
+      <button type="submit">Submit application</button></form>`;
+  w = page(GH_UPLOAD, 'https://job-boards.greenhouse.io/embed/job_app?for=acme&token=1');
+  showsFiles(w);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
+  ok('a page that shows the file is a CV attached, with no note of ours', r.attached &&
+     !w.document.getElementById('jma-dm-attached-note'));
+
+  w = page(GH_UPLOAD, 'https://job-boards.greenhouse.io/embed/job_app?for=acme&token=1');
+  let changes = 0;
+  w.document.getElementById('resume').addEventListener('change', () => { // its scripts wake up after the first try
+    if (++changes < 2) return;
+    const span = w.document.createElement('span');
+    span.textContent = w.document.getElementById('resume').files[0].name;
+    w.document.body.appendChild(span);
+  });
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
+  ok('a page that wasn\'t ready gets the file again', r.attached && changes === 2);
+
+  w = page(GH_UPLOAD, 'https://job-boards.greenhouse.io/embed/job_app?for=acme&token=1');
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
+  ok('a page that never takes it: reported as left, never "attached"', !r.attached && r.left.includes('קורות חיים') &&
+     !w.document.getElementById('jma-dm-attached-note'));
+
+  // ── the person's own answers in lists and option buttons ─────────────────────
+  const LEVER_QUESTIONS = `<form method="post" enctype="multipart/form-data" action="/apply">
+      <label>Resume/CV <input type="file" name="resume"></label>
+      <label>Full name <input name="name"></label><label>Email <input name="email"></label>
+      <li class="application-question"><div>Are you currently authorized to work in the country in which you are applying? ✱</div>
+        <ul><li><label><input type="radio" name="cards[a][field0]" value="Yes"><span>Yes</span></label></li>
+            <li><label><input type="radio" name="cards[a][field0]" value="No"><span>No</span></label></li></ul></li>
+      <li class="application-question"><div>Does your current authorization require renewal or sponsorship in the future? ✱</div>
+        <ul><li><label><input type="radio" name="cards[a][field1]" value="Yes"><span>Yes</span></label></li>
+            <li><label><input type="radio" name="cards[a][field1]" value="No"><span>No</span></label></li></ul></li>
+      <li class="application-question"><div>Are you a current employee? ✱</div>
+        <select name="cards[b][field0]"><option value="">Select...</option><option>No</option><option>Yes</option></select></li>
+      <label>Gender <select name="eeo[gender]"><option value="">Select ...</option><option value="Male">Male</option>
+        <option value="Female">Female</option><option value="Decline to self-identify">Decline to self-identify</option></select></label>
+      <label>Veteran status <select name="eeo[veteran]"><option value="">Select ...</option><option>I am a veteran</option>
+        <option>I am not a veteran</option></select></label>
+      <label>How did you hear about us? <select name="cards[c][field0]"><option value="">Select...</option>
+        <option>LinkedIn</option><option>Company website</option><option>Friend</option></select></label>
+    </form>`;
+  const ANSWERS = { ...PROFILE, gender: 'female', workAuth: 'yes', sponsorship: 'no', heardFrom: 'LinkedIn' };
+  w = page(LEVER_QUESTIONS, 'https://jobs.lever.co/acme/1/apply');
+  sends = guard(w);
+  r = await w.JMA_DM.apply.formFill(ANSWERS, FILE, FAST);
+  const q = (sel) => w.document.querySelector(sel);
+  const picked = (name) => (w.document.querySelector(`input[name="${name}"]:checked`) || {}).value;
+  ok('gender, work authorization and sponsorship come from the saved answers', q('[name="eeo[gender]"]').value === 'Female' &&
+     picked('cards[a][field0]') === 'Yes' && picked('cards[a][field1]') === 'No', JSON.stringify(r));
+  ok('"how did you hear" picks the person\'s own wording', q('[name="cards[c][field0]"]').value === 'LinkedIn');
+  ok('questions with no saved answer stay the human\'s', q('[name="cards[b][field0]"]').value === '' &&
+     q('[name="eeo[veteran]"]').value === '');
+  ok('and are reported as filled only when picked', ['מגדר', 'אישור עבודה', 'אשרה', 'איך שמעת'].every(l => r.filled.includes(l)) &&
+     sends() === 0);
+
+  w = page(LEVER_QUESTIONS, 'https://jobs.lever.co/acme/1/apply');
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
+  ok('without saved answers nothing is picked, and nothing is reported missing',
+     w.document.querySelector('[name="eeo[gender]"]').value === '' && !w.document.querySelector('input[type="radio"]:checked') &&
+     !r.left.includes('מגדר'));
+
+  w = page(`<form><label>Email <input name="email" type="email"></label><label>Resume <input type="file" name="resume"></label>
+    <label>Gender <select name="g"><option value="">Select</option><option>Male</option><option>Female (cis)</option><option>Female (trans)</option></select></label>
+    <label>Are you authorized to work in Israel without visa sponsorship? <select name="w"><option value="">-</option><option>Yes</option><option>No</option></select></label></form>`);
+  r = await w.JMA_DM.apply.formFill(ANSWERS, FILE, FAST);
+  ok('two matching options, or a question that mixes two of ours: left alone', w.document.querySelector('[name="g"]').value === '' &&
+     w.document.querySelector('[name="w"]').value === '');
+
+  w = page(`<form><label>Email <input name="email" type="email"></label><label>Resume <input type="file" name="resume"></label>
+    <label>Gender <select name="g"><option value="">Select</option><option selected>Male</option><option>Female</option></select></label></form>`);
+  r = await w.JMA_DM.apply.formFill(ANSWERS, FILE, FAST);
+  ok('an answer the user already picked is kept', w.document.querySelector('[name="g"]').value === 'Male');
+
+  // ── more of the person's details ────────────────────────────────────────────
+  const MORE = { ...PROFILE, firstNameHe: 'נועה', lastNameHe: 'לוי', github: 'https://github.com/noa', website: 'https://noa.dev',
+    title: 'Backend Developer', years: '6', salary: '', city: 'Tel Aviv',
+    coverLetter: 'Hello, I am Noa. I build backend systems in Python and Kafka.' };
+  w = page(`<form>
+      <label for="fn">First name</label><input id="fn"><label for="ln">Last name</label><input id="ln">
+      <label for="em">Email</label><input id="em" type="email">
+      <label for="gh">GitHub URL</label><input id="gh"><label for="ws">Portfolio</label><input id="ws">
+      <label for="tt">Current title</label><input id="tt"><label for="yr">Years of experience</label><input id="yr" type="number">
+      <label for="yp">How many years of experience do you have with Go?</label><input id="yp" type="number">
+      <label for="sl">Salary expectations</label><input id="sl">
+      <label for="cl">Cover Letter</label><textarea id="cl"></textarea>
+      <label for="why">Why do you want to join us?</label><textarea id="why"></textarea>
+      <label for="cv">Resume</label><input id="cv" type="file"></form>`);
+  showsFiles(w);
+  r = await w.JMA_DM.apply.formFill(MORE, FILE, FAST);
+  const v = (id) => w.document.getElementById(id).value;
+  ok('links, title and total years go where they are asked', v('gh') === 'https://github.com/noa' && v('ws') === 'https://noa.dev' &&
+     v('tt') === 'Backend Developer' && v('yr') === '6', JSON.stringify(r));
+  ok('a years-with-one-technology question is the human\'s', v('yp') === '');
+  ok('no saved salary: the salary field stays empty and is not "missing"', v('sl') === '' && !r.left.includes('ציפיות שכר'));
+  ok('the cover letter goes in its box; other text boxes stay the human\'s', v('cl') === MORE.coverLetter && v('why') === '' &&
+     r.letter === 'typed');
+
+  w = page(`<form dir="rtl">
+      <label for="a">שם פרטי</label><input id="a"><label for="b">שם משפחה</label><input id="b">
+      <label for="c">דוא"ל</label><input id="c"><label for="f">קורות חיים</label><input id="f" type="file"></form>`);
+  r = await w.JMA_DM.apply.formFill(MORE, FILE, FAST);
+  ok('a Hebrew form gets the Hebrew name when there is one', w.document.getElementById('a').value === 'נועה' &&
+     w.document.getElementById('b').value === 'לוי');
+
+  w = page(`<form><label for="e">Email</label><input id="e" type="email">
+      <div>Resume/CV <input id="cv" type="file"></div>
+      <div>Cover Letter <input id="letter" type="file" accept=".pdf,.doc,.docx,.txt,.rtf"></div></form>`);
+  showsFiles(w);
+  r = await w.JMA_DM.apply.formFill(MORE, FILE, FAST);
+  const letterFile = w.document.getElementById('letter').files[0];
+  ok('a form that wants the letter as a file gets it as a text file', r.letter === 'attached' && letterFile &&
+     letterFile.name === 'Noa_Bat-Sheva_Levi_Cover_Letter.txt' && letterFile.type === 'text/plain' &&
+     w.document.getElementById('cv').files[0].name === 'Noa_Levi_CV.pdf');
+
+  w = page(`<form><label for="e">Email</label><input id="e" type="email"><div>Resume <input id="cv" type="file"></div>
+      <div>Cover Letter <input id="letter" type="file" accept=".pdf"></div></form>`);
+  r = await w.JMA_DM.apply.formFill(MORE, FILE, FAST);
+  ok('never a text file where the form takes only PDF', !w.document.getElementById('letter').files.length && !r.letter);
+
+  // ── the details model ───────────────────────────────────────────────────────
+  const A = w.JMA_DM.apply;
+  ok('details saved as one full name are read as first and last', A.forForm({ fullName: 'Noa Levi', location: 'Haifa' }).firstName === 'Noa' &&
+     A.forForm({ fullName: 'נועה לוי' }).firstNameHe === 'נועה' && A.forForm({ location: 'Haifa' }).city === 'Haifa');
+  ok('each CV version can have its own cover letter, else the general one',
+     A.forForm({ coverLetter: 'general', coverLetters: { be: 'backend' } }, 'be').coverLetter === 'backend' &&
+     A.forForm({ coverLetter: 'general', coverLetters: { be: 'backend' } }, 'data').coverLetter === 'general');
+
   // ── what is never filled ────────────────────────────────────────────────────
   w = page(`<form><label for="e">Email</label><input id="e" type="email"><label for="n">Name</label><input id="n">
     <button type="submit">Request a demo</button></form>`, 'https://www.acme.com/careers');
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   ok('a form without a place for a CV (a demo request) is not an application: untouched',
      r.found === false && w.document.getElementById('e').value === '' && w.document.getElementById('n').value === '');
 
   w = page(`<form><label for="e">Email</label><input id="e" type="email"><label for="p">Password</label><input id="p" type="password">
     <label for="cv">Resume</label><input id="cv" type="file"></form>`, 'https://acme.wd3.myworkdayjobs.com/en-US/careers/apply');
-  r = await w.JMA_DM.apply.formFill(PROFILE, FILE);
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   ok('a sign-in or sign-up page is never filled: no passwords, no accounts',
      r.blocked === 'password' && w.document.getElementById('e').value === '' && w.document.getElementById('cv').files.length === 0);
 
@@ -240,7 +383,8 @@ function guard(window) {
     'Noa Levi\nTel Aviv | noa.levi@example.com | +972 50-123-4567\nlinkedin.com/in/noa-levi\nExperience\n• Python');
   ok('profile suggestions come from the CV', derived.fullName === 'Noa Levi' && derived.email === 'noa.levi@example.com' &&
      derived.phone === '+972 50-123-4567' && derived.linkedin === 'https://linkedin.com/in/noa-levi', JSON.stringify(derived));
-  ok('location and company are never guessed', derived.location === '' && derived.company === '');
+  ok('city and company are never guessed', derived.city === '' && derived.company === '' && derived.firstName === 'Noa' &&
+     derived.lastName === 'Levi');
 
   // ── the hard rule, enforced on the source ──────────────────────────────────
   const FORBIDDEN = [/\.submit\s*\(/, /requestSubmit/, /new\s+(?:Submit)?Event\(\s*['"]submit/, /\.click\s*\(\s*\)/];

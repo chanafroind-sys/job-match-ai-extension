@@ -77,6 +77,19 @@ button { font-family: inherit; }
 .fld { display: grid; gap: 4px; font-size: 12.5px; color: var(--text-secondary); }
 .fld input { font: inherit; font-size: 13px; padding: 9px 11px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); }
 .fld input:focus { border-color: var(--accent); box-shadow: var(--focus-ring); outline: none; }
+.fld select, .fld textarea { font: inherit; font-size: 13px; padding: 9px 11px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); }
+.fld textarea { resize: vertical; line-height: 1.55; min-height: 96px; }
+.fld select:focus, .fld textarea:focus { border-color: var(--accent); box-shadow: var(--focus-ring); outline: none; }
+.fld-hint { font-style: normal; color: var(--text-dim); font-size: 11px; }
+.pf { gap: 12px; }
+.pf-intro { font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); background: var(--bg-accent-soft); border: 1px solid rgba(99,102,241,0.2); border-radius: var(--border-radius); padding: 10px 12px; display: grid; gap: 6px; }
+.pf-progress { height: 6px; border-radius: 6px; background: var(--border); overflow: hidden; }
+.pf-progress span { display: block; height: 100%; background: var(--accent); border-radius: 6px; }
+.pf-sec { gap: 10px; }
+.pf-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: end; }
+.pf .fld, .pf .fld input, .pf .fld select, .pf .fld textarea { min-width: 0; width: 100%; box-sizing: border-box; }
+.pf-more summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--accent-dark); margin-bottom: 6px; }
+.pf-more { display: grid; gap: 8px; }
 .lib-list { display: grid; gap: 8px; }
 .lib-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 8px; align-items: center; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
 .lib-label { font: inherit; font-weight: 600; font-size: 13px; border: 1px solid transparent; border-radius: 8px; padding: 4px 6px; background: transparent; color: var(--text-primary); min-width: 0; }
