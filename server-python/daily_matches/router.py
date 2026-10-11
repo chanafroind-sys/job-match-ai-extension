@@ -213,8 +213,17 @@ async def today(request: Request, latest: bool = False,
         # analysis failed has none, and comes back next time.
         out["run"]["analyzed_ok"] = (await db.execute(
             select(func.count()).select_from(DmRunResult).where(DmRunResult.run_id == run_row.id))).scalar()
+        every = (await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id)
+                                  .order_by(DmRunResult.rank))).scalars().all()
+        # The jobs analyzed and left out, with the main reason for each: so a
+        # thin deck explains itself, and a too-strict score can be spotted.
+        out["skipped"] = [{
+            "id": r.id, "score": r.match_score,
+            "title": (r.job_snapshot or {}).get("title"), "company": (r.job_snapshot or {}).get("company"),
+            "url": (r.job_snapshot or {}).get("apply_url") or (r.job_snapshot or {}).get("url"),
+            "reason": service.main_reason(r.analysis),
+        } for r in every if (r.tier or "") == "hidden"]
         if access.is_admin:  # the model comparison, over every analyzed job (shown or not)
-            every = (await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id))).scalars().all()
             summary = service.compare_summary(list(every), run_row)
             if summary:
                 out["compare"] = summary

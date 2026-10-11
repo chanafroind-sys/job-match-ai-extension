@@ -350,7 +350,8 @@ The rubric (≈4.3K tokens) teaches the *judgment*: what counts as primary, what
 
 | Lever | Effect |
 |---|---|
-| **Prompt caching by design** | Rubric + tool schema + CV versions form one cached prefix (Haiku 5.5 caches from 512 tokens). The first call writes the cache; the other 39 start ~1.2s later and pay a tenth of the input price for the shared prefix. |
+| **Prompt caching by design** | Rubric + tool schema + CV versions form one cached prefix (~15K tokens; Haiku 5.5 caches from 512). The first call writes the cache, and the others wait for its answer before they go, then pay a tenth of the input price for the prefix. A fixed 1.2s head start was enough for Haiku 4.5, not for Haiku 5.5: 28 of 48 calls wrote the cache instead of reading it, and writes were 68% of a run's cost. |
+| **A deck that explains itself** | Every analyzed job that stays out is listed under the deck ("🔎 עוד N נבדקו ולא נכנסו") with its main reason — the cap that held it down or its biggest deduction — and the reasons counted on top. A posting judged on fewer than three requirements, like one with only responsibilities and an Advantages list, is capped at 65: it doesn't say enough to call it a strong match. |
 | **Short answers for hidden jobs** | When the primary skill is missing or a cap ≤ 55 applies, the Hebrew prose is cut to a line — output tokens are the expensive ones. |
 | **Filters before tokens** | Freshness, never-twice, focus and level are SQL, not LLM calls. |
 | **Free infrastructure** | GitHub Actions on a public repo; Voyage's 200M free tokens cover years of incremental embedding; no paid data source. |

@@ -12,7 +12,8 @@ identical across the run's calls. Haiku 5.5 caches prefixes of 512+ tokens
 (Haiku 4.5 needed 4,096, which is why the rubric's worked examples are so many;
 they stay, for the quality they bring). A cache entry is readable only after
 the first response has started, so call 1 goes out alone and the rest follow
-WARMUP_DELAY_S later, each paying a tenth of the input price for the prefix. A
+once it has answered (WARMUP_DELAY_S at most), each paying a tenth of the input
+price for the prefix. A
 prefix that is still too short isn't marked, and every call goes at once.
 
 Output: below MAYBE_SCORE the analysis is never shown, so the rubric asks for a
@@ -59,6 +60,10 @@ OFFSET_POINTS, OFFSETS_MAX = 5, 10
 CAPS = {"level_unproven": 65, "no_people_leadership": 55, "overqualified": 55, "hard_blocker": 40,
         "domain_mismatch": 55, "not_a_job": 0}
 NO_REQUIREMENTS_CAP = 65  # a posting that states no must requirement can't be judged as a strong match
+# Nor one judged on fewer than this many requirements: a posting with no
+# requirements list once came back with a responsibility as its one "must",
+# met, its whole Advantages list left out, and a score of 100.
+FEW_REQUIREMENTS = 3
 # One server-wide cap on in-flight calls, so a morning burst of runs queues
 # here instead of tripping the account's rate limit. Keyed by event loop
 # because an asyncio.Semaphore can't be shared across loops.
@@ -131,11 +136,16 @@ without labels is must.
 importance "nice": "nice to have", "an advantage", "preferred", "bonus", \
 "plus". In Hebrew: "יתרון", "יתרון משמעותי".
 Not requirements at all: benefits, the company story, equal-opportunity \
-text, and responsibilities ("you will build...") unless the same skill also \
-appears as a requirement. Years of experience are not a requirement item: \
-they go in years_required.
-List every must requirement (up to 10 items in all), then the most important \
-nice ones. Never leave out a must requirement because the candidate lacks it. \
+text, and responsibilities ("you will build...", "Key Responsibilities", \
+"תחומי אחריות") unless the same skill also appears as a requirement. This \
+holds when the posting has no requirements list at all: then it has no must \
+items, and its advantages are its nice items. Never turn a responsibility into \
+a must. Years of experience are not a requirement item: they go in \
+years_required.
+List every must requirement (up to 10 items in all), then the nice ones, the \
+most important first, until the list holds 10 or the posting has no more. \
+Never leave out a must requirement because the candidate lacks it, and never \
+leave out the advantages: what the candidate lacks there is part of the fit. \
 Split a line that names separately central skills ("Python and Kafka") into \
 separate items; keep alternatives ("Python or Java") as one item.
 
@@ -230,8 +240,9 @@ core 20 / 8, supporting 12 / 5. A nice item costs: core 6 / 2, supporting \
 in all, and never more than the nice items cost. Then the lowest applying \
 cap limits the result: level_unproven 65, no_people_leadership 55, \
 overqualified 55, hard_blocker 40, domain_mismatch 55, not_a_job 0. A \
-posting that lists no must requirement is capped at 65. A job shows as a \
-match from 70, and as worth a look from 60.
+posting that lists no must requirement, or fewer than three requirements in \
+all, is capped at 65: it doesn't say enough to call it a strong match. A job \
+shows as a match from 70, and as worth a look from 60.
 So classify honestly. An item marked partial to be kind, or supporting to \
 soften a gap, puts in front of the candidate a job that will waste their \
 application.
@@ -480,6 +491,8 @@ def score_of(reqs: list[dict], years_required: int, years_relevant: int, caps: l
     applying = [(CAPS[c], c) for c in set(caps) if c in CAPS]
     if not any(r["importance"] == "must" for r in reqs):
         applying.append((NO_REQUIREMENTS_CAP, "no_requirements"))
+    elif len(reqs) < FEW_REQUIREMENTS:
+        applying.append((NO_REQUIREMENTS_CAP, "few_requirements"))
     cap = None
     if applying:
         value, name = min(applying)

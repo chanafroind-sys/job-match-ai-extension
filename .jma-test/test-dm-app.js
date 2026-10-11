@@ -396,6 +396,27 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
     today: { run: { id: 3, status: 'done', candidates: 40, analyzed_ok: 31 }, cards: tiered, entitlement: 'subscription' } });
   ok('when some analyses failed, the header says how many really came back', ctx.doc.querySelector('.dm-date').textContent.includes('31 מתוך 40') &&
      ctx.doc.querySelector('.dm-date').textContent.includes('ייבדקו שוב'));
+
+  // ── the jobs analyzed and left out, and why ───────────────────────────────────
+  const skipped = [
+    { id: 21, score: 41, title: 'Senior Go Engineer', company: 'Acme', url: 'https://jobs.lever.co/acme/21',
+      reason: { kind: 'requirement', text: 'Go', importance: 'must', status: 'missing', points: -35 } },
+    { id: 22, score: 58, title: 'Backend Developer', company: 'Beta', url: 'https://jobs.lever.co/beta/22',
+      reason: { kind: 'years', required: 5, relevant: 2, points: -18 } },
+    { id: 23, score: 55, title: 'Team Lead', company: 'Gamma', url: '', reason: { kind: 'cap', name: 'no_people_leadership', value: 55 } },
+  ];
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 2 })], storage: { cvText: CV },
+    today: { run: { id: 3, status: 'done', candidates: 48, analyzed_ok: 48 }, cards: tiered, entitlement: 'subscription', skipped } });
+  const skipLink = ctx.doc.querySelector('[data-act="skipped"]');
+  ok('the deck says how many analyzed jobs were left out', skipLink && skipLink.textContent.includes('עוד 3 נבדקו ולא נכנסו'));
+  skipLink.click();
+  await tick();
+  const skipRows = [...ctx.doc.querySelectorAll('.skip-row')];
+  ok('and lists them, closest first, each with its main reason', ctx.app.state.view === 'skipped' && skipRows.length === 3 &&
+     skipRows[0].textContent.includes('58') && skipRows[0].textContent.includes('נדרשות 5 שנות ניסיון, בקורות החיים 2') &&
+     skipRows[2].textContent.includes('חסר: Go (חובה)') && skipRows[1].textContent.includes('ניהול אנשים'),
+     skipRows.map(r => r.textContent.replace(/\s+/g, ' ')).join(' | '));
+  ok('with the reasons counted on top', [...ctx.doc.querySelectorAll('.skip-groups .chip')].map(c => c.textContent).join(' ').includes('שנות ניסיון · 1'));
   ok('no comparison box for anyone but admins', !ctx.doc.querySelector('.dm-cmp-sum'));
 
   // ── the model comparison, for admins ──────────────────────────────────────────

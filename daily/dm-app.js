@@ -79,7 +79,7 @@
   function render() {
     const views = {
       loading, disabled, error: errorView, nocv, ready, building, deck, quiet, apply: applyView,
-      end, saved: savedView, paywall, library, profile,
+      end, saved: savedView, skipped: skippedView, paywall, library, profile,
     };
     app().innerHTML = (views[state.view] || loading)();
     if (state.view === 'deck') afterDeckRender();
@@ -207,6 +207,7 @@
     level_unproven: 'תפקיד בכיר בלי הוכחה לניסיון ברמה הזו', no_people_leadership: 'תפקיד ניהולי בלי ניסיון בניהול אנשים',
     overqualified: 'תפקיד ג׳וניור לניסיון בכיר', hard_blocker: 'דרישת סף שלא מופיעה בקורות החיים',
     domain_mismatch: 'תחום שונה מהניסיון שלך', not_a_job: 'זו לא מודעת דרושים', no_requirements: 'המודעה לא מפרטת דרישות',
+    few_requirements: 'המודעה מפרטת מעט מדי דרישות',
   };
   const OFFSET_HE = { strong_academics: 'השכלה חזקה', adjacent_skills: 'כישורים קרובים', relevant_projects: 'פרויקטים רלוונטיים' };
 
@@ -316,7 +317,7 @@
   function deck() {
     const n = state.cards.length;
     return `<div class="dm" tabindex="-1">
-      <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div></div>
+      <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div>${skippedLink()}</div>
         <div class="dm-nav"><button type="button" class="icon-btn" data-act="profile" aria-label="פרטי הגשה" title="פרטי הגשה">📝</button><button type="button" class="icon-btn" data-act="library" aria-label="גרסאות קורות החיים" title="גרסאות קורות החיים">📄</button><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
       ${compareBox()}
       <div class="dm-progress" aria-hidden="true">${state.cards.map(() => '<span class="dm-seg"></span>').join('')}</div>
@@ -400,6 +401,7 @@
       <p class="en-next">${state.readOnly ? 'זו הייתה החפיסה החינמית. מנויים מקבלים חפיסה חדשה בכל יום.' : 'החפיסה הבאה תהיה זמינה מחר, מחצות (שעון ישראל).'}</p>
       <div class="dm-card-plain"><h2 class="dm-h2">🔖 נשמרו היום</h2>${saved.length ? saved.map(c => `<div class="en-row"><bdi dir="ltr">${esc(c.job.title)}</bdi><span>${c.match_score == null ? '' : c.match_score}</span></div>`).join('') : '<p class="dm-muted">עוד לא שמרת משרות.</p>'}
         <button type="button" class="link-btn" data-act="saved">כל המשרות השמורות</button></div>
+      ${skippedLink()}
       ${back('restart-deck', 'חזרה לחפיסה')}
       ${state.readOnly ? '<button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי</button>' : ''}</div>`;
   }
@@ -414,12 +416,42 @@
       : ['אין משרות חדשות בתחומים שלך', 'מאז החפיסה הקודמת לא נכנסו למאגר משרות חדשות בתחומים שבחרת.'];
     return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
       <div class="dm-card-plain"><div class="dm-big" aria-hidden="true">🌤️</div><h2 class="dm-h2">${head[0]}</h2><p class="dm-muted">${head[1]}</p>
-        <p class="dm-fine">המאגר מתעדכן כל בוקר ב-6:00. אפשר גם להרחיב את התחומים או להוסיף גרסת קו״ח.</p></div>
+        <p class="dm-fine">המאגר מתעדכן כל בוקר ב-6:00. אפשר גם להרחיב את התחומים או להוסיף גרסת קו״ח.</p>${skippedLink()}</div>
       <div class="dm-stack"><button type="button" class="btn ${analyzed ? 'btn-primary' : 'btn-secondary'}" data-act="library">עריכת התחומים והגרסאות</button>
         ${analyzed ? '' : '<button type="button" class="btn btn-primary" data-act="build">חיפוש מחדש</button>'}
         ${analyzed && isAdmin() ? '<button type="button" class="btn btn-secondary" data-act="rebuild">🔁 בנייה מחדש (מנהלת)</button>' : ''}</div>
       <button type="button" class="link-btn dm-link" data-act="saved">משרות שמורות</button></div>`;
   }
+
+  // Why an analyzed job stayed out of the deck, in one line, and the group it
+  // counts under in the summary on top of the list.
+  function skipReason(r) {
+    if (!r) return { html: 'ציון נמוך מ-60', group: 'אחר' };
+    if (r.kind === 'cap') return { html: `תקרה: ${esc(CAP_HE[r.name] || r.name)}`, group: CAP_HE[r.name] || r.name };
+    if (r.kind === 'years') return { html: `נדרשות ${esc(r.required)} שנות ניסיון, בקורות החיים ${esc(r.relevant)}`, group: 'שנות ניסיון' };
+    const must = r.importance === 'must';
+    return { html: `${r.status === 'missing' ? 'חסר' : 'חלקי'}: <bdi dir="ltr">${esc(r.text)}</bdi>${must ? ' (חובה)' : ' (יתרון)'}`,
+      group: must ? (r.status === 'missing' ? 'חסרה דרישת חובה' : 'דרישת חובה חלקית') : 'יתרונות' };
+  }
+
+  function skippedView() {
+    const list = (state.skipped || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+    const groups = {};
+    list.forEach(s => { const g = skipReason(s.reason).group; groups[g] = (groups[g] || 0) + 1; });
+    const chips = Object.entries(groups).sort((a, b) => b[1] - a[1])
+      .map(([g, n]) => `<span class="chip">${esc(g)} · ${n}</span>`).join('');
+    const rows = list.map(s => `<div class="skip-row"><span class="skip-score">${s.score == null ? '' : s.score}</span>
+      <div class="saved-main"><bdi dir="ltr" class="saved-title">${esc(s.title || '')}</bdi><span class="dm-muted"><bdi dir="ltr">${esc(s.company || '')}</bdi></span>
+        <span class="skip-why">${skipReason(s.reason).html}</span></div>
+      ${s.url ? `<button type="button" class="link-btn" data-act="open-saved" data-url="${esc(s.url)}">פתיחה ↗</button>` : ''}</div>`).join('');
+    return `${topBar('🔎 נבדקו ולא נכנסו')}<div class="dm-body">
+      <p class="dm-muted">המשרות האלה נותחו לעומק וקיבלו ציון מתחת ל-60, ולכן לא נכנסו לחפיסה. לכל אחת, הסיבה העיקרית:</p>
+      ${chips ? `<div class="dm-chips skip-groups">${chips}</div>` : ''}
+      ${rows || '<p class="dm-muted">אין משרות כאלה בחפיסה הזו.</p>'}${back()}</div>`;
+  }
+
+  const skippedLink = () => (state.skipped && state.skipped.length
+    ? `<button type="button" class="link-btn dm-skipped" data-act="skipped">🔎 עוד ${state.skipped.length} נבדקו ולא נכנסו</button>` : '');
 
   function savedView() {
     const rows = state.saved.map(c => `<div class="saved-row"><div class="saved-main"><bdi dir="ltr" class="saved-title">${esc(c.job.title)}</bdi><span class="dm-muted"><bdi dir="ltr">${esc(c.job.company)}</bdi> · ${esc(c.match_day || '')}</span></div><span class="saved-score">${c.match_score == null ? '' : c.match_score}</span><button type="button" class="link-btn" data-act="open-saved" data-url="${esc(c.job.apply_url || c.job.url)}">פתיחה ↗</button></div>`).join('');
@@ -668,6 +700,7 @@
     }
     state.run = data.run;
     state.compare = data.compare || null;
+    state.skipped = data.skipped || [];
     state.cards = data.cards || [];
     state.readOnly = data.entitlement === 'locked';
     if (!state.cards.length) {
@@ -894,6 +927,9 @@
       case 'buy': return chrome.tabs.create({ url: root.JMA_Auth ? root.JMA_Auth.GUMROAD_URL : 'https://expertdevai.gumroad.com/l/job-match-ai' });
       case 'have-key': return chrome.tabs.create({ url: chrome.runtime.getURL('popup.html#keys') });
       case 'last-deck': return loadDeck(true);
+      case 'skipped':
+        state.prevView = state.view;
+        return setView('skipped');
       case 'saved': {
         try { state.saved = (await DM.api.saved()).cards || []; } catch (_) { state.saved = []; }
         state.prevView = state.view;

@@ -73,6 +73,11 @@ def _req(text, importance="must", weight="core", status="met"):
     return {"text": text, "importance": importance, "weight": weight, "status": status}
 
 
+# Met items cost nothing: they let a test about the arithmetic stay clear of
+# the few-requirements cap.
+MET = [_req("Git", weight="supporting"), _req("REST APIs", weight="supporting")]
+
+
 def _raw(reqs, **extra):
     return {"requirements": reqs, "years_required": 0, "years_relevant": 0, "caps": [], "offsets": [],
             "best_cv_id": "cv1", "cv_scores": [{"cv_id": "cv1", "score": 80}, {"cv_id": "cv2", "score": 60}],
@@ -105,9 +110,9 @@ class TestScore:
         both = ["strong_academics", "relevant_projects"]
         with_gap = reasoning.normalize_analysis(_raw([
             _req("Python", weight="primary", status="partial"),
-            _req("Go", importance="nice", weight="supporting", status="missing")], offsets=both), CVS)
+            _req("Go", importance="nice", weight="supporting", status="missing")] + MET, offsets=both), CVS)
         assert with_gap["match_score"] == 100 - 12 - 3 + 3  # only the 3 the nice item cost comes back
-        no_gap = reasoning.normalize_analysis(_raw([_req("Python", weight="primary", status="partial")],
+        no_gap = reasoning.normalize_analysis(_raw([_req("Python", weight="primary", status="partial")] + MET,
                                                    offsets=both), CVS)
         assert no_gap["match_score"] == 88
 
@@ -126,13 +131,26 @@ class TestScore:
         assert out["match_score"] == reasoning.NO_REQUIREMENTS_CAP and out["cap"]["name"] == "no_requirements"
 
     def test_years_are_bounded_and_never_a_bonus(self):
-        assert reasoning.normalize_analysis(_raw([_req("Python")], years_required=3, years_relevant=12),
+        assert reasoning.normalize_analysis(_raw([_req("Python")] + MET, years_required=3, years_relevant=12),
                                             CVS)["match_score"] == 100
-        out = reasoning.normalize_analysis(_raw([_req("Python")], years_required=5, years_relevant=-2), CVS)
+        out = reasoning.normalize_analysis(_raw([_req("Python")] + MET, years_required=5, years_relevant=-2), CVS)
         assert out["match_score"] == 70  # a negative count is read as none: the whole 30
 
+    def test_a_posting_judged_on_one_or_two_items_is_not_a_strong_match(self):
+        # What happened on a real posting with only responsibilities and an
+        # Advantages list: one responsibility as its "must", met, and 100.
+        thin = reasoning.normalize_analysis(_raw([_req("Develop end-to-end features")]), CVS)
+        assert thin["match_score"] == 65 and thin["cap"] == {"name": "few_requirements", "value": 65}
+        enough = reasoning.normalize_analysis(_raw([_req("Java", weight="primary")] + MET), CVS)
+        assert enough["match_score"] == 100 and enough["cap"] is None
+
+    def test_the_rubric_never_lets_a_responsibility_become_a_must(self):
+        assert "Never turn a responsibility into" in reasoning.RUBRIC
+        assert "never leave out the advantages" in reasoning.RUBRIC
+        assert "fewer than three requirements" in reasoning.RUBRIC
+
     def test_other_versions_keep_their_gap_to_the_best(self):
-        out = reasoning.normalize_analysis(_raw([_req("Python", status="partial")]), CVS)
+        out = reasoning.normalize_analysis(_raw([_req("Python", status="partial")] + MET), CVS)
         assert out["match_score"] == 92
         assert {s["cv_id"]: s["score"] for s in out["cv_scores"]} == {"main": 92, "v-data": 72}
         assert out["cv_scores"][0]["label"] == "Backend" and out["best_cv_ref"] == "main"
@@ -204,6 +222,16 @@ class TestFanOut:
         # The first call finished (0.05 s) before the 0.2 s timeout, so the rest
         # start as soon as it does, never alongside it.
         assert all(t - first >= 0.04 for t in rest)
+
+    async def test_the_rest_wait_for_the_first_answer_not_a_fixed_second(self, monkeypatch):
+        # Haiku 5.5 took longer than 1.2 s to start answering a 15K-token
+        # prefix; calls sent before that wrote the cache instead of reading it.
+        long_cvs = [reasoning.CvForPrompt("cv1", "main", "Backend", "Python Kafka AWS microservices " * 600)]
+        fake = FakeClaude(delay=0.3)
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        await reasoning.analyze_jobs(long_cvs, _jobs(4))
+        first, rest = fake.started_at[0], fake.started_at[1:]
+        assert config.WARMUP_DELAY_S >= 10 and all(t - first >= 0.29 for t in rest)
 
     async def test_isolated_failure_becomes_empty_card(self, monkeypatch):
         fake = FakeClaude(fail_when=lambda text: "Backend 3" in text, error_factory=lambda: _status_error(400))

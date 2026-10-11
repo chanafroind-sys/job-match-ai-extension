@@ -54,8 +54,11 @@ LLM_MAX_TOKENS_AUTO = 4000
 LLM_CONCURRENCY = _int("DM_LLM_CONCURRENCY", 40)  # server-wide, all runs together
 CACHE_MIN_TOKENS = 1024  # Haiku 5.5 caches prefixes of 512+ tokens; the rubric alone is ~4K
 # A cache entry becomes readable only once the first response starts, so the
-# other calls wait this long after the first one is sent.
-WARMUP_DELAY_S = 1.2
+# other calls wait for the first answer (up to this long). 1.2 s was enough for
+# Haiku 4.5; with Haiku 5.5's ~15K-token prefix it wasn't: 28 of 48 calls
+# wrote the cache instead of reading it, and cache writes were 68% of a run's
+# cost ($0.077 instead of ~$0.03). Waiting costs a few seconds once per run.
+WARMUP_DELAY_S = 20.0
 # A second model that admins' runs also ask, so its verdict shows next to the
 # main one on each card. Empty: off. For deciding whether a pricier model is
 # worth it, on real decks.

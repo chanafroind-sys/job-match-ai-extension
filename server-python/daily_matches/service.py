@@ -256,6 +256,25 @@ def merge_compare(analyses: dict[str, dict | None], other: dict[str, dict | None
         }
 
 
+def main_reason(analysis: dict | None) -> dict | None:
+    """Why a job came out where it did, in one item: the cap that held its
+    score down, or else its biggest deduction. For the list of analyzed jobs
+    that didn't make the deck."""
+    a = analysis or {}
+    cap = a.get("cap")
+    if cap and cap.get("name"):
+        return {"kind": "cap", "name": cap["name"], "value": cap.get("value")}
+    losses = [b for b in a.get("breakdown") or [] if (b.get("points") or 0) < 0]
+    if not losses:
+        return None
+    worst = min(losses, key=lambda b: b["points"])
+    if worst.get("kind") == "years":
+        return {"kind": "years", "required": worst.get("required"), "relevant": worst.get("relevant"),
+                "points": worst["points"]}
+    return {"kind": "requirement", "text": worst.get("text", ""), "importance": worst.get("importance"),
+            "status": worst.get("status"), "points": worst["points"]}
+
+
 def compare_summary(rows: list[DmRunResult], run: DmRun) -> dict | None:
     """How far the compare model is from the main one across every job the run
     analyzed (shown or not): the numbers to decide a switch on."""

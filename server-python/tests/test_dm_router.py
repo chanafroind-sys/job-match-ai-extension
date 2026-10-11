@@ -212,3 +212,23 @@ async def test_the_deck_says_how_many_analyses_actually_came_back(client, monkey
     assert events[-1]["analyzed"] == 5 and events[-1]["analyzed_ok"] == 4
     deck = (await client.get("/api/daily-matches/today", headers=SUB)).json()
     assert deck["run"]["candidates"] == 5 and deck["run"]["analyzed_ok"] == 4
+
+
+async def test_the_deck_lists_the_jobs_it_left_out_and_why(client):
+    events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
+    deck = (await client.get("/api/daily-matches/today", headers=SUB)).json()
+    skipped = deck["skipped"]
+    assert len(skipped) + len(deck["cards"]) == events[-1]["analyzed_ok"]
+    assert all(s["score"] < 60 and s["title"] and s["reason"] for s in skipped)
+    assert {s["reason"]["kind"] for s in skipped} <= {"cap", "years", "requirement"}
+
+
+def test_the_main_reason_is_the_binding_cap_or_the_biggest_loss():
+    from daily_matches import service
+    assert service.main_reason({"cap": {"name": "level_unproven", "value": 65}, "breakdown": []}) ==         {"kind": "cap", "name": "level_unproven", "value": 65}
+    worst = service.main_reason({"breakdown": [
+        {"kind": "requirement", "text": "Kafka", "importance": "must", "status": "partial", "points": -8},
+        {"kind": "years", "required": 5, "relevant": 2, "points": -18},
+        {"kind": "offsets", "names": ["relevant_projects"], "points": 3}]})
+    assert worst == {"kind": "years", "required": 5, "relevant": 2, "points": -18}
+    assert service.main_reason({"breakdown": []}) is None

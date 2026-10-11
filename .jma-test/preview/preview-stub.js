@@ -96,7 +96,8 @@
     if (p === '/status') return json(built && scenario === 'building' ? { ...status, today: { status: 'done', cards: 3 } } : status);
     if (p === '/today') {
       if (scenario === 'quiet') return json({ run: { id: 1, status: 'done', pool_size: 1284, fresh: 18, candidates: 18, cards: 0 }, cards: [], entitlement: 'subscription' });
-      return json({ run: { id: 1, status: 'done', pool_size: 1284, fresh: 31, candidates: 23, cards: 3 }, cards: DECK, entitlement: 'subscription', compare: COMPARE });
+      return json({ run: { id: 1, status: 'done', pool_size: 1284, fresh: 31, candidates: 23, cards: 3, analyzed_ok: 23 }, cards: DECK,
+        entitlement: 'subscription', compare: COMPARE, skipped: SKIPPED });
     }
     if (p.startsWith('/results/')) return json({ ok: true });
     if (p === '/saved') return json({ cards: [] });
@@ -116,6 +117,14 @@
     return Promise.reject(new Error('preview: unknown ' + p));
   };
 
+  // The analyzed jobs that stayed out of the deck, with their main reasons.
+  const SKIPPED = [
+    { id: 31, score: 58, title: 'Backend Engineer', company: 'Riskified', url: 'https://jobs.example.com/31', reason: { kind: 'years', required: 5, relevant: 2, points: -18 } },
+    { id: 32, score: 55, title: 'Backend Team Lead', company: 'Monday.com', url: 'https://jobs.example.com/32', reason: { kind: 'cap', name: 'no_people_leadership', value: 55 } },
+    { id: 33, score: 52, title: 'Senior Python Developer', company: 'Wiz', url: 'https://jobs.example.com/33', reason: { kind: 'cap', name: 'level_unproven', value: 65 } },
+    { id: 34, score: 41, title: 'Go Backend Engineer', company: 'Taboola', url: 'https://jobs.example.com/34', reason: { kind: 'requirement', text: 'Go', importance: 'must', status: 'missing', points: -35 } },
+    { id: 35, score: 37, title: 'C# .NET Developer', company: 'Iscar', url: 'https://jobs.example.com/35', reason: { kind: 'requirement', text: 'C# / .NET', importance: 'must', status: 'missing', points: -35 } },
+  ];
   let opened = '';
   let access = scenario !== 'apply-access';
   window.chrome = {
