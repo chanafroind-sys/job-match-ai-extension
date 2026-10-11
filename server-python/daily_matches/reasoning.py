@@ -350,16 +350,10 @@ WRITING
 The candidate reads Hebrew. Keep technology names in English.
 - requirement text: a short label, at most 8 words, in the posting's own \
 language, technology names exactly as written.
-- fit_summary_he: 2-3 sentences, at most 35 words: the strongest reason to \
-apply and the biggest risk.
-- cv_choice_reason_he: one sentence, at most 20 words: why that CV version \
-fits this job best.
-- top_gap_he: one sentence, at most 15 words: the single most important gap \
-and, if possible, how to close it.
-Be specific to this posting. No generic advice.
+- top_gap_he: one sentence, at most 12 words: the single most important gap \
+and, if possible, how to close it. Specific to this posting, no generic advice.
 When the primary item is missing, or a cap of 55 or lower applies, the job \
-won't be shown, so keep the Hebrew short: fit_summary_he at most 15 words, \
-cv_choice_reason_he and top_gap_he empty strings. Always list the \
+won't be shown, so top_gap_he is an empty string. Always list the \
 requirements in full: the score is made of them.
 """
 
@@ -383,7 +377,7 @@ def tool_schema(aliases: list[str]) -> dict:
             "type": "object",
             "additionalProperties": False,
             "required": ["requirements", "years_required", "years_relevant", "caps", "offsets", "best_cv_id",
-                         "cv_scores", "fit_summary_he", "cv_choice_reason_he", "top_gap_he"],
+                         "cv_scores", "top_gap_he"],
             "properties": {
                 "requirements": {
                     "type": "array",
@@ -417,9 +411,7 @@ def tool_schema(aliases: list[str]) -> dict:
                         "properties": {"cv_id": alias_enum, "score": {"type": "integer"}},
                     },
                 },
-                "fit_summary_he": {"type": "string", "description": "Hebrew, at most 35 words"},
-                "cv_choice_reason_he": {"type": "string", "description": "Hebrew, at most 20 words"},
-                "top_gap_he": {"type": "string", "description": "Hebrew, at most 15 words"},
+                "top_gap_he": {"type": "string", "description": "Hebrew, at most 12 words"},
             },
         },
     }
@@ -445,8 +437,6 @@ class _RawAnalysis(BaseModel):
     offsets: list[str] = []
     best_cv_id: str
     cv_scores: list[_CvScore] = []
-    fit_summary_he: str = ""
-    cv_choice_reason_he: str = ""
     top_gap_he: str = ""
 
 
@@ -534,8 +524,6 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
         "breakdown": breakdown,
         "cap": cap,
         "years": {"required": max(0, parsed.years_required), "relevant": max(0, parsed.years_relevant)},
-        "fit_summary_he": parsed.fit_summary_he.strip()[:400],
-        "cv_choice_reason_he": parsed.cv_choice_reason_he.strip()[:250],
         "top_gap_he": parsed.top_gap_he.strip()[:250],
     }
 

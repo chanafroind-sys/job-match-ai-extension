@@ -400,7 +400,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
 
   // ── the model comparison, for admins ──────────────────────────────────────────
   const vsDeepSeek = [card(1, 84, 'Backend Engineer', { tier: 'strong', analysis: { ...card(1, 84, 'x').analysis,
-    compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', match_score: 79, fit_summary_he: 'מתאים ברובו.' } } }),
+    compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', match_score: 79, top_gap_he: 'חסר Go.' } } }),
   card(2, 64, 'Platform Engineer', { tier: 'maybe', analysis: { ...card(2, 64, 'x').analysis,
     compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', failed: true } } })];
   ctx = await boot({ statuses: [{ ...SUB({ status: 'done', cards: 2 }), is_admin: true }], storage: { cvText: CV },

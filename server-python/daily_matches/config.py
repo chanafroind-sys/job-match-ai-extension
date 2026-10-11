@@ -81,7 +81,7 @@ OPENROUTER_TIMEOUT_S = 90.0
 # A deck holds only jobs published in the last FRESH_WINDOW that this person
 # was never shown or analyzed for: for a daily user, the last day's jobs.
 FRESH_WINDOW = timedelta(days=3)
-MAX_ANALYZED = _int("DM_MAX_ANALYZED", 40)  # LLM calls per run; the cost cap
+MAX_ANALYZED = _int("DM_MAX_ANALYZED", 48)  # LLM calls per run; the cost cap
 MIN_PER_CV = 3  # each CV version is guaranteed this many of the analyzed slots
 STRONG_SCORE = _int("DM_STRONG_SCORE", 70)  # the deck
 MAYBE_SCORE = _int("DM_MAYBE_SCORE", 60)  # shown after the strong ones, marked "worth a look"

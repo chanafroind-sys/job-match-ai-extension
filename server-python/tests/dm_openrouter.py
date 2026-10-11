@@ -42,7 +42,7 @@ class FakeOpenRouter:
             "years_required": 0, "years_relevant": 0, "caps": [], "offsets": [],
             "best_cv_id": enum[0],
             "cv_scores": [{"cv_id": alias, "score": max(0, 85 - 10 * i)} for i, alias in enumerate(enum)],
-            "fit_summary_he": "מתאים ברובו.", "cv_choice_reason_he": "הגרסה הקרובה ביותר.", "top_gap_he": "חסר Go.",
+            "top_gap_he": "חסר Go.",
         }
         return httpx.Response(200, json={
             "provider": "DeepInfra", "usage": usage,

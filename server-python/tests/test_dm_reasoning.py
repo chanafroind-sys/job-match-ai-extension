@@ -76,7 +76,7 @@ def _req(text, importance="must", weight="core", status="met"):
 def _raw(reqs, **extra):
     return {"requirements": reqs, "years_required": 0, "years_relevant": 0, "caps": [], "offsets": [],
             "best_cv_id": "cv1", "cv_scores": [{"cv_id": "cv1", "score": 80}, {"cv_id": "cv2", "score": 60}],
-            "fit_summary_he": "  טוב  ", "cv_choice_reason_he": "", "top_gap_he": "", **extra}
+            "top_gap_he": "  טוב  ", **extra}
 
 
 class TestScore:
@@ -89,7 +89,7 @@ class TestScore:
         assert out["match_score"] == 83 and out["cap"] is None
         assert [b["points"] for b in out["breakdown"]] == [-8, -3, -6]
         assert out["breakdown"][2] == {"kind": "years", "required": 5, "relevant": 4, "points": -6}
-        assert out["fit_summary_he"] == "טוב"
+        assert out["top_gap_he"] == "טוב" and "fit_summary_he" not in out
 
     def test_same_gaps_same_score(self):
         a = reasoning.normalize_analysis(_raw([_req("Java", weight="primary", status="missing"), _req("SQL")]), CVS)

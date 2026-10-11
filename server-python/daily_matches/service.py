@@ -250,7 +250,7 @@ def merge_compare(analyses: dict[str, dict | None], other: dict[str, dict | None
             continue
         main_analysis["compare"] = {
             "model": config.COMPARE_MODEL, "match_score": alt["match_score"], "tier": tier_for(alt["match_score"]),
-            "best_cv_ref": alt["best_cv_ref"], "fit_summary_he": alt["fit_summary_he"],
+            "best_cv_ref": alt["best_cv_ref"], "top_gap_he": alt.get("top_gap_he", ""),
             "requirements": alt["requirements"], "cap": alt.get("cap"),
             "cost_usd": round(float(alt.get("_cost_usd") or 0), 6), "provider": alt.get("_provider") or "",
         }

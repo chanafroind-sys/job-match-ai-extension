@@ -90,8 +90,6 @@ class FakeMessages:
             "offsets": [],
             "best_cv_id": enum[0],
             "cv_scores": [{"cv_id": alias, "score": max(0, 90 - 10 * i)} for i, alias in enumerate(enum)],
-            "fit_summary_he": "התאמה טובה לליבת התפקיד.",
-            "cv_choice_reason_he": "הגרסה מדגישה את הניסיון הרלוונטי.",
             "top_gap_he": "חסר ניסיון ב-Go.",
         }
         return SimpleNamespace(

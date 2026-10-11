@@ -26,7 +26,7 @@
   };
   const LEVELS = [['junior', 'ג׳וניור', '0-2 שנים'], ['mid', 'מיד', '2-5 שנים'], ['senior', 'סניור', '5+ שנים'],
     ['lead', 'ליד / ניהול', '']];
-  const MAX_ANALYZED = 40; // server-python/daily_matches/config.py MAX_ANALYZED
+  const MAX_ANALYZED = 48; // server-python/daily_matches/config.py MAX_ANALYZED
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, ch => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -254,7 +254,7 @@
       const dl = `<button type="button" class="cv-dl" data-act="dl-cv" title="הורדת הגרסה הזו"${hasCvFile(sel) ? '' : ' hidden'}>⬇️ הורדה</button>`;
       const alt = !a.compare ? '' : a.compare.failed
         ? `<p class="dm-alt">🧪 ${esc(modelName(a.compare.model))}: לא החזיר תשובה תקינה</p>`
-        : `<p class="dm-alt">🧪 ${esc(modelName(a.compare.model))}: <b>${esc(a.compare.match_score)}</b>${a.compare.fit_summary_he ? ` · ${esc(a.compare.fit_summary_he)}` : ''}</p>`;
+        : `<p class="dm-alt">🧪 ${esc(modelName(a.compare.model))}: <b>${esc(a.compare.match_score)}</b>${a.compare.top_gap_he ? ` · ${esc(a.compare.top_gap_he)}` : ''}</p>`;
       body = `${alt}
         <div class="dm-cv"><div class="dm-cv-row"><span class="dm-cv-ico" aria-hidden="true">📄</span><div class="dm-cv-main"><div class="dm-cv-k">${sel === card.best_cv_id ? 'מומלץ להגיש עם' : 'נבחר להגשה'}</div><div class="dm-cv-v"><strong>${esc(cvLabel(card, sel))}</strong>${selScore != null ? ` · התאמה ${selScore}` : ''}</div></div>${dl}${compare}</div>
           ${a.cv_choice_reason_he ? `<p class="dm-cv-reason">${esc(a.cv_choice_reason_he)}</p>` : ''}

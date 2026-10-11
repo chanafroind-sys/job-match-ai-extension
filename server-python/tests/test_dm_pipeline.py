@@ -423,7 +423,7 @@ class TestCompareThroughOpenRouter:
 
     def test_merge_marks_jobs_the_other_model_missed(self):
         analyses = {"a": {"match_score": 80}, "b": {"match_score": 50}, "c": None}
-        other = {"a": {"match_score": 72, "best_cv_ref": "main", "fit_summary_he": "x", "requirements": [],
+        other = {"a": {"match_score": 72, "best_cv_ref": "main", "top_gap_he": "x", "requirements": [],
                        "_cost_usd": 0.001, "_provider": "P"}, "b": None, "c": None}
         service.merge_compare(analyses, other)
         assert analyses["a"]["compare"]["tier"] == "strong" and analyses["a"]["compare"]["cost_usd"] == 0.001
