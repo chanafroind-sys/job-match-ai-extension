@@ -7,8 +7,8 @@ extension's own IDs. Strict tool schemas are compiled once and cached for 24h
 per distinct schema, so aliases keep it to five schema variants in total
 instead of a new one for every user.
 
-Caching: the tools and the system block (rubric + every CV version) are
-identical across the run's calls. Haiku 5.5 caches prefixes of 512+ tokens
+Caching: the tools and the system block (rubric + every CV version + the
+candidate's own answers) are identical across the run's calls. Haiku 5.5 caches prefixes of 512+ tokens
 (Haiku 4.5 needed 4,096, which is why the rubric's worked examples are so many;
 they stay, for the quality they bring). A cache entry is readable only after
 the first response has started, so call 1 goes out alone and the rest follow
@@ -64,6 +64,12 @@ NO_REQUIREMENTS_CAP = 65  # a posting that states no must requirement can't be j
 # requirements list once came back with a responsibility as its one "must",
 # met, its whole Advantages list left out, and a score of 100.
 FEW_REQUIREMENTS = 3
+STATUSES = ("met", "partial", "missing", "unknown")
+# A credential (a degree, a license, a test score, a clearance...) is often left
+# out of a CV, so a credential the evidence says nothing about is "unknown":
+# it costs nothing, and the card asks the person to confirm it. A skill is
+# never unknown: a skill the CV doesn't show is missing.
+KINDS = ("skill", "credential")
 # One server-wide cap on in-flight calls, so a morning burst of runs queues
 # here instead of tripping the account's rate limit. Keyed by event loop
 # because an asyncio.Semaphore can't be shared across loops.
@@ -120,8 +126,10 @@ can't make: what each requirement is, how central it is to this role, and \
 how far the candidate's evidence meets it.
 
 GROUND RULES
-- Judge only from what the CV says. Never assume a skill, a level or a number \
-of years the CV doesn't show. No evidence counts as missing.
+- Judge only from what the CV says and from the candidate's own answers, \
+listed after the CV versions. Never assume a skill, a level or a number of \
+years they don't show. No evidence counts as missing, except for a credential \
+nothing mentions either way (STEP 3).
 - Classify the requirements against the best CV version. cv_scores rates \
 every version on one 0-100 scale, only to compare the versions with each \
 other; best_cv_id names the best one.
@@ -148,6 +156,11 @@ Never leave out a must requirement because the candidate lacks it, and never \
 leave out the advantages: what the candidate lacks there is part of the fit. \
 Split a line that names separately central skills ("Python and Kafka") into \
 separate items; keep alternatives ("Python or Java") as one item.
+kind: credential for a degree, a certification, a license (a driver's \
+license), a test score (a psychometric score), a security clearance, \
+citizenship or a work permit, a spoken language, or availability \
+(relocation, shifts, travel, days on site). Anything the candidate knows or \
+does is a skill.
 
 STEP 2 — WEIGH EACH REQUIREMENT
 weight, for a must item:
@@ -172,6 +185,14 @@ status, for each requirement:
   partial: appears only in a skills list, only in coursework, as short \
 exposure, or through a close equivalent (see EQUIVALENCES).
   missing: anything else.
+  unknown: only for a credential that neither the CV nor the candidate's \
+answers mention either way. People leave a driver's license, a test score or \
+a clearance out of a CV, so silence about one is no evidence they lack it. A \
+credential the evidence contradicts (a degree in another field, an answer of \
+no) is missing. A CV that lists its education shows the degrees the candidate \
+has: a degree it doesn't list is missing; with no education section and no \
+answer, it is unknown. A skill is never unknown: a skill the evidence doesn't \
+show is missing.
 A primary item has a higher bar: partial only for a close equivalent or real \
 but limited professional use. A course, a toy project or a skills-list \
 mention leaves a primary item missing.
@@ -218,12 +239,19 @@ caps: every limit that applies, else an empty list:
 CV shows no evidence of that level.
   no_people_leadership: a Team Lead, Group Lead or Engineering Manager role, \
 and the CV shows no leading of people.
-  hard_blocker: a security clearance, citizenship, a degree in a specific \
-field ("B.Sc. in Electrical Engineering"), a spoken language, or relocation \
-that the posting requires and the CV doesn't show.
+  hard_blocker: a must credential, listed as a requirement, that the \
+evidence shows the candidate lacks (status missing): a degree in a specific \
+field ("B.Sc. in Electrical Engineering"), a security clearance, \
+citizenship, a spoken language, a license, or relocation. Never for an \
+unknown credential, and never for a general degree ("a B.Sc. in Computer \
+Science or a related field", "an academic degree"): that costs its own \
+points only.
   domain_mismatch: the candidate lacks the critical skills of this whole \
-domain, not just a matching job title. Someone with the required skills under \
-a different title is no mismatch.
+domain (a web developer facing chip verification or malware research), not \
+just a matching job title or one language. Someone with the required skills \
+under a different title is no mismatch, and neither is the same discipline \
+in another language or stack: a full-stack developer facing a C# full-stack \
+role lacks C#, which costs its own points.
   not_a_job: the user turn isn't a real job posting (empty, only a title, a \
 generic careers page, or not a job at all).
 offsets, strengths that make up for nice-to-have gaps only, else an empty \
@@ -233,7 +261,8 @@ would value), relevant_projects (directly relevant projects).
 THE ARITHMETIC (for your understanding; never compute it in your answer)
 Start at 100. A must item costs, when missing / partial: primary 35 / 12, \
 core 20 / 8, supporting 12 / 5. A nice item costs: core 6 / 2, supporting \
-3 / 1, and nice items cost 15 at most in total. A years shortfall costs \
+3 / 1, and nice items cost 15 at most in total. An unknown item costs \
+nothing: the candidate is asked to confirm it. A years shortfall costs \
 (required - relevant) / required x 30. Each offset gives back 5, at most 10 \
 in all, and never more than the nice items cost. Then the lowest applying \
 cap limits the result: level_unproven 65, no_people_leadership 55, \
@@ -269,6 +298,11 @@ a shortfall by itself.
 service, "יחידה" a unit, "פרויקט גמר" a final-year project.
 - A CV version's label says what it emphasizes, not what the candidate can \
 do. Judge each version by its content.
+- The candidate's own answers, after the CV versions, apply to every version \
+and count as evidence like the CV's own lines: an answer of yes meets the \
+credential, an answer of no leaves it missing. A described use of a skill \
+("C# and .NET in a work project, 2023") is evidence like a project line; a \
+bare list of skill names is a claim, like a skills list.
 
 COMMON MISTAKES TO AVOID
 - Classifying how strong the candidate is in general instead of how they meet \
@@ -278,6 +312,8 @@ this posting.
 - Softening a classification because the company or the role is attractive.
 - Counting one gap twice: as two requirements, or as a missing skill plus a \
 domain_mismatch when the candidate has the domain's other skills.
+- Marking a credential missing only because the CV doesn't mention it, or a \
+skill unknown.
 
 WORKED EXAMPLES (requirement: importance weight status; years required / \
 relevant; caps → the score the arithmetic gives)
@@ -319,7 +355,8 @@ primary item) · Python: must core met · PyTorch: nice supporting missing → \
 8. Hardware Verification Engineer. SystemVerilog, UVM, B.Sc. in Electrical \
 Engineering. CV: full-stack web developer, B.Sc. in Computer Science.
 SystemVerilog: must primary missing · UVM: must core missing · B.Sc. in \
-Electrical Engineering: must supporting missing · caps hard_blocker, \
+Electrical Engineering: must supporting missing (a credential the CV \
+contradicts: its degree is in Computer Science) · caps hard_blocker, \
 domain_mismatch → 33, not shown.
 9. Posting in Hebrew: "מפתח/ת Frontend, ניסיון של 3 שנים לפחות ב-React \
 ו-TypeScript, יתרון משמעותי: Next.js." CV: 4 years of React with JavaScript, \
@@ -355,6 +392,19 @@ service design, little React. Version B (Full Stack): the same career, with \
 two years of React described in detail. B meets React where A only touches \
 it, so best_cv_id is B, the requirements are classified against B, and \
 cv_scores rates B above A.
+15. Integration Engineer. 2+ years with Linux and Python, a valid driver's \
+license, willingness to travel to customers. CV: 3 years of Linux and Python \
+automation; nothing about a license or travel; no answers given.
+Linux: must primary met · Python: must core met · driver's license: must \
+supporting unknown (a credential the CV is silent about) · travel: must \
+supporting unknown · years 2 / 3 → 100, a match, with the license and the \
+travel to confirm. Had the candidate answered "Driver's license: no", the \
+license would be must supporting missing, with hard_blocker → 40, not shown.
+16. Full Stack Developer (C#, .NET, Angular). CV: 4 years of Java and Spring \
+services with React; answers: "C# and .NET in one work project, 2023".
+C#: must primary partial (limited professional use, from the answers) · \
+.NET: must core partial · Angular: must core partial (React) · no \
+domain_mismatch: the same discipline in another stack → 72, a match.
 
 WRITING
 The candidate reads Hebrew. Keep technology names in English.
@@ -368,10 +418,43 @@ requirements in full: the score is made of them.
 """
 
 
-def build_system_text(cvs: list[CvForPrompt]) -> str:
+_DEGREES = {"none": "none", "student": "currently studying", "bachelor": "a bachelor's degree",
+            "master": "a master's degree", "phd": "a doctorate"}
+_ENGLISH = {"basic": "basic", "good": "good working English", "fluent": "fluent", "native": "native"}
+_CLEARANCE = {"none": "none", "past": "held one in the past", "active": "currently active"}
+FACTS_NOTES_MAX = 1500
+
+
+def render_facts(facts: dict | None) -> str:
+    """The candidate's own answers (the extension's "not in my CV" section),
+    as lines for the prompt. Unknown values are left out, so an extension
+    newer or older than the server never breaks a run."""
+    f = facts or {}
+    s = lambda key: str(f.get(key) or "").strip()  # noqa: E731
+    lines = []
+    if s("degree") in _DEGREES:
+        field = s("degreeField")[:80]
+        degree = _DEGREES[s("degree")]
+        lines.append(f"Academic degree: {degree}" + (f", in {field}" if field and s("degree") != "none" else ""))
+    if s("license") in ("yes", "no"):
+        lines.append(f"Driver's license: {s('license')}")
+    if s("english") in _ENGLISH:
+        lines.append(f"English: {_ENGLISH[s('english')]}")
+    if s("psychometric").isdigit() and 200 <= int(s("psychometric")) <= 800:
+        lines.append(f"Psychometric score: {int(s('psychometric'))}")
+    if s("clearance") in _CLEARANCE:
+        lines.append(f"Security clearance: {_CLEARANCE[s('clearance')]}")
+    if s("notes"):
+        lines.append("Skills and experience not in the CV, in the candidate's words:\n" + s("notes")[:FACTS_NOTES_MAX])
+    return "\n".join(lines)
+
+
+def build_system_text(cvs: list[CvForPrompt], facts: str = "") -> str:
     parts = [RUBRIC, "\nCANDIDATE CV VERSIONS (contact details removed):"]
     for cv in cvs:
         parts.append(f'\n=== {cv.alias} · label: "{cv.label}" ===\n{cv.text}\n=== end of {cv.alias} ===')
+    parts.append("\nTHE CANDIDATE'S OWN ANSWERS (beyond the CV; they apply to every version):\n"
+                 + (facts.strip() or "None given."))
     return "\n".join(parts)
 
 
@@ -395,12 +478,13 @@ def tool_schema(aliases: list[str]) -> dict:
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["text", "importance", "weight", "status"],
+                        "required": ["text", "importance", "weight", "kind", "status"],
                         "properties": {
                             "text": {"type": "string"},
                             "importance": {"type": "string", "enum": ["must", "nice"]},
                             "weight": {"type": "string", "enum": ["primary", "core", "supporting"]},
-                            "status": {"type": "string", "enum": ["met", "partial", "missing"]},
+                            "kind": {"type": "string", "enum": list(KINDS)},
+                            "status": {"type": "string", "enum": list(STATUSES)},
                         },
                     },
                 },
@@ -431,6 +515,7 @@ class _Requirement(BaseModel):
     text: str
     importance: str
     weight: str = "core"
+    kind: str = "skill"
     status: str
 
 
@@ -454,15 +539,37 @@ def _clamp(n: int) -> int:
     return max(0, min(100, int(n)))
 
 
+def _consistent_caps(reqs: list[dict], caps: list[str]) -> set[str]:
+    """The caps the requirements bear out. Both checks below come from real
+    decks, where a cap counted a gap a second time:
+    - hard_blocker needs a must credential the evidence shows missing; an
+      unknown one is asked about, not held against the candidate.
+    - domain_mismatch needs the role's primary item missing and fewer than half
+      of the must items met. A full-stack developer facing a C# full-stack
+      role meets most of it, and C# already costs its own points."""
+    kept = {c for c in caps if c in CAPS}
+    musts = [r for r in reqs if r["importance"] == "must"]
+    if "hard_blocker" in kept and not any(
+            r.get("kind") == "credential" and r["status"] == "missing" for r in musts):
+        kept.discard("hard_blocker")
+    if "domain_mismatch" in kept and musts:  # with no must item, nothing to weigh it against
+        primary_missing = any(r["weight"] == "primary" and r["status"] == "missing" for r in musts)
+        met = sum(r["status"] == "met" for r in musts)
+        if not primary_missing or met * 2 >= len(musts):
+            kept.discard("domain_mismatch")
+    return kept
+
+
 def score_of(reqs: list[dict], years_required: int, years_relevant: int, caps: list[str],
              offsets: list[str]) -> tuple[int, list[dict], dict | None]:
     """The rubric's arithmetic. Returns (score, breakdown, applied cap). The
-    breakdown lists every point lost or given back, for the card to show."""
+    breakdown lists every point lost or given back, for the card to show.
+    An unknown credential costs nothing; the card asks to confirm it."""
     breakdown: list[dict] = []
     total = 100
     nice_cost = 0
     for r in reqs:
-        if r["status"] == "met":
+        if r["status"] in ("met", "unknown"):
             continue
         missing = r["status"] == "missing"
         if r["importance"] == "must":
@@ -487,7 +594,7 @@ def score_of(reqs: list[dict], years_required: int, years_relevant: int, caps: l
         total += back
         breakdown.append({"kind": "offsets", "names": given, "points": back})
     score = _clamp(total)
-    applying = [(CAPS[c], c) for c in set(caps) if c in CAPS]
+    applying = [(CAPS[c], c) for c in _consistent_caps(reqs, caps)]
     if not any(r["importance"] == "must" for r in reqs):
         applying.append((NO_REQUIREMENTS_CAP, "no_requirements"))
     elif len(reqs) < FEW_REQUIREMENTS:
@@ -512,12 +619,16 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
     rated = {s.cv_id: _clamp(s.score) for s in parsed.cv_scores if s.cv_id in by_alias}
     best = parsed.best_cv_id if parsed.best_cv_id in by_alias else (
         max(rated, key=rated.get) if rated else cvs[0].alias)
-    reqs = [
-        {"text": r.text.strip()[:120], "importance": r.importance, "weight": r.weight, "status": r.status}
-        for r in parsed.requirements
-        if r.text.strip() and r.status in ("met", "partial", "missing") and r.importance in ("must", "nice")
-        and r.weight in MUST_COST
-    ][:MAX_REQUIREMENTS]
+    reqs = []
+    for r in parsed.requirements:
+        if not (r.text.strip() and r.status in STATUSES and r.importance in ("must", "nice") and r.weight in MUST_COST):
+            continue
+        kind = r.kind if r.kind in KINDS else "skill"
+        # Only a credential may be unknown: a skill with no evidence is missing.
+        status = "missing" if r.status == "unknown" and kind != "credential" else r.status
+        reqs.append({"text": r.text.strip()[:120], "importance": r.importance, "weight": r.weight,
+                     "kind": kind, "status": status})
+    reqs = reqs[:MAX_REQUIREMENTS]
     reqs.sort(key=lambda r: 0 if r["importance"] == "must" else 1)  # stable: keeps the model's order within a group
     match, breakdown, cap = score_of(reqs, parsed.years_required, parsed.years_relevant, parsed.caps, parsed.offsets)
     # The computed score is the best version's. Other versions keep the gap
@@ -535,6 +646,7 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
         "requirements": reqs,
         "breakdown": breakdown,
         "cap": cap,
+        "to_confirm": [r["text"] for r in reqs if r["status"] == "unknown"],
         "years": {"required": max(0, parsed.years_required), "relevant": max(0, parsed.years_relevant)},
         "top_gap_he": parsed.top_gap_he.strip()[:250],
     }
@@ -742,10 +854,10 @@ async def _call_openrouter(http: httpx.AsyncClient, sem: asyncio.Semaphore, slug
 
 
 async def _analyze_openrouter(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
-                              slug: str) -> tuple[dict[str, dict | None], dict]:
+                              slug: str, facts: str = "") -> tuple[dict[str, dict | None], dict]:
     if not config.OPENROUTER_KEY:
         raise RuntimeError("DM_OPENROUTER_KEY is not set")
-    system_text = build_system_text(cvs)
+    system_text = build_system_text(cvs, facts)
     tool = tool_schema([cv.alias for cv in cvs])
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_usd": 0.0}
     results: dict[str, dict | None] = {}
@@ -773,15 +885,16 @@ async def _analyze_openrouter(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
 
 async def analyze_jobs(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
                        on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
-                       model: str | None = None) -> tuple[dict[str, dict | None], dict]:
+                       model: str | None = None, facts: str = "") -> tuple[dict[str, dict | None], dict]:
     """Returns ({job_id: analysis or None}, usage totals). Raises the mapped
-    HTTPException (main.ai_error) when the failure is systemic."""
+    HTTPException (main.ai_error) when the failure is systemic. facts: the
+    candidate's own answers (render_facts), part of the cached prefix."""
     if model and model.startswith(config.OPENROUTER_PREFIX):
-        return await _analyze_openrouter(cvs, jobs, model[len(config.OPENROUTER_PREFIX):])
+        return await _analyze_openrouter(cvs, jobs, model[len(config.OPENROUTER_PREFIX):], facts)
     main = _main()
     client = main._ac()
     model = model or config.LLM_MODEL
-    system_text = build_system_text(cvs)
+    system_text = build_system_text(cvs, facts)
     tool = tool_schema([cv.alias for cv in cvs])
     # The tools render before the system block, so they are part of the cached prefix.
     prefix_tokens = estimate_tokens(system_text) + estimate_tokens(json.dumps(tool))

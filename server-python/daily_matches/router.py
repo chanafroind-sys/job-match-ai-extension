@@ -43,14 +43,30 @@ class PrefsIn(BaseModel):
     level: Optional[Literal["junior", "mid", "senior", "lead"]] = None
 
 
+class FactsIn(BaseModel):
+    """What the CV doesn't say, in the person's own answers (the extension's
+    details page). Plain strings: reasoning.render_facts drops a value it
+    doesn't know, so a newer extension never fails a run here."""
+    degree: str = Field("", max_length=20)
+    degreeField: str = Field("", max_length=80)
+    license: str = Field("", max_length=10)
+    english: str = Field("", max_length=20)
+    psychometric: str = Field("", max_length=4)
+    clearance: str = Field("", max_length=20)
+    notes: str = Field("", max_length=2000)
+
+
 class RunIn(BaseModel):
     cvs: list[CvIn] = Field(..., min_length=1, max_length=config.MAX_CV_VERSIONS)
     primaryCvId: Optional[str] = Field(None, max_length=40)
     prefs: Optional[PrefsIn] = None
+    facts: Optional[FactsIn] = None
 
 
 class ActionIn(BaseModel):
-    action: Literal["viewed", "saved", "skipped", "applied", "clear"]
+    # fits: a job left out of the deck that the person says fits them. Kept to
+    # learn from, and listed with the saved jobs.
+    action: Literal["viewed", "saved", "skipped", "applied", "fits", "clear"]
 
 
 class ExtractIn(BaseModel):
@@ -181,7 +197,8 @@ async def run(body: RunIn, request: Request,
         return _sse_one(service.error_event(err.code, err.coded()))
 
     cvs = [service.CvInput(id=c.id, label=c.label, text=c.text, focus=c.focus) for c in body.cvs]
-    prefs = service.Prefs(level=body.prefs.level if body.prefs else None)
+    prefs = service.Prefs(level=body.prefs.level if body.prefs else None,
+                          facts=body.facts.model_dump() if body.facts else None)
     return StreamingResponse(service.stream_run(cvs, body.primaryCvId, access, prefs),
                              media_type="text/event-stream", headers=service.SSE_HEADERS)
 
@@ -215,13 +232,19 @@ async def today(request: Request, latest: bool = False,
             select(func.count()).select_from(DmRunResult).where(DmRunResult.run_id == run_row.id))).scalar()
         every = (await db.execute(select(DmRunResult).where(DmRunResult.run_id == run_row.id)
                                   .order_by(DmRunResult.rank))).scalars().all()
-        # The jobs analyzed and left out, with the main reason for each: so a
-        # thin deck explains itself, and a too-strict score can be spotted.
+        # The jobs analyzed and left out, with the main reason for each and the
+        # whole calculation: so a thin deck explains itself, and a too-strict
+        # score can be spotted.
         out["skipped"] = [{
             "id": r.id, "score": r.match_score,
             "title": (r.job_snapshot or {}).get("title"), "company": (r.job_snapshot or {}).get("company"),
             "url": (r.job_snapshot or {}).get("apply_url") or (r.job_snapshot or {}).get("url"),
             "reason": service.main_reason(r.analysis),
+            "requirements": (r.analysis or {}).get("requirements") or [],
+            "breakdown": (r.analysis or {}).get("breakdown"),
+            "cap": (r.analysis or {}).get("cap"),
+            "to_confirm": (r.analysis or {}).get("to_confirm") or [],
+            "user_action": r.user_action,
         } for r in every if (r.tier or "") == "hidden"]
         if access.is_admin:  # the model comparison, over every analyzed job (shown or not)
             summary = service.compare_summary(list(every), run_row)
@@ -265,7 +288,7 @@ async def saved(request: Request,
         return {"cards": []}
     rows = await db.execute(
         select(DmRunResult, DmRun.match_day).join(DmRun, DmRun.id == DmRunResult.run_id)
-        .where(DmRun.subject == access.subject, DmRunResult.user_action == "saved")
+        .where(DmRun.subject == access.subject, DmRunResult.user_action.in_(("saved", "fits")))
         .order_by(DmRunResult.action_at.desc()).limit(50))
     return {"cards": [{**_card_json(r), "match_day": day.isoformat()} for r, day in rows.all()]}
 
@@ -329,7 +352,7 @@ async def admin_metrics(days: int = 14, _admin=Depends(require_admin), db: Async
     bands: dict[str, dict] = {}
     for score, action, tier in rows:
         b = bands.setdefault(_band(score), {"analyzed": 0, "shown": 0, "viewed": 0, "saved": 0,
-                                            "skipped": 0, "applied": 0})
+                                            "skipped": 0, "applied": 0, "fits": 0})
         b["analyzed"] += 1
         b["shown"] += tier is None or tier in service.SHOWN_TIERS
         if action in b:

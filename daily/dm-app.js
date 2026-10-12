@@ -83,6 +83,15 @@
     };
     app().innerHTML = (views[state.view] || loading)();
     if (state.view === 'deck') afterDeckRender();
+    if (state.view === 'profile' && state.profileFocus) {
+      state.profileFocus = null;
+      scrollToFacts();
+    }
+  }
+
+  function scrollToFacts() {
+    const sec = document.getElementById('pfFacts');
+    if (sec && sec.scrollIntoView) sec.scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' });
   }
 
   const topBar = (title, extra = '') => `<header class="dm-top"><div><h1 class="dm-title">${title}</h1><div class="dm-date">${esc(todayLabel())}</div></div>${extra}</header>`;
@@ -149,6 +158,7 @@
       ${versions}
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2><div class="lvls" role="group" aria-label="רמת ניסיון">${levelButtons()}</div>
         <p class="dm-fine">${state.level === 'junior' ? 'משרות לבכירים לא ייכנסו לחפיסה.' : 'נבדוק משרות בכל הרמות, גם ברמה נמוכה משלך.'}</p></div>
+      ${factsNudge()}
       ${state.confirmError ? `<p class="dm-error" role="alert">${esc(state.confirmError)}</p>` : ''}
       <div class="dm-stack"><button type="button" class="btn btn-primary" data-act="confirm-focus">✓ זה נכון, לבנות את החפיסה</button>
         <button type="button" class="link-btn" data-act="library">עריכת הגרסאות</button></div></div>`;
@@ -177,9 +187,17 @@
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2>
         <div class="lvls" role="group" aria-label="רמת ניסיון">${levels}</div>
         <p class="dm-fine">${state.level === 'junior' ? 'משרות לבכירים לא ייכנסו לחפיסה.' : 'נבדוק משרות בכל הרמות, גם ברמה נמוכה משלך.'}</p></div>
+      ${factsNudge()}
       <button type="button" class="btn btn-secondary" data-act="profile">📝 פרטי הגשה ושאלות נפוצות${detailsNote()}</button>
     </div>`;
   }
+
+  // Until the person has said anything beyond the CV: a job may be left out
+  // over a degree or a driver's license they have and didn't write down.
+  const factsNudge = () => (DM.apply.matchFacts(state.details) ? ''
+    : `<div class="dm-card-plain dm-facts-nudge"><h2 class="dm-h2">🎓 יש משהו שלא כתוב בקורות החיים?</h2>
+      <p class="dm-muted">תואר, רישיון נהיגה, רמת אנגלית או ניסיון שלא נכנס לקובץ. מספרים פעם אחת, וזה נחשב בניתוח של כל משרה, כדי שמשרות לא ייפסלו בגלל משהו שיש לך.</p>
+      <button type="button" class="btn btn-secondary" data-act="facts">🎓 להוסיף</button></div>`);
 
   function building() {
     const b = state.build || {};
@@ -198,14 +216,20 @@
   }
 
   function reqSummary(reqs) {
-    const c = { met: 0, partial: 0, missing: 0 };
+    const c = { met: 0, partial: 0, missing: 0, unknown: 0 };
     reqs.forEach(r => { c[r.status] = (c[r.status] || 0) + 1; });
     const part = (n, one, many, cls) => (n ? `<b class="${cls}">${n}</b> ${n === 1 ? one : many}` : '');
     return [part(c.met, 'מתקיימת', 'מתקיימות', 'c-ok'), part(c.partial, 'חלקית', 'חלקיות', 'c-mid'),
-      part(c.missing, 'חסרה', 'חסרות', 'c-no')].filter(Boolean).join(' · ');
+      part(c.missing, 'חסרה', 'חסרות', 'c-no'), part(c.unknown, 'לאשר', 'לאשר', 'c-ask')].filter(Boolean).join(' · ');
   }
 
-  const STATUS_ICON = { met: ['✓', 'מתקיימת'], partial: ['◐', 'חלקית'], missing: ['✕', 'חסרה'] };
+  // unknown: a credential (a driver's license, a degree…) the CV says nothing
+  // about. It costs no points; the person is asked to confirm it.
+  const STATUS_ICON = { met: ['✓', 'מתקיימת'], partial: ['◐', 'חלקית'], missing: ['✕', 'חסרה'], unknown: ['?', 'לא ידוע'] };
+  const reqsHtml = (reqs) => `<ul class="reqs">${reqs.map(r => `<li class="req req--${esc(r.status)}${r.status === 'missing' && r.importance === 'must' ? ' req--hard' : ''}"><span class="req-ico" aria-hidden="true">${(STATUS_ICON[r.status] || ['?'])[0]}</span><span class="sr">${(STATUS_ICON[r.status] || ['', ''])[1]}:</span><bdi dir="ltr" class="req-t">${esc(r.text)}</bdi><span class="req-imp req-imp--${r.importance === 'must' ? 'must' : 'nice'}">${r.importance === 'must' ? 'חובה' : 'יתרון'}</span></li>`).join('')}</ul>`;
+  // A card's credentials to confirm, with the way to answer them once for good.
+  const askHtml = (items) => (items && items.length
+    ? `<div class="dm-ask"><b>❓ לאשר:</b> ${items.map(t => `<bdi dir="auto">${esc(t)}</bdi>`).join(', ')}. לא כתוב בקורות החיים, ולכן לא הורדנו על זה נקודות. אם אין לך את זה, המשרה פחות מתאימה. <button type="button" class="link-btn" data-act="facts">לענות פעם אחת</button></div>` : '');
   const ACTION_RIBBON = { applied: ['✓ הוגש', 's-applied'], saved: ['🔖 נשמר', 's-saved'], skipped: ['דולג', 's-skipped'] };
   const MODEL_NAME = { 'claude-haiku-4-5-20251001': 'Haiku 4.5', 'claude-haiku-5-5': 'Haiku 5.5', 'claude-sonnet-5-5': 'Sonnet 5.5',
     'openrouter:deepseek/deepseek-v4.1-flash': 'DeepSeek V4.1 Flash' };
@@ -231,7 +255,8 @@
   };
   const OFFSET_HE = { strong_academics: 'השכלה חזקה', adjacent_skills: 'כישורים קרובים', relevant_projects: 'פרויקטים רלוונטיים' };
 
-  function whyHtml(a) {
+  // withReqs: the requirements too, for the left-out list, where the card isn't shown.
+  function whyHtml(a, withReqs) {
     if (!Array.isArray(a.breakdown)) return ''; // decks scored before the breakdown existed
     const row = (pts, label, cls = '') => `<li class="why-row${cls}"><b class="why-pts" dir="ltr">${pts}</b><span>${label}</span></li>`;
     const rows = a.breakdown.map(b => {
@@ -243,10 +268,12 @@
       if (b.kind === 'offsets') return row(pts, esc((b.names || []).map(n => OFFSET_HE[n] || n).join(', ')), ' is-pos');
       return '';
     }).join('');
+    const asks = (a.to_confirm || []).map(t => row('0', `<bdi dir="auto">${esc(t)}</bdi> · לא ידוע, לא הורד`, ' is-ask')).join('');
     const cap = a.cap ? row(`≤${esc(a.cap.value)}`, `תקרה: ${esc(CAP_HE[a.cap.name] || a.cap.name)}`, ' is-cap') : '';
+    const reqs = withReqs && (a.requirements || []).length ? reqsHtml(a.requirements) : '';
     return `<div><button type="button" class="link-btn" data-act="why" aria-expanded="false">🧮 איך חושב הציון ▾</button>
-      <div class="dm-why" hidden><p class="dm-fine">מתחילים מ-100 ומורידים לפי כל פער. אותם פערים תמיד נותנים אותו ציון.</p>
-        <ul class="why-list">${row('100', 'נקודת ההתחלה')}${rows}${cap}${row(esc(a.match_score), '<b>הציון</b>', ' is-total')}</ul></div></div>`;
+      <div class="dm-why" hidden>${reqs}<p class="dm-fine">מתחילים מ-100 ומורידים לפי כל פער. אותם פערים תמיד נותנים אותו ציון.</p>
+        <ul class="why-list">${row('100', 'נקודת ההתחלה')}${rows}${asks}${cap}${row(esc(a.match_score), '<b>הציון</b>', ' is-total')}</ul></div></div>`;
   }
 
   function cardHtml(card, i, n) {
@@ -281,8 +308,9 @@
           ${a.cv_choice_reason_he ? `<p class="dm-cv-reason">${esc(a.cv_choice_reason_he)}</p>` : ''}
           <div class="dm-cv-cmp" hidden>${scores.map(s => `<label class="dm-cv-opt"><input type="radio" name="cv-${card.id}" value="${esc(s.cv_id)}"${s.cv_id === sel ? ' checked' : ''}><span>${esc(s.label)}${s.cv_id === card.best_cv_id ? '<em>מומלץ</em>' : ''}</span><span class="bar"><i style="width:${Math.max(0, Math.min(100, s.score))}%"></i></span><b>${s.score}</b></label>`).join('')}</div></div>
         ${a.fit_summary_he ? `<section><h3 class="dm-sec-h">🤖 ניתוח ההתאמה</h3><p class="dm-ai">${esc(a.fit_summary_he)}</p></section>` : ''}
-        ${reqs.length ? `<section><div class="dm-sec-row"><h3 class="dm-sec-h">דרישות התפקיד</h3><span class="req-sum">${reqSummary(reqs)}</span></div><ul class="reqs">${reqs.map(r => `<li class="req req--${esc(r.status)}${r.status === 'missing' && r.importance === 'must' ? ' req--hard' : ''}"><span class="req-ico" aria-hidden="true">${(STATUS_ICON[r.status] || ['?'])[0]}</span><span class="sr">${(STATUS_ICON[r.status] || ['', ''])[1]}:</span><bdi dir="ltr" class="req-t">${esc(r.text)}</bdi><span class="req-imp req-imp--${r.importance === 'must' ? 'must' : 'nice'}">${r.importance === 'must' ? 'חובה' : 'יתרון'}</span></li>`).join('')}</ul></section>` : ''}
-        ${a.top_gap_he ? `<div class="dm-gap${hard ? ' is-hard' : ''}"><b>${hard ? '⚠️' : '💡'} הפער המרכזי:</b> ${esc(a.top_gap_he)}</div>` : ''}
+        ${reqs.length ? `<section><div class="dm-sec-row"><h3 class="dm-sec-h">דרישות התפקיד</h3><span class="req-sum">${reqSummary(reqs)}</span></div>${reqsHtml(reqs)}</section>` : ''}
+        ${askHtml(a.to_confirm)}
+        ${a.top_gap_he ?`<div class="dm-gap${hard ? ' is-hard' : ''}"><b>${hard ? '⚠️' : '💡'} הפער המרכזי:</b> ${esc(a.top_gap_he)}</div>` : ''}
         ${whyHtml(a)}`;
     } else {
       body = `<p class="dm-muted">הניתוח המעמיק לא הושלם למשרה הזו. היא כאן כי היא קרובה מאוד לקורות החיים שלך.</p>`;
@@ -421,7 +449,7 @@
       <p class="en-next">${state.readOnly ? 'זו הייתה החפיסה החינמית. מנויים מקבלים חפיסה חדשה בכל יום.' : 'החפיסה הבאה תהיה זמינה מחר, מחצות (שעון ישראל).'}</p>
       <div class="dm-card-plain"><h2 class="dm-h2">🔖 נשמרו היום</h2>${saved.length ? saved.map(c => `<div class="en-row"><bdi dir="ltr">${esc(c.job.title)}</bdi><span>${c.match_score == null ? '' : c.match_score}</span></div>`).join('') : '<p class="dm-muted">עוד לא שמרת משרות.</p>'}
         <button type="button" class="link-btn" data-act="saved">כל המשרות השמורות</button></div>
-      ${skippedLink()}
+      ${nearNudge()}
       ${back('restart-deck', 'חזרה לחפיסה')}
       ${state.readOnly ? '<button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי</button>' : ''}</div>`;
   }
@@ -436,7 +464,8 @@
       : ['אין משרות חדשות בתחומים שלך', 'מאז החפיסה הקודמת לא נכנסו למאגר משרות חדשות בתחומים שבחרת.'];
     return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
       <div class="dm-card-plain"><div class="dm-big" aria-hidden="true">🌤️</div><h2 class="dm-h2">${head[0]}</h2><p class="dm-muted">${head[1]}</p>
-        <p class="dm-fine">המאגר מתעדכן כל בוקר ב-6:00. אפשר גם להרחיב את התחומים או להוסיף גרסת קו״ח.</p>${skippedLink()}</div>
+        <p class="dm-fine">המאגר מתעדכן כל בוקר ב-6:00. אפשר גם להרחיב את התחומים או להוסיף גרסת קו״ח.</p></div>
+      ${nearNudge()}
       <div class="dm-stack"><button type="button" class="btn ${analyzed ? 'btn-primary' : 'btn-secondary'}" data-act="library">עריכת התחומים והגרסאות</button>
         ${analyzed ? '' : '<button type="button" class="btn btn-primary" data-act="build">חיפוש מחדש</button>'}
         ${analyzed && isAdmin() ? '<button type="button" class="btn btn-secondary" data-act="rebuild">🔁 בנייה מחדש (מנהלת)</button>' : ''}</div>
@@ -454,24 +483,52 @@
       group: must ? (r.status === 'missing' ? 'חסרה דרישת חובה' : 'דרישת חובה חלקית') : 'יתרונות' };
   }
 
+  const NEAR_MISS = 50; // left out, but close to the deck's 60: worth a look
+  const fitsLabel = (on) => (on ? '✓ מתאימה לי · נשמרה' : '👍 מתאימה לי');
+
   function skippedView() {
     const list = (state.skipped || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
     const groups = {};
     list.forEach(s => { const g = skipReason(s.reason).group; groups[g] = (groups[g] || 0) + 1; });
     const chips = Object.entries(groups).sort((a, b) => b[1] - a[1])
       .map(([g, n]) => `<span class="chip">${esc(g)} · ${n}</span>`).join('');
-    const rows = list.map(s => `<div class="skip-row"><span class="skip-score">${s.score == null ? '' : s.score}</span>
+    const row = (s) => {
+      const fits = s.user_action === 'fits';
+      return `<div class="skip-row"><span class="skip-score">${s.score == null ? '' : s.score}</span>
       <div class="saved-main"><bdi dir="ltr" class="saved-title">${esc(s.title || '')}</bdi><span class="dm-muted"><bdi dir="ltr">${esc(s.company || '')}</bdi></span>
-        <span class="skip-why">${skipReason(s.reason).html}</span></div>
-      ${s.url ? `<button type="button" class="link-btn" data-act="open-saved" data-url="${esc(s.url)}">פתיחה ↗</button>` : ''}</div>`).join('');
+        <span class="skip-why">${skipReason(s.reason).html}</span>
+        ${(s.to_confirm || []).length ? `<span class="skip-ask">❓ לאשר: ${s.to_confirm.map(t => `<bdi dir="auto">${esc(t)}</bdi>`).join(', ')}</span>` : ''}
+        ${whyHtml({ ...s, match_score: s.score }, true)}
+        <div class="skip-acts"><button type="button" class="skip-fit${fits ? ' is-on' : ''}" data-act="fits" data-id="${esc(s.id)}" aria-pressed="${fits}">${fitsLabel(fits)}</button></div>
+        <p class="dm-fine skip-thanks"${fits ? '' : ' hidden'}>נשמרה עם המשרות השמורות, וזה עוזר לנו לשפר את הניתוח. אם נפסלה על משהו שיש לך ולא כתוב בקורות החיים, אפשר להוסיף אותו ב<button type="button" class="link-btn" data-act="facts">🎓 מה שלא כתוב בקו״ח</button>.</p></div>
+      ${s.url ? `<button type="button" class="link-btn" data-act="open-saved" data-url="${esc(s.url)}">פתיחה ↗</button>` : ''}</div>`;
+    };
+    const near = list.filter(s => (s.score || 0) >= NEAR_MISS);
+    const rest = list.filter(s => (s.score || 0) < NEAR_MISS);
+    const part = (title, rows) => (rows.length ? `<h2 class="dm-h2 skip-h">${title} <span class="dm-fine">(${rows.length})</span></h2>${rows.map(row).join('')}` : '');
     return `${topBar('🔎 נבדקו ולא נכנסו')}<div class="dm-body">
-      <p class="dm-muted">המשרות האלה נותחו לעומק וקיבלו ציון מתחת ל-60, ולכן לא נכנסו לחפיסה. לכל אחת, הסיבה העיקרית:</p>
+      <p class="dm-muted">המשרות האלה נותחו לעומק וקיבלו ציון מתחת ל-60, ולכן לא נכנסו לחפיסה. כדאי להציץ בעיקר בקרובות לסף: לכל משרה רואים את הסיבה העיקרית, ובלחיצה על 🧮 את כל החישוב.</p>
+      <p class="dm-tip">💡 משרה נפסלה על משהו שיש לך ולא כתוב בקורות החיים (תואר, רישיון, טכנולוגיה ששימשה אותך מעט)? אפשר להוסיף אותו ב<button type="button" class="link-btn" data-act="facts">🎓 מה שלא כתוב בקו״ח</button>, והוא ייחשב מהחפיסה הבאה.</p>
       ${chips ? `<div class="dm-chips skip-groups">${chips}</div>` : ''}
-      ${rows || '<p class="dm-muted">אין משרות כאלה בחפיסה הזו.</p>'}${back()}</div>`;
+      ${list.length ? part('קרובות לסף · 50-59', near) + part(near.length ? 'השאר' : 'כל המשרות', rest) : '<p class="dm-muted">אין משרות כאלה בחפיסה הזו.</p>'}${back()}</div>`;
   }
 
-  const skippedLink = () => (state.skipped && state.skipped.length
-    ? `<button type="button" class="link-btn dm-skipped" data-act="skipped">🔎 עוד ${state.skipped.length} נבדקו ולא נכנסו</button>` : '');
+  // After the deck, or on a day with none: jobs that nearly made it are
+  // offered for a look, since the person may know what the CV doesn't say.
+  function nearNudge() {
+    const near = (state.skipped || []).filter(s => (s.score || 0) >= NEAR_MISS).length;
+    if (!near) return skippedLink();
+    return `<div class="dm-card-plain"><h2 class="dm-h2">🔎 עוד ${near === 1 ? 'משרה אחת כמעט נכנסה' : `${near} משרות כמעט נכנסו`}</h2>
+      <p class="dm-muted">ציון 50-59, קצת מתחת לסף. שווה להציץ: אולי משהו שם מתאים לך ופשוט לא כתוב בקורות החיים.</p>
+      <button type="button" class="btn btn-secondary" data-act="skipped">🔎 להציץ במשרות שלא נכנסו</button></div>`;
+  }
+
+  function skippedLink() {
+    const all = state.skipped || [];
+    if (!all.length) return '';
+    const near = all.filter(s => (s.score || 0) >= NEAR_MISS).length;
+    return `<button type="button" class="link-btn dm-skipped" data-act="skipped">🔎 עוד ${all.length} נבדקו ולא נכנסו${near ? `, ${near} מהן קרובות לסף` : ''}</button>`;
+  }
 
   function savedView() {
     const rows = state.saved.map(c => `<div class="saved-row"><div class="saved-main"><bdi dir="ltr" class="saved-title">${esc(c.job.title)}</bdi><span class="dm-muted"><bdi dir="ltr">${esc(c.job.company)}</bdi> · ${esc(c.match_day || '')}</span></div><span class="saved-score">${c.match_score == null ? '' : c.match_score}</span><button type="button" class="link-btn" data-act="open-saved" data-url="${esc(c.job.apply_url || c.job.url)}">פתיחה ↗</button></div>`).join('');
@@ -531,6 +588,18 @@
       .map(([v, t]) => `<option value="${v}"${(p[key] || '') === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>`;
     const letter = (key, label, value, ph) => `<label class="fld"><span>${label}</span><textarea data-letter="${esc(key)}" rows="6" dir="auto" maxlength="5000" placeholder="${esc(ph)}">${esc(value || '')}</textarea></label>`;
     const { done, total } = DM.apply.completeness(p);
+    const f = p.facts || {};
+    const fact = (key, label, options) => `<label class="fld"><span>${label}</span><select data-fact="${key}">${[['', '— לא לציין —'], ...options]
+      .map(([v, t]) => `<option value="${v}"${(f[key] || '') === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>`;
+    const factText = (key, label, { hint = '', ph = '', max = 80, numeric = false } = {}) => `<label class="fld"><span>${label}${hint ? ` <em class="fld-hint">${hint}</em>` : ''}</span><input data-fact="${key}" dir="auto" value="${esc(f[key] || '')}" maxlength="${max}"${numeric ? ' inputmode="numeric"' : ''}${ph ? ` placeholder="${esc(ph)}"` : ''}></label>`;
+    // For the matching only (reasoning.py render_facts), never typed into a form.
+    const facts = `<section class="dm-card-plain pf-sec pf-facts" id="pfFacts"><h2 class="dm-h2">🎓 מה שלא כתוב בקורות החיים</h2>
+        <p class="dm-fine">נשלח לניתוח יחד עם קורות החיים, כדי שמשרה לא תיפסל על משהו שיש לך ופשוט לא כתבת. ממלאים פעם אחת, וזה נחשב בכל החפיסות הבאות. לא נכנס לטופסי ההגשה.</p>
+        <div class="pf-grid">${fact('degree', 'תואר אקדמי', [['bachelor', 'תואר ראשון'], ['master', 'תואר שני'], ['phd', 'דוקטורט'], ['student', 'סטודנט/ית'], ['none', 'בלי תואר']])}${factText('degreeField', 'תחום התואר', { ph: 'מדעי המחשב' })}</div>
+        <div class="pf-grid">${fact('license', 'רישיון נהיגה', [['yes', 'יש'], ['no', 'אין']])}${fact('english', 'אנגלית', [['native', 'שפת אם'], ['fluent', 'שוטפת'], ['good', 'טובה'], ['basic', 'בסיסית']])}</div>
+        <div class="pf-grid">${factText('psychometric', 'ציון פסיכומטרי', { hint: 'רשות', ph: '680', max: 3, numeric: true })}${fact('clearance', 'סיווג ביטחוני', [['active', 'בתוקף'], ['past', 'היה בעבר'], ['none', 'אין']])}</div>
+        <label class="fld"><span>כישורים וניסיון שלא מופיעים בקורות החיים</span><textarea data-fact="notes" rows="5" dir="rtl" maxlength="1500" placeholder="למשל: C# ו-.NET בפרויקט בעבודה ב-2023. מערכת RAG עם LLM בפרודקשן: מה בנית ואיפה.">${esc(f.notes || '')}</textarea></label>
+        <p class="dm-fine">כדאי לתאר מה עשית ואיפה, לא רק שמות של טכנולוגיות: תיאור נחשב כמו ניסיון בקורות החיים, ורשימת שמות כמו רשימת כישורים. שאלה שלא ענית עליה לא מורידה ציון: המשרה תופיע עם ❓ "לאשר".</p></section>`;
     const perVersion = state.cvs.length > 1
       ? `<details class="pf-more"><summary>מכתב שונה לכל גרסת קורות חיים (${state.cvs.length})</summary>
         <p class="dm-fine">נשלח עם הגרסה שנבחרה למשרה. ריק: נשתמש במכתב הכללי.</p>
@@ -538,7 +607,8 @@
     return `${topBar('📝 פרטי הגשה')}<div class="dm-body pf">
       <div class="pf-intro"><p>מה שממולא כאן נכנס לטופסי ההגשה, <b>רק כשטופס שואל בדיוק את זה</b>. שדה ריק נשאר ריק בטופס: אנחנו לא ממציאים תשובות. הכל נשמר רק בדפדפן שלך.</p>
         <div class="pf-progress" aria-hidden="true"><span style="width:${Math.round((100 * done) / total)}%"></span></div>
-        <p class="dm-fine">מולאו ${done} מתוך ${total}</p></div>
+        <p class="dm-fine">מולאו ${done} מתוך ${total}</p>
+        <button type="button" class="link-btn pf-jump" data-act="facts">🎓 בסוף העמוד: מה שלא כתוב בקורות החיים, לניתוח ההתאמה ▾</button></div>
       <section class="dm-card-plain pf-sec"><h2 class="dm-h2">👤 פרטים אישיים</h2>
         <div class="pf-grid">${field('firstName', 'שם פרטי', { dir: 'auto', hint: 'כמו בקורות החיים' })}${field('lastName', 'שם משפחה', { dir: 'auto' })}</div>
         <div class="pf-grid">${field('firstNameHe', 'שם פרטי בעברית', { dir: 'rtl', hint: 'לטפסים בעברית' })}${field('lastNameHe', 'שם משפחה בעברית', { dir: 'rtl' })}</div>
@@ -560,6 +630,7 @@
       <section class="dm-card-plain pf-sec"><h2 class="dm-h2">✉️ מכתב מקדים</h2>
         <p class="dm-fine">נכנס לשדה המכתב המקדים בטופס, או מצורף כקובץ טקסט כשהטופס מבקש קובץ.</p>
         ${letter('general', 'מכתב כללי', p.coverLetter, 'כמה שורות עליך, על הניסיון שלך ועל מה שמעניין אותך…')}${perVersion}</section>
+      ${facts}
       ${state.allSites ? '' : `<label class="pf-sites"><input type="checkbox" id="pfSites" checked><span>למלא גם באתרי הקריירה של החברות (רוב המשרות מלינקדאין מובילות לשם). Chrome יבקש אישור פעם אחת.</span></label>`}
       <div class="dm-stack"><button type="button" class="btn btn-primary" data-act="save-profile">${state.pendingApply ? 'שמירה והמשך להגשה' : 'שמירה'}</button>
         ${state.pendingApply ? '<button type="button" class="link-btn" data-act="skip-profile">בלי מילוי, רק לפתוח את המשרה</button>' : ''}${back()}</div></div>`;
@@ -684,6 +755,8 @@
       state.confirmError = '';
       return setView('confirm');
     }
+    const facts = DM.apply.matchFacts(await DM.apply.getProfile()); // what the CV doesn't say
+    if (facts) payload.facts = facts;
     state.busy = true;
     const pool = state.status && state.status.pool;
     state.build = { s1: 'active', s1text: pool && pool.fresh ? `${fmtInt(pool.fresh)} משרות חדשות במאגר מ-3 הימים האחרונים` : '', s2: 'wait', done: 0, total: 0, s3: 'wait' };
@@ -833,7 +906,7 @@
     const to = state.prevView || 'ready';
     state.prevView = null;
     if (to === 'deck' && state.cards.length) return setView('deck');
-    if (to === 'end') return setView('end');
+    if (['end', 'skipped', 'confirm'].includes(to)) return setView(to);
     return refresh();
   }
 
@@ -969,6 +1042,25 @@
       case 'skipped':
         state.prevView = state.view;
         return setView('skipped');
+      case 'facts':
+        if (state.view === 'profile') return scrollToFacts(); // keeps what's typed
+        state.profileFocus = 'facts';
+        return openProfile();
+      case 'fits': {
+        // A left-out job the person says fits them: kept with the saved jobs,
+        // and counted in the report (where the scoring is too strict).
+        const s = (state.skipped || []).find(x => String(x.id) === btn.dataset.id);
+        if (!s) return undefined;
+        const on = s.user_action !== 'fits';
+        try { await DM.api.action(s.id, on ? 'fits' : 'clear'); } catch (_) { btn.textContent = 'לא נשמר. לנסות שוב'; return undefined; }
+        s.user_action = on ? 'fits' : null;
+        btn.textContent = fitsLabel(on);
+        btn.classList.toggle('is-on', on);
+        btn.setAttribute('aria-pressed', String(on));
+        const thanks = btn.closest('.saved-main').querySelector('.skip-thanks');
+        if (thanks) thanks.hidden = !on;
+        return undefined;
+      }
       case 'saved': {
         try { state.saved = (await DM.api.saved()).cards || []; } catch (_) { state.saved = []; }
         state.prevView = state.view;
@@ -1008,6 +1100,8 @@
           if (box.dataset.letter === 'general') draft.coverLetter = box.value;
           else draft.coverLetters[box.dataset.letter] = box.value;
         });
+        draft.facts = {};
+        document.querySelectorAll('[data-fact]').forEach(inp => { draft.facts[inp.dataset.fact] = inp.value; });
         await DM.apply.saveProfile(draft);
         state.details = await DM.apply.getProfile();
         if (asked) state.allSites = await asked;

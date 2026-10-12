@@ -368,8 +368,9 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   detailsBtn.click();
   await tick();
   const sections = [...ctx.doc.querySelectorAll('.pf-sec h2')].map(h => h.textContent);
-  ok('the details are one page in clear sections', ctx.app.state.view === 'profile' && sections.length === 5 &&
-     ['פרטים אישיים', 'קישורים', 'עבודה', 'שאלות נפוצות', 'מכתב מקדים'].every((t, i) => sections[i].includes(t)));
+  ok('the details are one page in clear sections', ctx.app.state.view === 'profile' && sections.length === 6 &&
+     ['פרטים אישיים', 'קישורים', 'עבודה', 'שאלות נפוצות', 'מכתב מקדים', 'מה שלא כתוב בקורות החיים']
+       .every((t, i) => sections[i].includes(t)), sections.join(' | '));
   ok('it starts from the CV and says it never invents answers', ctx.doc.querySelector('[data-field="firstName"]').value === 'Noa' &&
      ctx.doc.querySelector('[data-field="linkedin"]').value === 'https://linkedin.com/in/noa-levi' &&
      ctx.doc.querySelector('.pf-intro').textContent.includes('לא ממציאים'));
@@ -542,6 +543,94 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
     today: { run: { id: 5, status: 'done', candidates: 0, fresh: 0, cards: 0 }, cards: [], entitlement: 'subscription' } });
   ok('nothing new at all offers to search again', ctx.app.state.view === 'quiet' &&
      ctx.doc.body.textContent.includes('אין משרות חדשות') && !!ctx.doc.querySelector('[data-act="build"]'));
+
+  // ── what the CV doesn't say: the answers, cards to confirm, left-out jobs ────
+  const builtDeck = [{ type: 'started', run_id: 30 }, { type: 'done', run_id: 30, count: 3 }];
+  ctx = await boot({ statuses: [SUB(null)], storage: { cvText: CV }, runEvents: builtDeck });
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(300);
+  const plainRun = ctx.log.requests.find(r => r.path === '/run');
+  ok('with nothing answered, a build sends no answers', plainRun && !('facts' in plainRun.body));
+  ctx = await boot({ statuses: [SUB(null)], storage: { cvText: CV }, runEvents: builtDeck });
+  ok('the ready screen asks about what the CV doesn\'t say', ctx.app.state.view === 'ready' && !!ctx.doc.querySelector('.dm-facts-nudge'));
+  ctx.doc.querySelector('.dm-facts-nudge [data-act="facts"]').click();
+  await tick();
+  const factsSec = ctx.doc.getElementById('pfFacts');
+  ok('it opens the details page at its own section', ctx.app.state.view === 'profile' && factsSec &&
+     factsSec.textContent.includes('לא נכנס לטופסי ההגשה'));
+  const setFact = (k, v) => { ctx.doc.querySelector(`[data-fact="${k}"]`).value = v; };
+  setFact('degree', 'bachelor');
+  setFact('degreeField', 'מדעי המחשב');
+  setFact('license', 'yes');
+  setFact('psychometric', '999');
+  setFact('notes', 'C# ו-.NET בפרויקט בעבודה, 2023');
+  ctx.doc.querySelector('[data-act="save-profile"]').click();
+  await tick(200);
+  const facts = ctx.storage.jma_dm_apply_profile.facts;
+  ok('the answers are kept, a score out of range is not', facts.degree === 'bachelor' && facts.license === 'yes' &&
+     facts.psychometric === '' && facts.notes.includes('C#') && facts.english === '', JSON.stringify(facts));
+  await ctx.app.refresh();
+  await tick();
+  ok('and the ready screen stops asking', ctx.app.state.view === 'ready' && !ctx.doc.querySelector('.dm-facts-nudge'));
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(300);
+  const factsRun = ctx.log.requests.find(r => r.path === '/run');
+  ok('every build sends them with the CVs', factsRun && factsRun.body.facts && factsRun.body.facts.degreeField === 'מדעי המחשב' &&
+     factsRun.body.facts.license === 'yes', factsRun && JSON.stringify(factsRun.body.facts));
+  ok('and they never go into a form', ctx.window.JMA_DM.apply.forForm(ctx.storage.jma_dm_apply_profile, 'main').facts === undefined);
+
+  const toConfirm = card(31, 86, 'Integration Engineer', { tier: 'strong', analysis: { ...card(31, 86, 'x').analysis,
+    requirements: [{ text: 'Linux', status: 'met', importance: 'must' },
+      { text: "Driver's license", status: 'unknown', importance: 'must', kind: 'credential' }],
+    to_confirm: ["Driver's license"], breakdown: [], cap: null, match_score: 86 } });
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV },
+    today: { run: { id: 31, status: 'done', candidates: 5 }, cards: [toConfirm], entitlement: 'subscription' } });
+  const ask = ctx.doc.querySelector('.dm-ask');
+  ok('a credential the CV doesn\'t mention is asked about, not deducted', ask && ask.textContent.includes("Driver's license") &&
+     ask.textContent.includes('לא הורדנו') && !!ctx.doc.querySelector('.req--unknown') &&
+     ctx.doc.querySelector('.req-sum').textContent.includes('לאשר'));
+  ctx.doc.querySelector('[data-act="why"]').click();
+  ok('and its line in the arithmetic costs nothing', [...ctx.doc.querySelectorAll('.why-row.is-ask')]
+    .some(r => r.textContent.trim().startsWith('0') && r.textContent.includes("Driver's license")));
+  ask.querySelector('[data-act="facts"]').click();
+  await tick();
+  ok('one click to answer it for good', ctx.app.state.view === 'profile' && !!ctx.doc.getElementById('pfFacts'));
+
+  const left = [
+    { id: 41, score: 56, title: 'Java Developer', company: 'Infinidat', url: 'https://x.example/41',
+      reason: { kind: 'requirement', text: 'Java backend (3+ years)', importance: 'must', status: 'partial', points: -12 },
+      requirements: [{ text: 'Java backend (3+ years)', importance: 'must', status: 'partial' },
+        { text: 'Linux', importance: 'must', status: 'met' }],
+      breakdown: [{ kind: 'requirement', text: 'Java backend (3+ years)', importance: 'must', status: 'partial', points: -12 },
+        { kind: 'years', required: 3, relevant: 1, points: -20 }], cap: null, to_confirm: [], user_action: null },
+    { id: 42, score: 9, title: 'Biomedical Data Scientist', company: 'Weizmann', url: '',
+      reason: { kind: 'cap', name: 'domain_mismatch', value: 55 }, requirements: [], breakdown: [],
+      cap: { name: 'domain_mismatch', value: 55 }, to_confirm: [], user_action: null },
+  ];
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV },
+    today: { run: { id: 40, status: 'done', candidates: 3, analyzed_ok: 3 }, cards: [card(1, 80, 'Backend', { tier: 'strong' })],
+      entitlement: 'subscription', skipped: left } });
+  ok('the deck counts the near misses', ctx.doc.querySelector('[data-act="skipped"]').textContent.includes('1 מהן קרובות לסף'));
+  ctx.doc.querySelector('[data-act="skipped"]').click();
+  await tick();
+  const heads = [...ctx.doc.querySelectorAll('.skip-h')].map(h => h.textContent);
+  ok('near misses come first, under their own heading', heads.length === 2 && heads[0].includes('קרובות לסף') && heads[1].includes('השאר'));
+  const firstRow = ctx.doc.querySelector('.skip-row');
+  firstRow.querySelector('[data-act="why"]').click();
+  const calc = firstRow.querySelector('.dm-why');
+  ok('each one shows its whole calculation, requirements included', !calc.hidden && calc.querySelectorAll('.req').length === 2 &&
+     [...calc.querySelectorAll('.why-row')].some(r => r.textContent.includes('1 מתוך 3')) && calc.textContent.includes('56'));
+  firstRow.querySelector('[data-act="fits"]').click();
+  await tick();
+  ok('"fits me" is recorded, and points to the answers', actions(ctx.log).includes('41:fits') &&
+     firstRow.querySelector('[data-act="fits"]').classList.contains('is-on') && !firstRow.querySelector('.skip-thanks').hidden &&
+     !!firstRow.querySelector('.skip-thanks [data-act="facts"]'));
+  firstRow.querySelector('[data-act="fits"]').click();
+  await tick();
+  ok('and can be taken back', actions(ctx.log).includes('41:clear') && firstRow.querySelector('.skip-thanks').hidden);
+  ctx.app.setView('end');
+  ok('the end of the deck invites a look at the near misses', ctx.doc.body.textContent.includes('משרה אחת כמעט נכנסה') &&
+     !!ctx.doc.querySelector('.en [data-act="skipped"]'));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

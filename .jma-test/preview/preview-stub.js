@@ -29,7 +29,7 @@
       match_score: score, best_cv_ref: analysis.best || 'main',
       cv_scores: [{ cv_id: 'main', label: 'Backend', score: analysis.be }, { cv_id: 'vdata', label: 'Data', score: analysis.data }],
       requirements: reqs(analysis.reqs), fit_summary_he: analysis.summary, cv_choice_reason_he: analysis.reason, top_gap_he: analysis.gap,
-      breakdown: analysis.breakdown || [], cap: analysis.cap || null,
+      breakdown: analysis.breakdown || [], cap: analysis.cap || null, to_confirm: analysis.toConfirm || [],
     },
     job: { title, company, category: extra.category || 'Backend', seniority: extra.seniority || 'Senior',
       url: `https://jobs.example.com/${id}`, apply_url: `https://jobs.example.com/${id}/apply`, ats,
@@ -43,7 +43,8 @@
       reason: 'גרסת ה-Backend מדגישה Kafka ו-AWS, שתי דרישות החובה המרכזיות.',
       gap: 'Kubernetes: יש ניסיון בפריסה, לא בתפעול קלאסטרים.',
       reqs: [['5+ years backend (Python / Java)', 'met', 'must'], ['Microservices, event-driven (Kafka)', 'met', 'must'],
-        ['AWS in production', 'met', 'must'], ['Kubernetes at scale', 'partial', 'must'], ['Go', 'missing', 'nice']] }),
+        ['AWS in production', 'met', 'must'], ['Kubernetes at scale', 'partial', 'must'], ["Valid driver's license", 'unknown', 'must'],
+        ['Go', 'missing', 'nice']], toConfirm: ["Valid driver's license"] }),
     card(2, 81, 'Data Engineer', 'Datavine', 'greenhouse', { best: 'vdata', be: 70, data: 81,
       breakdown: [{ kind: 'requirement', text: 'dbt', importance: 'nice', status: 'partial', points: -1 },
         { kind: 'requirement', text: 'Snowflake', importance: 'nice', status: 'missing', points: -3 },
@@ -119,11 +120,20 @@
 
   // The analyzed jobs that stayed out of the deck, with their main reasons.
   const SKIPPED = [
-    { id: 31, score: 58, title: 'Backend Engineer', company: 'Riskified', url: 'https://jobs.example.com/31', reason: { kind: 'years', required: 5, relevant: 2, points: -18 } },
+    { id: 31, score: 58, title: 'Backend Engineer', company: 'Riskified', url: 'https://jobs.example.com/31', reason: { kind: 'years', required: 5, relevant: 2, points: -18 },
+      requirements: reqs([['Python', 'met', 'must'], ['Kafka', 'partial', 'must'], ['B.Sc. in Computer Science', 'unknown', 'must'], ['Go', 'missing', 'nice']]),
+      breakdown: [{ kind: 'requirement', text: 'Kafka', importance: 'must', status: 'partial', points: -8 },
+        { kind: 'requirement', text: 'Go', importance: 'nice', status: 'missing', points: -3 }, { kind: 'years', required: 5, relevant: 2, points: -18 }],
+      cap: null, to_confirm: ['B.Sc. in Computer Science'] },
     { id: 32, score: 55, title: 'Backend Team Lead', company: 'Monday.com', url: 'https://jobs.example.com/32', reason: { kind: 'cap', name: 'no_people_leadership', value: 55 } },
     { id: 33, score: 52, title: 'Senior Python Developer', company: 'Wiz', url: 'https://jobs.example.com/33', reason: { kind: 'cap', name: 'level_unproven', value: 65 } },
     { id: 34, score: 41, title: 'Go Backend Engineer', company: 'Taboola', url: 'https://jobs.example.com/34', reason: { kind: 'requirement', text: 'Go', importance: 'must', status: 'missing', points: -35 } },
-    { id: 35, score: 37, title: 'C# .NET Developer', company: 'Iscar', url: 'https://jobs.example.com/35', reason: { kind: 'requirement', text: 'C# / .NET', importance: 'must', status: 'missing', points: -35 } },
+    { id: 35, score: 37, title: 'C# .NET Developer', company: 'Iscar', url: 'https://jobs.example.com/35', reason: { kind: 'requirement', text: 'C# / .NET', importance: 'must', status: 'missing', points: -35 },
+      requirements: reqs([['C# / .NET', 'missing', 'must'], ['SQL Server', 'partial', 'must'], ['Angular', 'partial', 'must']]),
+      breakdown: [{ kind: 'requirement', text: 'C# / .NET', importance: 'must', status: 'missing', points: -35 },
+        { kind: 'requirement', text: 'SQL Server', importance: 'must', status: 'partial', points: -8 },
+        { kind: 'requirement', text: 'Angular', importance: 'must', status: 'partial', points: -8 }, { kind: 'years', required: 4, relevant: 2, points: -12 }],
+      cap: null, to_confirm: [] },
   ];
   let opened = '';
   let access = scenario !== 'apply-access';

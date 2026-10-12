@@ -59,6 +59,30 @@
   const FIELDS = TEXT_FIELDS.concat(Object.keys(CHOICE_FIELDS), ['coverLetter']);
   const LETTER_MAX = 5000;
   const HEBREW = /[֐-׿]/;
+  // What the CV doesn't say, for the matching only: never typed into a form.
+  // Sent with the CVs on every run (server-python/daily_matches/reasoning.py
+  // render_facts), so a job isn't left out over a driver's license or a degree
+  // the person has and didn't write down.
+  const FACT_CHOICES = { degree: ['bachelor', 'master', 'phd', 'student', 'none'], license: ['yes', 'no'],
+    english: ['native', 'fluent', 'good', 'basic'], clearance: ['active', 'past', 'none'] };
+  const FACT_NOTES_MAX = 1500;
+
+  function cleanFacts(facts) {
+    const f = facts || {};
+    const out = {};
+    for (const [k, allowed] of Object.entries(FACT_CHOICES)) out[k] = allowed.includes(f[k]) ? f[k] : '';
+    out.degreeField = String(f.degreeField || '').trim().slice(0, 80);
+    const score = String(f.psychometric || '').trim();
+    out.psychometric = /^\d{3}$/.test(score) && +score >= 200 && +score <= 800 ? score : '';
+    out.notes = String(f.notes || '').trim().slice(0, FACT_NOTES_MAX);
+    return out;
+  }
+
+  // A run's answers, or null when none is given.
+  function matchFacts(profile) {
+    const f = cleanFacts(profile && profile.facts);
+    return Object.values(f).some(Boolean) ? f : null;
+  }
 
   function splitName(full) {
     const words = String(full || '').trim().split(/\s+/).filter(Boolean);
@@ -99,6 +123,7 @@
     delete p.fullName;
     delete p.location;
     p.coverLetters = p.coverLetters && typeof p.coverLetters === 'object' ? p.coverLetters : {};
+    p.facts = cleanFacts(p.facts);
     return p;
   }
 
@@ -123,6 +148,7 @@
       const letter = String(text || '').trim().slice(0, LETTER_MAX);
       if (letter) clean.coverLetters[String(cvId).slice(0, 80)] = letter;
     }
+    clean.facts = cleanFacts(profile.facts);
     await chrome.storage.local.set({ [PROFILE_KEY]: clean });
     return clean;
   }
@@ -139,7 +165,9 @@
   // letter written for the CV version being sent (or the general one).
   function forForm(profile, cvId) {
     const p = upgrade(profile || {});
-    return { ...p, coverLetter: (cvId && p.coverLetters[cvId]) || p.coverLetter || '', coverLetters: undefined };
+    // The matching answers (facts) are the analysis's, never a form's.
+    return { ...p, coverLetter: (cvId && p.coverLetters[cvId]) || p.coverLetter || '', coverLetters: undefined,
+      facts: undefined };
   }
 
   // Runs inside the page (each frame) through chrome.scripting.executeScript,
@@ -670,5 +698,5 @@
   root.JMA_DM = root.JMA_DM || {};
   root.JMA_DM.apply = { FIELDS, TEXT_FIELDS, CHOICE_FIELDS, AUTOFILL_ATS, canAutofill, deriveProfile, getProfile,
     suggestProfile, saveProfile, completeness, forForm, formFill, open, follow, stopFollowing, fillOpenForm, hasAccess,
-    hasAllSites, requestAccess, downloadCv, timing };
+    hasAllSites, requestAccess, downloadCv, timing, FACT_CHOICES, cleanFacts, matchFacts };
 })(typeof globalThis !== 'undefined' ? globalThis : self);

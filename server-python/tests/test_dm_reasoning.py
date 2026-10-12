@@ -69,8 +69,12 @@ class TestSchema:
         assert set(props["caps"]["items"]["enum"]) == set(reasoning.CAPS)
 
 
-def _req(text, importance="must", weight="core", status="met"):
-    return {"text": text, "importance": importance, "weight": weight, "status": status}
+def _req(text, importance="must", weight="core", status="met", kind="skill"):
+    return {"text": text, "importance": importance, "weight": weight, "kind": kind, "status": status}
+
+
+def _clearance(status):
+    return _req("Security clearance", weight="supporting", status=status, kind="credential")
 
 
 # Met items cost nothing: they let a test about the arithmetic stay clear of
@@ -117,7 +121,7 @@ class TestScore:
         assert no_gap["match_score"] == 88
 
     def test_the_lowest_cap_wins_and_is_reported(self):
-        out = reasoning.normalize_analysis(_raw([_req("Python", weight="primary")],
+        out = reasoning.normalize_analysis(_raw([_req("Python", weight="primary"), _clearance("missing")],
                                                 caps=["level_unproven", "hard_blocker", "made_up"]), CVS)
         assert out["match_score"] == 40 and out["cap"] == {"name": "hard_blocker", "value": 40}
 
@@ -172,6 +176,77 @@ class TestScore:
 
     def test_wrong_shape_is_none(self):
         assert reasoning.normalize_analysis({"requirements": []}, CVS) is None
+
+
+class TestCredentials:
+    """What a CV leaves out (a driver's license, a degree, a clearance) is
+    asked about, not held against the candidate."""
+
+    def test_an_unknown_credential_costs_nothing_and_is_to_confirm(self):
+        out = reasoning.normalize_analysis(_raw([
+            _req("Linux", weight="primary"), _req("Python"),
+            _req("Driver's license", weight="supporting", status="unknown", kind="credential")]), CVS)
+        assert out["match_score"] == 100 and out["breakdown"] == []
+        assert out["to_confirm"] == ["Driver's license"]
+        assert out["requirements"][2]["status"] == "unknown" and out["requirements"][2]["kind"] == "credential"
+
+    def test_a_skill_is_never_unknown(self):
+        out = reasoning.normalize_analysis(_raw([_req("Kafka", status="unknown")] + MET), CVS)
+        assert out["requirements"][0]["status"] == "missing" and out["match_score"] == 80
+        assert out["to_confirm"] == []
+
+    def test_a_missing_kind_reads_as_a_skill(self):
+        raw = _raw([{"text": "Kafka", "importance": "must", "weight": "core", "status": "unknown"}] + MET)
+        assert reasoning.normalize_analysis(raw, CVS)["requirements"][0] == {
+            "text": "Kafka", "importance": "must", "weight": "core", "kind": "skill", "status": "missing"}
+
+    def test_hard_blocker_needs_a_credential_the_evidence_shows_missing(self):
+        reqs = [_req("Python", weight="primary")] + MET
+        assert reasoning.normalize_analysis(_raw(reqs + [_clearance("unknown")], caps=["hard_blocker"]),
+                                            CVS)["cap"] is None
+        assert reasoning.normalize_analysis(_raw(reqs, caps=["hard_blocker"]), CVS)["cap"] is None
+        out = reasoning.normalize_analysis(_raw(reqs + [_clearance("missing")], caps=["hard_blocker"]), CVS)
+        assert out["cap"] == {"name": "hard_blocker", "value": 40}
+
+    def test_domain_mismatch_is_not_another_stack_of_the_same_discipline(self):
+        # A full-stack developer facing a C# full-stack role: C# costs its points, no more.
+        reqs = [_req("C#", weight="primary", status="missing"), _req("JavaScript"), _req("HTML"), _req("SQL")]
+        out = reasoning.normalize_analysis(_raw(reqs, caps=["domain_mismatch"]), CVS)
+        assert out["match_score"] == 65 and out["cap"] is None
+        partial = [_req("C#", weight="primary", status="partial"), _req("ASP.NET", status="missing")] + MET
+        assert reasoning.normalize_analysis(_raw(partial, caps=["domain_mismatch"]), CVS)["cap"] is None
+
+    def test_domain_mismatch_stays_for_a_whole_other_domain(self):
+        reqs = [_req("SystemVerilog", weight="primary", status="missing"), _req("UVM", status="missing"),
+                _req("Git", weight="supporting")]
+        assert reasoning._consistent_caps(reqs, ["domain_mismatch", "made_up"]) == {"domain_mismatch"}
+        nice_only = [_req("Verilog", importance="nice", weight="supporting", status="missing")]
+        assert reasoning._consistent_caps(nice_only, ["domain_mismatch"]) == {"domain_mismatch"}
+
+    def test_the_candidates_answers_reach_the_prompt(self):
+        facts = reasoning.render_facts({"degree": "bachelor", "degreeField": "Computer Science", "license": "yes",
+                                        "english": "fluent", "psychometric": "712", "clearance": "past",
+                                        "notes": "C# and .NET in a work project, 2023"})
+        assert facts.splitlines()[:5] == [
+            "Academic degree: a bachelor's degree, in Computer Science", "Driver's license: yes",
+            "English: fluent", "Psychometric score: 712", "Security clearance: held one in the past"]
+        assert facts.endswith("C# and .NET in a work project, 2023")
+        text = reasoning.build_system_text(CVS, facts)
+        assert text.index("=== end of cv2 ===") < text.index("THE CANDIDATE'S OWN ANSWERS") < text.index("Driver's license: yes")
+        assert reasoning.build_system_text(CVS).endswith("None given.")
+
+    def test_unknown_answers_are_left_out(self):
+        assert reasoning.render_facts({"degree": "wizard", "license": "maybe", "psychometric": "1200",
+                                       "english": "", "clearance": None}) == ""
+        assert reasoning.render_facts(None) == ""
+        assert reasoning.render_facts({"degree": "none", "degreeField": "x"}) == "Academic degree: none"
+
+    def test_the_schema_and_rubric_know_credentials(self):
+        item = reasoning.tool_schema(["cv1"])["input_schema"]["properties"]["requirements"]["items"]
+        assert item["properties"]["kind"]["enum"] == ["skill", "credential"]
+        assert "unknown" in item["properties"]["status"]["enum"]
+        assert "A skill is never unknown" in reasoning.RUBRIC
+        assert "An unknown item costs" in reasoning.RUBRIC
 
 
 class TestFanOut:

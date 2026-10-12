@@ -69,6 +69,9 @@ class CvInput:
 @dataclass
 class Prefs:
     level: str | None = None  # a config.LEVEL_EXCLUDES key, or None for any level
+    # The person's own answers about what the CV doesn't say (a degree, a
+    # driver's license, skills): evidence for the analysis (reasoning.render_facts).
+    facts: dict | None = None
 
 
 @dataclass
@@ -223,11 +226,11 @@ async def _prepare_cvs(cvs_in: list[CvInput], emit: Callable[[dict], None]) -> l
     return prepared
 
 
-async def _ask_compare_model(prompt_cvs, prompt_jobs) -> dict[str, dict | None] | None:
+async def _ask_compare_model(prompt_cvs, prompt_jobs, facts: str = "") -> dict[str, dict | None] | None:
     """Admins' runs: config.COMPARE_MODEL analyzes the same jobs, alongside the
     main model. Its failure never fails the run."""
     try:
-        other, usage = await reasoning.analyze_jobs(prompt_cvs, prompt_jobs, model=config.COMPARE_MODEL)
+        other, usage = await reasoning.analyze_jobs(prompt_cvs, prompt_jobs, model=config.COMPARE_MODEL, facts=facts)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[DM] compare model %s failed: %s", config.COMPARE_MODEL, exc)
         return None
@@ -403,12 +406,14 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             prompt_jobs = [reasoning.JobForPrompt(c.job_id, job_llm_text(
                 jobs[c.job_id].title, jobs[c.job_id].company, jobs[c.job_id].category,
                 jobs[c.job_id].seniority, jobs[c.job_id].description)) for c in candidates]
-            compare = (asyncio.create_task(_ask_compare_model(prompt_cvs, prompt_jobs))
+            facts = redact_contacts(reasoning.render_facts(prefs.facts))
+            compare = (asyncio.create_task(_ask_compare_model(prompt_cvs, prompt_jobs, facts))
                        if config.COMPARE_MODEL and access.is_admin else None)  # alongside, not after
             try:
                 analyses, usage = await reasoning.analyze_jobs(
                     prompt_cvs, prompt_jobs,
-                    on_progress=lambda done, total: emit({"type": "progress", "done": done, "total": total}))
+                    on_progress=lambda done, total: emit({"type": "progress", "done": done, "total": total}),
+                    facts=facts)
             except BaseException:
                 if compare is not None:
                     compare.cancel()

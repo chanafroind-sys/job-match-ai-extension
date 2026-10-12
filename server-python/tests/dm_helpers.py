@@ -58,7 +58,7 @@ def fake_requirements(job_text: str, cv_text: str) -> list[dict]:
         hits = sum(w in cv_words for w in words)
         status = "met" if hits * 2 >= len(words) else "partial" if hits else "missing"
         reqs.append({"text": line.lstrip("• ").strip(), "importance": "must",
-                     "weight": "primary" if not reqs else "core", "status": status})
+                     "weight": "primary" if not reqs else "core", "kind": "skill", "status": status})
     return reqs[:10]
 
 
@@ -109,7 +109,7 @@ class FakeClaude:
         self.fail_when = fail_when
         self.error_factory = error_factory or (lambda: RuntimeError("boom"))
         self.stop_reason = stop_reason
-        self.force_caps = force_caps  # e.g. ("hard_blocker",) to push every job below the deck
+        self.force_caps = force_caps  # e.g. ("not_a_job",) to push every job below the deck
         self.messages = FakeMessages(self)
 
 

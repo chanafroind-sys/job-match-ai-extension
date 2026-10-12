@@ -104,7 +104,7 @@ class DmRunResult(Base):
     best_cv_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     job_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
-    user_action: Mapped[str | None] = mapped_column(String(16), nullable=True)  # viewed | saved | skipped | applied
+    user_action: Mapped[str | None] = mapped_column(String(16), nullable=True)  # viewed | saved | skipped | applied | fits
     action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

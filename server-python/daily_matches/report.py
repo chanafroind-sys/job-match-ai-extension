@@ -55,6 +55,11 @@ async def build_report(session, now=None, days: int = 3) -> dict:
             "score_bands": dict(sorted(Counter(min(s // 10 * 10, 90) for s in scores).items(), reverse=True)),
             "hidden_reasons": dict(Counter(_reason_key(r.analysis) for r in rows if (r.tier or "") == "hidden")
                                    .most_common()),
+            # Left-out jobs the person said fit them, by the reason they were left
+            # out: where the scoring is too strict.
+            "marked_fits": dict(Counter(_reason_key(r.analysis) for r in rows if r.user_action == "fits")
+                                .most_common()),
+            "with_unknown_credentials": sum(1 for r in rows if (r.analysis or {}).get("to_confirm")),
             "tokens": usage,
             "cache_hit_share": round(usage["cache_read_tokens"] / max(1, usage["cache_read_tokens"]
                                                                        + usage["cache_write_tokens"]), 2),

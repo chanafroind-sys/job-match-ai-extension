@@ -358,7 +358,7 @@ class TestTrialRuns:
 
     async def test_trial_with_an_empty_deck_is_not_used_up(self, db, env):
         await _seed_and_embed(db)
-        env["monkeypatch"].setattr(main_module, "_ac", lambda: FakeClaude(force_caps=("hard_blocker",)))  # everything hidden
+        env["monkeypatch"].setattr(main_module, "_ac", lambda: FakeClaude(force_caps=("not_a_job",)))  # everything hidden
         events = await _collect(_cvs(BACKEND_CV), await self._trial(db))
         assert events[-1]["type"] == "done" and events[-1]["count"] == 0 and events[-1]["analyzed"] == 5
         assert (await db.execute(select(func.count()).select_from(DmTrial))).scalar() == 0
@@ -470,9 +470,13 @@ class TestReport:
         from daily_matches.report import build_report
         await _seed_and_embed(db)
         await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        hidden = (await db.execute(select(DmRunResult).where(DmRunResult.tier == "hidden"))).scalars().first()
+        hidden.user_action = "fits"  # the person says a left-out job fits them
+        await db.commit()
         report = await build_report(db, days=3)
         run = report["runs"][0]
         assert run["status"] == "done" and run["sent_to_ai"] == 5 and run["analyzed_ok"] == 5
+        assert sum(run["marked_fits"].values()) == 1 and run["with_unknown_credentials"] == 0
         assert run["strong"] + run["maybe"] + run["hidden"] == 5 and sum(run["hidden_reasons"].values()) == run["hidden"]
         assert run["cost_usd_at_current_prices"] > 0 and 0 <= run["cache_hit_share"] <= 1
         assert report["pool"]["active"] > 0 and report["model"] == config.LLM_MODEL

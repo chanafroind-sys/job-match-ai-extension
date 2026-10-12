@@ -221,6 +221,45 @@ async def test_the_deck_lists_the_jobs_it_left_out_and_why(client):
     assert len(skipped) + len(deck["cards"]) == events[-1]["analyzed_ok"]
     assert all(s["score"] < 60 and s["title"] and s["reason"] for s in skipped)
     assert {s["reason"]["kind"] for s in skipped} <= {"cap", "years", "requirement"}
+    # The whole calculation, to see why a job came out where it did.
+    assert all(s["requirements"] and isinstance(s["breakdown"], list) and s["to_confirm"] == [] for s in skipped)
+    assert all(s["user_action"] is None for s in skipped)
+
+
+async def test_a_left_out_job_marked_as_fitting_is_kept_with_the_saved(client):
+    _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
+    left_out = (await client.get("/api/daily-matches/today", headers=SUB)).json()["skipped"][0]
+    marked = await client.post(f"/api/daily-matches/results/{left_out['id']}/action", headers=SUB,
+                               json={"action": "fits"})
+    assert marked.json() == {"ok": True, "user_action": "fits"}
+    assert [c["id"] for c in (await client.get("/api/daily-matches/saved", headers=SUB)).json()["cards"]] == [left_out["id"]]
+    again = (await client.get("/api/daily-matches/today", headers=SUB)).json()["skipped"]
+    assert next(s for s in again if s["id"] == left_out["id"])["user_action"] == "fits"
+
+
+async def test_the_persons_own_answers_reach_the_analysis(client, monkeypatch):
+    fake = FakeClaude()
+    monkeypatch.setattr(main_module, "_ac", lambda: fake)
+    body = {**_run_body(), "facts": {"degree": "bachelor", "degreeField": "Computer Science", "license": "yes",
+                                     "english": "native", "psychometric": "", "clearance": "",
+                                     "notes": "C# in a work project; call me at 050-1234567"}}
+    events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=body))
+    assert events[-1]["type"] == "done"
+    system = fake.calls[0]["system"][0]["text"]
+    answers = system.split("THE CANDIDATE'S OWN ANSWERS", 1)[1]
+    assert "Driver's license: yes" in answers and "Computer Science" in answers and "C# in a work project" in answers
+    assert "050-1234567" not in system  # contact details are removed, as from the CVs
+
+
+async def test_answers_a_server_doesnt_know_never_fail_a_run(client, monkeypatch):
+    fake = FakeClaude()
+    monkeypatch.setattr(main_module, "_ac", lambda: fake)
+    body = {**_run_body(), "facts": {"degree": "wizard", "license": "sometimes", "newField": "x"}}
+    events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=body))
+    assert events[-1]["type"] == "done"
+    assert fake.calls[0]["system"][0]["text"].endswith("None given.")
+    too_long = {**_run_body(), "facts": {"notes": "x" * 2001}}
+    assert (await client.post("/api/daily-matches/run", headers=TRIAL, json=too_long)).status_code == 422
 
 
 def test_the_main_reason_is_the_binding_cap_or_the_biggest_loss():
