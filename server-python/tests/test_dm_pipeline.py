@@ -439,7 +439,7 @@ class TestCompareThroughOpenRouter:
                        "_cost_usd": 0.001, "_provider": "P"}, "b": None, "c": None}
         service.merge_compare(analyses, other)
         assert analyses["a"]["compare"]["tier"] == "strong" and analyses["a"]["compare"]["cost_usd"] == 0.001
-        assert analyses["b"]["compare"] == {"model": config.COMPARE_MODEL, "failed": True}
+        assert analyses["b"]["compare"] == {"model": config.COMPARE_MODEL, "method": "scored", "failed": True}
         assert analyses["c"] is None
 
 
@@ -464,6 +464,42 @@ class TestCompareWithAnotherClaude:
         summary = service.compare_summary(rows, (await db.execute(select(DmRun))).scalar_one())
         assert summary["main_model"] == "claude-haiku-5-5" and summary["cost_other_usd"] == pytest.approx(0.0125, abs=1e-4)
         assert summary["cost_main_usd"] == pytest.approx(5 * (1000 * 0.10 + 300 * 0.50) / 1e6, abs=1e-4)
+
+class TestThePlainQuestionSideBySide:
+    ADMIN = Access("subscription", subject="lic:admin", is_admin=True)
+
+    async def test_admins_runs_ask_the_plain_question_too(self, db, env):
+        env["monkeypatch"].setattr(config, "COMPARE_METHOD", "honest")
+        env["monkeypatch"].setattr(config, "COMPARE_MODEL", "openrouter:never-used")
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), self.ADMIN)
+        calls = env["claude"].calls
+        assert [c["tools"][0]["name"] for c in calls].count("submit_verdict") == 5
+        assert {c["model"] for c in calls} == {config.LLM_MODEL}  # the same model, another method
+        rows = (await db.execute(select(DmRunResult))).scalars().all()
+        alt = rows[0].analysis["compare"]
+        assert alt["method"] == "honest" and alt["model"] == config.LLM_MODEL and alt["answer_he"]
+        assert alt["tier"] == reasoning.HONEST_TIERS[alt["verdict"]] and "match_score" not in alt
+        summary = service.compare_summary(rows, (await db.execute(select(DmRun))).scalar_one())
+        assert summary["method"] == "honest" and summary["jobs"] == 5 and summary["mean_abs_diff"] is None
+        assert sum(summary["verdicts"].values()) == 5 and 0 <= summary["same_tier"] <= 100
+        assert summary["judged"] == {"main": 0, "other": 0, "both": 0, "neither": 0} and summary["cost_other_usd"] > 0
+
+    async def test_nobody_else_pays_for_it(self, db, env):
+        env["monkeypatch"].setattr(config, "COMPARE_METHOD", "honest")
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert {c["tools"][0]["name"] for c in env["claude"].calls} == {"submit_match"}
+
+    def test_off_means_no_comparison(self, monkeypatch):
+        monkeypatch.setattr(config, "COMPARE_METHOD", "off")
+        monkeypatch.setattr(config, "COMPARE_MODEL", "claude-sonnet-5-5")
+        assert config.compare_setup() is None
+        monkeypatch.setattr(config, "COMPARE_METHOD", "model")
+        assert config.compare_setup() == ("scored", "claude-sonnet-5-5")
+        monkeypatch.setattr(config, "COMPARE_METHOD", "honest")
+        assert config.compare_setup() == ("honest", config.LLM_MODEL)
+
 
 class TestReport:
     async def test_the_report_counts_decks_and_never_names_anyone(self, db, env):

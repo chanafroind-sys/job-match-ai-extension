@@ -226,6 +226,31 @@ async def test_the_deck_lists_the_jobs_it_left_out_and_why(client):
     assert all(s["user_action"] is None for s in skipped)
 
 
+async def test_an_admin_judges_the_two_methods_job_by_job(client, monkeypatch):
+    from daily_matches import config
+    monkeypatch.setattr(config, "COMPARE_METHOD", "honest")
+    monkeypatch.setattr(main_module, "STATIC_ADMIN_KEYS", {"GOOD-KEY"})
+    _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
+    deck = (await client.get("/api/daily-matches/today", headers=SUB)).json()
+    assert deck["compare"]["method"] == "honest"
+    assert all(s["compare"]["method"] == "honest" for s in deck["skipped"])  # left-out jobs carry it too
+    card = deck["cards"][0]
+    assert card["analysis"]["compare"]["answer_he"]
+    judged = await client.post(f"/api/daily-matches/results/{card['id']}/judge", headers=SUB, json={"winner": "other"})
+    assert judged.json() == {"ok": True, "judged": "other"}
+    again = (await client.get("/api/daily-matches/today", headers=SUB)).json()
+    assert again["compare"]["judged"]["other"] == 1 and again["cards"][0]["analysis"]["compare"]["judged"] == "other"
+    cleared = await client.post(f"/api/daily-matches/results/{card['id']}/judge", headers=SUB, json={"winner": "clear"})
+    assert cleared.json() == {"ok": True, "judged": None}
+    bad = await client.post(f"/api/daily-matches/results/{card['id']}/judge", headers=SUB, json={"winner": "me"})
+    assert bad.status_code == 422
+
+    monkeypatch.setattr(main_module, "STATIC_ADMIN_KEYS", set())
+    denied = await client.post(f"/api/daily-matches/results/{card['id']}/judge", headers=SUB, json={"winner": "main"})
+    assert denied.status_code == 403
+    assert all("compare" not in s for s in (await client.get("/api/daily-matches/today", headers=SUB)).json()["skipped"])
+
+
 async def test_a_left_out_job_marked_as_fitting_is_kept_with_the_saved(client):
     _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
     left_out = (await client.get("/api/daily-matches/today", headers=SUB)).json()["skipped"][0]

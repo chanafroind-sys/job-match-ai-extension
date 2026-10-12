@@ -51,6 +51,15 @@ def _no_rate_limit_waits(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _compare_only_when_asked(monkeypatch):
+    """Production compares admins' runs with the plain question by default;
+    a test turns that on itself (or sets DM_COMPARE_MODEL), so call counts
+    elsewhere stay one call per job."""
+    from daily_matches import config
+    monkeypatch.setattr(config, "COMPARE_METHOD", "model")
+
+
+@pytest.fixture(autouse=True)
 def _reset_daily_matches_process_state():
     """Daily Matches keeps two per-process timers (store.cached_pool_counts,
     entitlement's reservation cleanup); each test starts with them cold."""

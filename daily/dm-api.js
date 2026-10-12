@@ -96,6 +96,8 @@
     status: () => request('/status'),
     today: (latest) => request('/today' + (latest ? '?latest=1' : '')),
     action: (resultId, action) => request(`/results/${resultId}/action`, { method: 'POST', json: { action } }),
+    // Admins: which analysis was right on a job (main | other | both | neither | clear).
+    judge: (resultId, winner) => request(`/results/${resultId}/judge`, { method: 'POST', json: { winner } }),
     saved: () => request('/saved'),
     extractPdf: (pdf) => request('/cv/extract', { method: 'POST', json: { pdf } }),
     run,

@@ -227,32 +227,41 @@ async def _prepare_cvs(cvs_in: list[CvInput], emit: Callable[[dict], None]) -> l
 
 
 async def _ask_compare_model(prompt_cvs, prompt_jobs, facts: str = "") -> dict[str, dict | None] | None:
-    """Admins' runs: config.COMPARE_MODEL analyzes the same jobs, alongside the
-    main model. Its failure never fails the run."""
+    """Admins' runs: the same jobs analyzed a second way (config.compare_setup:
+    the plain question, or another model), alongside the main analysis. Its
+    failure never fails the run."""
+    method, model = config.compare_setup()
     try:
-        other, usage = await reasoning.analyze_jobs(prompt_cvs, prompt_jobs, model=config.COMPARE_MODEL, facts=facts)
+        other, usage = await reasoning.analyze_jobs(prompt_cvs, prompt_jobs, model=model, facts=facts, method=method)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[DM] compare model %s failed: %s", config.COMPARE_MODEL, exc)
+        logger.warning("[DM] compare %s/%s failed: %s", method, model, exc)
         return None
-    logger.warning("[DM] compare model %s cost $%.4f", config.COMPARE_MODEL,
-                   config.usage_cost(usage, config.COMPARE_MODEL))
+    logger.warning("[DM] compare %s/%s cost $%.4f", method, model, config.usage_cost(usage, model))
     return other
 
 
 def merge_compare(analyses: dict[str, dict | None], other: dict[str, dict | None] | None) -> None:
-    """Puts the compare model's verdict next to the main one on each analysis,
-    or marks it failed, so every analyzed job counts in compare_summary."""
+    """Puts the comparison's verdict next to the main one on each analysis, or
+    marks it failed, so every analyzed job counts in compare_summary."""
     if other is None:
         return
+    method, model = config.compare_setup() or ("scored", config.COMPARE_MODEL)
     for job_id, main_analysis in analyses.items():
         if not main_analysis:
             continue
         alt = other.get(job_id)
         if not alt:
-            main_analysis["compare"] = {"model": config.COMPARE_MODEL, "failed": True}
+            main_analysis["compare"] = {"model": model, "method": method, "failed": True}
+            continue
+        if alt.get("method") == "honest":
+            main_analysis["compare"] = {
+                "model": model, "method": "honest", "verdict": alt["verdict"], "tier": alt["tier"],
+                "answer_he": alt["answer_he"], "best_cv_ref": alt["best_cv_ref"],
+                "cost_usd": round(float(alt.get("_cost_usd") or 0), 6),
+            }
             continue
         main_analysis["compare"] = {
-            "model": config.COMPARE_MODEL, "match_score": alt["match_score"], "tier": tier_for(alt["match_score"]),
+            "model": model, "method": "scored", "match_score": alt["match_score"], "tier": tier_for(alt["match_score"]),
             "best_cv_ref": alt["best_cv_ref"], "top_gap_he": alt.get("top_gap_he", ""),
             "requirements": alt["requirements"], "cap": alt.get("cap"),
             "cost_usd": round(float(alt.get("_cost_usd") or 0), 6), "provider": alt.get("_provider") or "",
@@ -278,39 +287,57 @@ def main_reason(analysis: dict | None) -> dict | None:
             "status": worst.get("status"), "points": worst["points"]}
 
 
+JUDGED = ("main", "other", "both", "neither")  # who was right, as an admin marked it
+
+
 def compare_summary(rows: list[DmRunResult], run: DmRun) -> dict | None:
-    """How far the compare model is from the main one across every job the run
-    analyzed (shown or not): the numbers to decide a switch on."""
-    pairs, failed, cost, model = [], 0, 0.0, None
+    """How far the comparison is from the main analysis across every job the
+    run analyzed (shown or not), and who the admin found right where they
+    looked: the numbers to decide a switch on. The plain question gives no
+    score, so its score differences are None."""
+    pairs, failed, cost, model, method = [], 0, 0.0, None, "scored"
+    verdicts = {v: 0 for v in reasoning.HONEST_TIERS}
+    judged = {j: 0 for j in JUDGED}
     for row in rows:
         alt = (row.analysis or {}).get("compare")
         if not alt or row.match_score is None:
             continue
         model = alt.get("model") or model
+        method = alt.get("method") or method
+        if alt.get("judged") in judged:
+            judged[alt["judged"]] += 1
         if alt.get("failed"):
             failed += 1
             continue
-        pairs.append((row.match_score, alt["match_score"], row.tier or tier_for(row.match_score),
-                      alt.get("tier") or tier_for(alt["match_score"])))
+        other = alt.get("match_score")
+        pairs.append((row.match_score, other, row.tier or tier_for(row.match_score),
+                      alt.get("tier") or tier_for(other)))
+        if alt.get("verdict") in verdicts:
+            verdicts[alt["verdict"]] += 1
         cost += float(alt.get("cost_usd") or 0)
     if model is None:
         return None
     n = len(pairs)
+    scored = [(a, b) for a, b, _, _ in pairs if b is not None]
+    k = len(scored)
     shown = ("strong", "maybe")
     main_usage = {"input_tokens": run.input_tokens or 0, "output_tokens": run.output_tokens or 0,
                   "cache_read_tokens": run.cache_read_tokens or 0, "cache_write_tokens": run.cache_write_tokens or 0}
     return {
         "model": model,
+        "method": method,
         "main_model": config.LLM_MODEL,
         "jobs": n + failed,
         "failed": failed,
-        "mean_abs_diff": round(sum(abs(a - b) for a, b, _, _ in pairs) / n, 1) if n else None,
-        "mean_diff": round(sum(b - a for a, b, _, _ in pairs) / n, 1) if n else None,  # + : the other model scores higher
-        "within_10": round(100 * sum(abs(a - b) <= 10 for a, b, _, _ in pairs) / n) if n else None,
+        "mean_abs_diff": round(sum(abs(a - b) for a, b in scored) / k, 1) if k else None,
+        "mean_diff": round(sum(b - a for a, b in scored) / k, 1) if k else None,  # + : the other scores higher
+        "within_10": round(100 * sum(abs(a - b) <= 10 for a, b in scored) / k) if k else None,
         "same_tier": round(100 * sum(t == u for _, _, t, u in pairs) / n) if n else None,
         "shown_main": sum(t in shown for _, _, t, _ in pairs),
         "shown_other": sum(u in shown for _, _, _, u in pairs),
         "shown_both": sum(t in shown and u in shown for _, _, t, u in pairs),
+        "verdicts": verdicts if method == "honest" else None,
+        "judged": judged,
         "cost_other_usd": round(cost, 4),
         "cost_main_usd": round(config.usage_cost(main_usage), 4),
     }
@@ -408,7 +435,7 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
                 jobs[c.job_id].seniority, jobs[c.job_id].description)) for c in candidates]
             facts = redact_contacts(reasoning.render_facts(prefs.facts))
             compare = (asyncio.create_task(_ask_compare_model(prompt_cvs, prompt_jobs, facts))
-                       if config.COMPARE_MODEL and access.is_admin else None)  # alongside, not after
+                       if config.compare_setup() and access.is_admin else None)  # alongside, not after
             try:
                 analyses, usage = await reasoning.analyze_jobs(
                     prompt_cvs, prompt_jobs,

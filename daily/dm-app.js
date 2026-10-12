@@ -276,6 +276,26 @@
         <ul class="why-list">${row('100', 'נקודת ההתחלה')}${rows}${asks}${cap}${row(esc(a.match_score), '<b>הציון</b>', ' is-total')}</ul></div></div>`;
   }
 
+  // Admins' comparison (server: config.COMPARE_METHOD). "honest" is the plain
+  // question anyone would ask a chat model: how well does this fit me, and
+  // should I send my CV? Its answer is shown in full, with who was right.
+  const VERDICT_HE = { strong: 'מתאימה מאוד', fit: 'מתאימה', borderline: 'גבולית', no: 'לא מתאימה' };
+  const JUDGE = [['main', 'הנוכחית'], ['other', 'הישירה'], ['both', 'שתיהן'], ['neither', 'אף אחת']];
+  const judgeHtml = (id, judged) => `<div class="judge" role="group" aria-label="מי צדק"><span>מי צדק?</span>${JUDGE.map(([k, t]) =>
+    `<button type="button" class="judge-btn${judged === k ? ' is-on' : ''}" data-act="judge" data-id="${esc(id)}" data-winner="${k}" aria-pressed="${judged === k}">${t}</button>`).join('')}</div>`;
+
+  function altHtml(card, c) {
+    if (!c) return '';
+    if (c.method !== 'honest') {
+      return c.failed ? `<p class="dm-alt">🧪 ${esc(modelName(c.model))}: לא החזיר תשובה תקינה</p>`
+        : `<p class="dm-alt">🧪 ${esc(modelName(c.model))}: <b>${esc(c.match_score)}</b>${c.top_gap_he ? ` · ${esc(c.top_gap_he)}` : ''}</p>`;
+    }
+    if (c.failed) return `<div class="dm-alt dm-honest"><b>🧪 השיטה הישירה:</b> לא החזירה תשובה תקינה</div>`;
+    const version = c.best_cv_ref ? ` · לשלוח: ${esc(cvLabel(card, c.best_cv_ref))}` : '';
+    return `<div class="dm-alt dm-honest"><div class="dm-honest-h"><b>🧪 השיטה הישירה:</b> <span class="vd vd-${esc(c.verdict)}">${esc(VERDICT_HE[c.verdict] || c.verdict)}</span>${version}</div>
+      <p dir="auto">${esc(c.answer_he)}</p>${judgeHtml(card.id, c.judged)}</div>`;
+  }
+
   function cardHtml(card, i, n) {
     const a = card.analysis;
     const job = card.job || {};
@@ -300,9 +320,7 @@
       const hard = reqs.some(r => r.status === 'missing' && r.importance === 'must');
       const compare = scores.length > 1 ? `<button type="button" class="link-btn" data-act="cmp" aria-expanded="false">השוואת גרסאות</button>` : '';
       const dl = `<button type="button" class="cv-dl" data-act="dl-cv" title="הורדת הגרסה הזו"${hasCvFile(sel) ? '' : ' hidden'}>⬇️ הורדה</button>`;
-      const alt = !a.compare ? '' : a.compare.failed
-        ? `<p class="dm-alt">🧪 ${esc(modelName(a.compare.model))}: לא החזיר תשובה תקינה</p>`
-        : `<p class="dm-alt">🧪 ${esc(modelName(a.compare.model))}: <b>${esc(a.compare.match_score)}</b>${a.compare.top_gap_he ? ` · ${esc(a.compare.top_gap_he)}` : ''}</p>`;
+      const alt = isAdmin() ? altHtml(card, a.compare) : '';
       body = `${alt}
         <div class="dm-cv"><div class="dm-cv-row"><span class="dm-cv-ico" aria-hidden="true">📄</span><div class="dm-cv-main"><div class="dm-cv-k">${sel === card.best_cv_id ? 'מומלץ להגיש עם' : 'נבחר להגשה'}</div><div class="dm-cv-v"><strong>${esc(cvLabel(card, sel))}</strong>${selScore != null ? ` · התאמה ${selScore}` : ''}</div></div>${dl}${compare}</div>
           ${a.cv_choice_reason_he ? `<p class="dm-cv-reason">${esc(a.cv_choice_reason_he)}</p>` : ''}
@@ -348,6 +366,7 @@
   function compareBox() {
     const c = state.compare;
     if (!c || !isAdmin()) return '';
+    if (c.method === 'honest') return honestBox(c);
     const sign = (x) => (x > 0 ? `+${x}` : `${x}`);
     const main = modelName(c.main_model || 'claude-haiku-4-5-20251001');
     const rows = [
@@ -360,6 +379,33 @@
     ];
     return `<details class="dm-cmp-sum"><summary>🧪 השוואה: ${esc(main)} מול ${esc(modelName(c.model))}</summary>
       <dl>${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd dir="auto">${esc(v)}</dd></div>`).join('')}</dl></details>`;
+  }
+
+  // The current method against the plain question, over every job the run
+  // analyzed, and the tally of who was right where the admin looked.
+  function honestBox(c) {
+    const v = c.verdicts || {};
+    const j = c.judged || {};
+    const rows = [
+      ['משרות שנבדקו בשתי השיטות', `${c.jobs}${c.failed ? ` (${c.failed} בלי תשובה תקינה בישירה)` : ''}`],
+      ['אותה החלטה (בחפיסה / הצצה / בחוץ)', c.same_tier == null ? '—' : `${c.same_tier}%`],
+      ['נכנסות לחפיסה', `הנוכחית ${c.shown_main} · הישירה ${c.shown_other} · בשתיהן ${c.shown_both}`],
+      ['ההחלטות של הישירה', `מתאימה מאוד ${v.strong || 0} · מתאימה ${v.fit || 0} · גבולית ${v.borderline || 0} · לא מתאימה ${v.no || 0}`],
+      ['סימנת מי צדק', `הנוכחית ${j.main || 0} · הישירה ${j.other || 0} · שתיהן ${j.both || 0} · אף אחת ${j.neither || 0}`],
+      ['עלות הריצה', `הנוכחית $${c.cost_main_usd} · הישירה $${c.cost_other_usd}`],
+    ];
+    return `<details class="dm-cmp-sum" open><summary>🧪 השוואה: השיטה הנוכחית מול השאלה הישירה (${esc(modelName(c.model))})</summary>
+      <p class="dm-fine">בכל כרטיס, ובמשרות שלא נכנסו, מופיעה גם התשובה הישירה. סמני בכל אחת מי צדק.</p>
+      <dl>${rows.map(([k, val]) => `<div><dt>${esc(k)}</dt><dd dir="auto">${esc(val)}</dd></div>`).join('')}</dl></details>`;
+  }
+
+  function refreshCompareBox() {
+    const box = document.querySelector('.dm-cmp-sum');
+    if (!box) return;
+    const open = box.open;
+    box.outerHTML = compareBox();
+    const fresh = document.querySelector('.dm-cmp-sum');
+    if (fresh) fresh.open = open;
   }
 
   function deck() {
@@ -499,18 +545,24 @@
         <span class="skip-why">${skipReason(s.reason).html}</span>
         ${(s.to_confirm || []).length ? `<span class="skip-ask">❓ לאשר: ${s.to_confirm.map(t => `<bdi dir="auto">${esc(t)}</bdi>`).join(', ')}</span>` : ''}
         ${whyHtml({ ...s, match_score: s.score }, true)}
+        ${isAdmin() && s.compare ? altHtml({ id: s.id }, s.compare) : ''}
         <div class="skip-acts"><button type="button" class="skip-fit${fits ? ' is-on' : ''}" data-act="fits" data-id="${esc(s.id)}" aria-pressed="${fits}">${fitsLabel(fits)}</button></div>
         <p class="dm-fine skip-thanks"${fits ? '' : ' hidden'}>נשמרה עם המשרות השמורות, וזה עוזר לנו לשפר את הניתוח. אם נפסלה על משהו שיש לך ולא כתוב בקורות החיים, אפשר להוסיף אותו ב<button type="button" class="link-btn" data-act="facts">🎓 מה שלא כתוב בקו״ח</button>.</p></div>
       ${s.url ? `<button type="button" class="link-btn" data-act="open-saved" data-url="${esc(s.url)}">פתיחה ↗</button>` : ''}</div>`;
     };
-    const near = list.filter(s => (s.score || 0) >= NEAR_MISS);
-    const rest = list.filter(s => (s.score || 0) < NEAR_MISS);
+    // Admins comparing with the plain question: first the jobs it would have
+    // put in the deck, where the two methods disagree most usefully.
+    const honestIn = (s) => isAdmin() && s.compare && s.compare.method === 'honest' && ['strong', 'maybe'].includes(s.compare.tier);
+    const theirs = list.filter(honestIn);
+    const near = list.filter(s => !honestIn(s) && (s.score || 0) >= NEAR_MISS);
+    const rest = list.filter(s => !honestIn(s) && (s.score || 0) < NEAR_MISS);
     const part = (title, rows) => (rows.length ? `<h2 class="dm-h2 skip-h">${title} <span class="dm-fine">(${rows.length})</span></h2>${rows.map(row).join('')}` : '');
     return `${topBar('🔎 נבדקו ולא נכנסו')}<div class="dm-body">
       <p class="dm-muted">המשרות האלה נותחו לעומק וקיבלו ציון מתחת ל-60, ולכן לא נכנסו לחפיסה. כדאי להציץ בעיקר בקרובות לסף: לכל משרה רואים את הסיבה העיקרית, ובלחיצה על 🧮 את כל החישוב.</p>
       <p class="dm-tip">💡 משרה נפסלה על משהו שיש לך ולא כתוב בקורות החיים (תואר, רישיון, טכנולוגיה ששימשה אותך מעט)? אפשר להוסיף אותו ב<button type="button" class="link-btn" data-act="facts">🎓 מה שלא כתוב בקו״ח</button>, והוא ייחשב מהחפיסה הבאה.</p>
       ${chips ? `<div class="dm-chips skip-groups">${chips}</div>` : ''}
-      ${list.length ? part('קרובות לסף · 50-59', near) + part(near.length ? 'השאר' : 'כל המשרות', rest) : '<p class="dm-muted">אין משרות כאלה בחפיסה הזו.</p>'}${back()}</div>`;
+      ${list.length ? part('🧪 השאלה הישירה הייתה מכניסה לחפיסה', theirs) + part('קרובות לסף · 50-59', near)
+        + part(near.length || theirs.length ? 'השאר' : 'כל המשרות', rest) : '<p class="dm-muted">אין משרות כאלה בחפיסה הזו.</p>'}${back()}</div>`;
   }
 
   // After the deck, or on a day with none: jobs that nearly made it are
@@ -958,7 +1010,7 @@
       case 'rebuild': {
         // Admins only (the server refuses everyone else): analyzes today's jobs again.
         const sure = typeof root.confirm === 'function'
-          ? root.confirm('לבנות מחדש את החפיסה של היום? כל המשרות של היום ינותחו שוב (כ-$0.09).') : true;
+          ? root.confirm('לבנות מחדש את החפיסה של היום? כל המשרות של היום ינותחו שוב, בשיטה הנוכחית ובשאלה הישירה (כ-$0.2).') : true;
         return sure ? build() : undefined;
       }
       case 'open-job': return card && chrome.tabs.create({ url: card.job.url });
@@ -1046,6 +1098,26 @@
         if (state.view === 'profile') return scrollToFacts(); // keeps what's typed
         state.profileFocus = 'facts';
         return openProfile();
+      case 'judge': {
+        // Admins: who was right on this job, the current method or the plain question.
+        const id = btn.dataset.id;
+        const c = ((state.cards.find(x => String(x.id) === id) || {}).analysis || {}).compare
+          || ((state.skipped || []).find(x => String(x.id) === id) || {}).compare;
+        if (!c) return undefined;
+        const winner = c.judged === btn.dataset.winner ? 'clear' : btn.dataset.winner;
+        try { await DM.api.judge(id, winner); } catch (_) { btn.textContent = 'לא נשמר'; return undefined; }
+        const tally = state.compare && state.compare.judged;
+        if (tally && c.judged) tally[c.judged] = Math.max(0, (tally[c.judged] || 0) - 1);
+        c.judged = winner === 'clear' ? undefined : winner;
+        if (tally && c.judged) tally[c.judged] = (tally[c.judged] || 0) + 1;
+        btn.closest('.judge').querySelectorAll('.judge-btn').forEach(b => {
+          const on = b.dataset.winner === c.judged;
+          b.classList.toggle('is-on', on);
+          b.setAttribute('aria-pressed', String(on));
+        });
+        refreshCompareBox();
+        return undefined;
+      }
       case 'fits': {
         // A left-out job the person says fits them: kept with the saved jobs,
         // and counted in the report (where the scoring is too strict).

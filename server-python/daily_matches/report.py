@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from daily_matches import config, store
 from daily_matches.models import DmRun, DmRunResult
-from daily_matches.service import main_reason
+from daily_matches.service import compare_summary, main_reason
 
 
 def _reason_key(analysis: dict | None) -> str:
@@ -60,6 +60,8 @@ async def build_report(session, now=None, days: int = 3) -> dict:
             "marked_fits": dict(Counter(_reason_key(r.analysis) for r in rows if r.user_action == "fits")
                                 .most_common()),
             "with_unknown_credentials": sum(1 for r in rows if (r.analysis or {}).get("to_confirm")),
+            # Admins' runs: the side-by-side comparison, and who they marked right.
+            "compare": compare_summary(list(rows), run),
             "tokens": usage,
             "cache_hit_share": round(usage["cache_read_tokens"] / max(1, usage["cache_read_tokens"]
                                                                        + usage["cache_write_tokens"]), 2),

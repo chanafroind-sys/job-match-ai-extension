@@ -81,11 +81,17 @@
     pool: { active: 1284, embedded: 1280, fresh: 47 }, next_reset_at: '2026-10-05T00:00:00+03:00', ...(STATUS[scenario] || {}),
     is_admin: params.get('admin') === '1',
   };
-  // ?admin=1: the deck carries a DeepSeek comparison, as an admin's run does.
-  const COMPARE = params.get('admin') === '1' ? { model: 'openrouter:deepseek/deepseek-v4.1-flash', jobs: 40, failed: 1,
-    mean_abs_diff: 6.4, mean_diff: -2.1, within_10: 82, same_tier: 88, shown_main: 9, shown_other: 8, shown_both: 7,
-    cost_other_usd: 0.021, cost_main_usd: 0.118 } : undefined;
-  if (COMPARE) DECK.forEach((c, i) => { c.analysis.compare = { model: COMPARE.model, match_score: c.match_score - 4 + i, fit_summary_he: 'מתאים ברובו, חסר ניסיון בתפעול.' }; });
+  // ?admin=1: the deck carries the plain-question comparison, as an admin's run does.
+  const COMPARE = params.get('admin') === '1' ? { model: 'claude-haiku-5-5', method: 'honest', main_model: 'claude-haiku-5-5',
+    jobs: 23, failed: 0, mean_abs_diff: null, mean_diff: null, within_10: null, same_tier: 74, shown_main: 3, shown_other: 4,
+    shown_both: 2, verdicts: { strong: 1, fit: 3, borderline: 2, no: 17 }, judged: { main: 0, other: 0, both: 0, neither: 0 },
+    cost_other_usd: 0.011, cost_main_usd: 0.014 } : undefined;
+  const HONEST = [
+    ['strong', 'strong', 'בכנות, זו משרה שנבנתה בשבילך: Python, Kafka ו-AWS הם בדיוק מה שעשית בשש השנים האחרונות. Kubernetes בהיקף כזה לא מופיע אצלך, אבל זה לא יעצור אותם מלזמן אותך. כדאי לשלוח.'],
+    ['fit', 'strong', 'מתאימה. ה-Spark וה-Airflow שלך עונים על הליבה, ו-Snowflake לומדים מהר. שווה לשלוח את גרסת ה-Data.'],
+    ['no', 'hidden', 'לא הייתי שולח. זו משרת SRE עם תורנויות, והניסיון שלך הוא פיתוח Backend. יש חפיפה בתשתיות, אבל מגייס יחפש מישהו שכבר החזיק On-call.'],
+  ];
+  if (COMPARE) DECK.forEach((c, i) => { c.analysis.compare = { model: COMPARE.model, method: 'honest', verdict: HONEST[i][0], tier: HONEST[i][1], answer_he: HONEST[i][2], best_cv_ref: c.best_cv_id }; });
 
   const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
   let built = scenario !== 'building';
@@ -135,6 +141,11 @@
         { kind: 'requirement', text: 'Angular', importance: 'must', status: 'partial', points: -8 }, { kind: 'years', required: 4, relevant: 2, points: -12 }],
       cap: null, to_confirm: [] },
   ];
+  if (COMPARE) {
+    SKIPPED[0].compare = { model: COMPARE.model, method: 'honest', verdict: 'fit', tier: 'strong', best_cv_ref: 'main',
+      answer_he: 'מתאימה. חמש שנים זו דרישה רכה כאן: מה שהם באמת צריכים הוא Python ו-Kafka, ויש לך את שניהם. שווה לשלוח.' };
+    SKIPPED.slice(1).forEach(sk => { sk.compare = { model: COMPARE.model, method: 'honest', verdict: 'no', tier: 'hidden', best_cv_ref: 'main', answer_he: 'לא מתאימה: התפקיד דורש ניסיון שאין בקורות החיים.' }; });
+  }
   let opened = '';
   let access = scenario !== 'apply-access';
   window.chrome = {

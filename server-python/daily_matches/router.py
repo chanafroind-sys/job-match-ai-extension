@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.db import get_db
 from app.core.deps import require_admin
@@ -67,6 +68,12 @@ class ActionIn(BaseModel):
     # fits: a job left out of the deck that the person says fits them. Kept to
     # learn from, and listed with the saved jobs.
     action: Literal["viewed", "saved", "skipped", "applied", "fits", "clear"]
+
+
+class JudgeIn(BaseModel):
+    # Who was right on this job: the deck's analysis, the comparison, both,
+    # neither; clear takes the mark back.
+    winner: Literal["main", "other", "both", "neither", "clear"]
 
 
 class ExtractIn(BaseModel):
@@ -245,6 +252,8 @@ async def today(request: Request, latest: bool = False,
             "cap": (r.analysis or {}).get("cap"),
             "to_confirm": (r.analysis or {}).get("to_confirm") or [],
             "user_action": r.user_action,
+            # Admins: the comparison's verdict too, where it would have shown the job.
+            **({"compare": (r.analysis or {}).get("compare")} if access.is_admin and (r.analysis or {}).get("compare") else {}),
         } for r in every if (r.tier or "") == "hidden"]
         if access.is_admin:  # the model comparison, over every analyzed job (shown or not)
             summary = service.compare_summary(list(every), run_row)
@@ -276,6 +285,35 @@ async def record_action(result_id: int, body: ActionIn, request: Request,
         row.user_action, row.action_at = body.action, config.utcnow()
     await db.commit()
     return {"ok": True, "user_action": row.user_action}
+
+
+@router.post("/results/{result_id}/judge")
+async def judge(result_id: int, body: JudgeIn, request: Request,
+                x_license_key: Optional[str] = Header(None),
+                x_jma_install_id: Optional[str] = Header(None),
+                db: AsyncSession = Depends(get_db)):
+    """Admins: which analysis was right on one of their own jobs. Counted in
+    the comparison summary and the health report."""
+    access = await _access(request, db, x_license_key, x_jma_install_id)
+    if not (access.subject and access.is_admin):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    row = (await db.execute(
+        select(DmRunResult).join(DmRun, DmRun.id == DmRunResult.run_id)
+        .where(DmRunResult.id == result_id, DmRun.subject == access.subject)
+    )).scalar_one_or_none()
+    if row is None or not (row.analysis or {}).get("compare"):
+        raise HTTPException(status_code=404, detail="No comparison for this job")
+    analysis = dict(row.analysis)
+    alt = dict(analysis["compare"])
+    if body.winner == "clear":
+        alt.pop("judged", None)
+    else:
+        alt["judged"] = body.winner
+    analysis["compare"] = alt
+    row.analysis = analysis
+    flag_modified(row, "analysis")
+    await db.commit()
+    return {"ok": True, "judged": alt.get("judged")}
 
 
 @router.get("/saved")

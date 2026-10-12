@@ -442,7 +442,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   const tiered = [card(1, 84, 'Backend Engineer', { tier: 'strong' }),
     card(2, 64, 'Platform Engineer', { tier: 'maybe', analysis: { ...card(2, 64, 'x').analysis,
       compare: { model: 'claude-sonnet-5-5', match_score: 58, fit_summary_he: 'חסר Go בפועל.' } } })];
-  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 2 })], storage: { cvText: '[PDF_BASE64:JVBERi0xLjQK]', cvName: 'cv.pdf' },
+  ctx = await boot({ statuses: [{ ...SUB({ status: 'done', cards: 2 }), is_admin: true }], storage: { cvText: '[PDF_BASE64:JVBERi0xLjQK]', cvName: 'cv.pdf' },
     today: { run: { id: 3, status: 'done', candidates: 23, fresh: 31 }, cards: tiered, entitlement: 'subscription' } });
   ok('the header sums up the deck', ctx.doc.querySelector('.dm-date').textContent.includes('1 התאמות חזקות') &&
      ctx.doc.querySelector('.dm-date').textContent.includes('1 שווה הצצה') && ctx.doc.querySelector('.dm-date').textContent.includes('23'));
@@ -631,6 +631,52 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ctx.app.setView('end');
   ok('the end of the deck invites a look at the near misses', ctx.doc.body.textContent.includes('משרה אחת כמעט נכנסה') &&
      !!ctx.doc.querySelector('.en [data-act="skipped"]'));
+
+  // ── admins: the current method side by side with the plain question ──────────
+  const honest = (verdict, answer, judged) => ({ model: 'claude-haiku-5-5', method: 'honest', verdict,
+    tier: { strong: 'strong', fit: 'strong', borderline: 'maybe', no: 'hidden' }[verdict], answer_he: answer, best_cv_ref: 'main', judged });
+  const sideBySide = [card(51, 82, 'Backend Engineer', { tier: 'strong', analysis: { ...card(51, 82, 'x').analysis,
+    compare: honest('no', 'בכנות, זו משרת <b>C++</b> משובץ, לא Backend.') } })];
+  const leftHonest = [
+    { id: 52, score: 44, title: 'Platform Engineer', company: 'Gamma', url: '', reason: { kind: 'cap', name: 'level_unproven', value: 65 },
+      requirements: [], breakdown: [], cap: null, to_confirm: [], user_action: null, compare: honest('fit', 'מתאימה, שווה לשלוח.') },
+    { id: 53, score: 30, title: 'QA Lead', company: 'Delta', url: '', reason: { kind: 'cap', name: 'no_people_leadership', value: 55 },
+      requirements: [], breakdown: [], cap: null, to_confirm: [], user_action: null, compare: honest('no', 'לא מתאימה.') },
+  ];
+  ctx = await boot({ statuses: [{ ...SUB({ status: 'done', cards: 1 }), is_admin: true }], storage: { cvText: CV },
+    today: { run: { id: 50, status: 'done', candidates: 3, analyzed_ok: 3 }, cards: sideBySide, entitlement: 'subscription',
+      skipped: leftHonest, compare: { model: 'claude-haiku-5-5', method: 'honest', main_model: 'claude-haiku-5-5', jobs: 3, failed: 0,
+        mean_abs_diff: null, mean_diff: null, within_10: null, same_tier: 33, shown_main: 1, shown_other: 1, shown_both: 0,
+        verdicts: { strong: 0, fit: 1, borderline: 0, no: 2 }, judged: { main: 0, other: 0, both: 0, neither: 0 },
+        cost_main_usd: 0.002, cost_other_usd: 0.0015 } } });
+  const sum = ctx.doc.querySelector('.dm-cmp-sum');
+  ok('admins see the two methods summed up', sum && sum.open && sum.textContent.includes('השאלה הישירה') &&
+     sum.textContent.includes('מתאימה 1') && sum.textContent.includes('33%'), sum && sum.textContent);
+  const plain = ctx.doc.querySelector('.dm-honest');
+  ok('each card shows the plain answer in full, escaped', plain && plain.textContent.includes('לא מתאימה') &&
+     plain.textContent.includes('<b>C++</b>') && !plain.querySelector('p b'));
+  plain.querySelector('[data-winner="other"]').click();
+  await tick();
+  const judgeReqs = () => ctx.log.requests.filter(r => r.path.endsWith('/judge')).map(r => `${r.path.split('/')[2]}:${r.body.winner}`);
+  ok('marking who was right is saved and counted', judgeReqs().includes('51:other') &&
+     plain.querySelector('[data-winner="other"]').classList.contains('is-on') &&
+     ctx.doc.querySelector('.dm-cmp-sum').textContent.includes('הישירה 1 · שתיהן 0'));
+  ctx.doc.querySelector('.dm-honest [data-winner="other"]').click();
+  await tick();
+  ok('and taken back with a second click', judgeReqs().includes('51:clear') &&
+     ctx.doc.querySelector('.dm-cmp-sum').textContent.includes('הישירה 0'));
+  ctx.doc.querySelector('[data-act="skipped"]').click();
+  await tick();
+  const skipHeads = [...ctx.doc.querySelectorAll('.skip-h')].map(h => h.textContent);
+  ok('left-out jobs the plain question would show come first', skipHeads[0].includes('השאלה הישירה הייתה מכניסה') &&
+     ctx.doc.querySelector('.skip-row').textContent.includes('Platform Engineer') &&
+     ctx.doc.querySelectorAll('.skip-row .dm-honest').length === 2, skipHeads.join(' | '));
+  ctx.doc.querySelector('.skip-row [data-winner="main"]').click();
+  await tick();
+  ok('and can be judged right there', judgeReqs().includes('52:main'));
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV },
+    today: { run: { id: 50, status: 'done', candidates: 3 }, cards: sideBySide, entitlement: 'subscription', skipped: leftHonest } });
+  ok('nobody else sees any of it', !ctx.doc.querySelector('.dm-honest') && !ctx.doc.querySelector('.dm-cmp-sum'));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

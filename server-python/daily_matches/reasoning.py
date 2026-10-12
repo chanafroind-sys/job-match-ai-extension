@@ -652,6 +652,93 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
     }
 
 
+# ── The plain question (admins' comparison, config.COMPARE_METHOD) ──────────
+# The question the owner would ask any chat model, and nothing more: how well
+# does this job fit me, and should I send my CV? No rubric, no checklist, no
+# score. The tool asks only for what a deck can't do without: one word to
+# sort by, and the version to send. Its answer comes first, so the word is
+# decided after it.
+HONEST_TOOL = "submit_verdict"
+HONEST_TIERS = {"strong": "strong", "fit": "strong", "borderline": "maybe", "no": "hidden"}
+HONEST_ANSWER_MAX = 1500
+HONEST_QUESTION = "כמה המשרה הזו מתאימה לי, בכנות, והאם כדאי לשלוח אליה קורות חיים?"
+HONEST_SYSTEM = """\
+A candidate in Israel's tech market asks you about one job posting at a time: \
+how well it fits them, honestly, and whether to send their CV. Answer the way \
+a senior tech recruiter who gets 200 CVs for every role would answer a \
+friend: plainly and honestly, not to encourage. Write in Hebrew, a few \
+sentences, technology names in English, addressing the candidate without \
+assuming their gender. Then give your verdict in one word, and the CV version \
+to send. Answer through the submit_verdict tool."""
+
+
+def build_honest_text(cvs: list[CvForPrompt], facts: str = "") -> str:
+    parts = [HONEST_SYSTEM, "\nMY CV VERSIONS (contact details removed):"]
+    for cv in cvs:
+        parts.append(f'\n=== {cv.alias} · label: "{cv.label}" ===\n{cv.text}\n=== end of {cv.alias} ===')
+    parts.append("\nWHAT I'VE ADDED ABOUT MYSELF, BEYOND THE CV:\n" + (facts.strip() or "Nothing."))
+    return "\n".join(parts)
+
+
+def honest_schema(aliases: list[str]) -> dict:
+    return {
+        "name": HONEST_TOOL,
+        "description": "Your answer to the candidate, then your verdict. Call exactly once.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer_he", "verdict", "best_cv_id"],
+            "properties": {
+                "answer_he": {"type": "string", "description": "Your answer to the candidate's question, in Hebrew"},
+                "verdict": {"type": "string", "enum": list(HONEST_TIERS),
+                            "description": "strong: a strong candidate, likely to be called; fit: worth sending "
+                                           "the CV; borderline: a long shot; no: not worth an application"},
+                "best_cv_id": {"type": "string", "enum": list(aliases), "description": "The CV version to send"},
+            },
+        },
+    }
+
+
+class _RawVerdict(BaseModel):
+    answer_he: str
+    verdict: str
+    best_cv_id: str
+
+
+def normalize_honest(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
+    try:
+        parsed = _RawVerdict.model_validate(raw)
+    except ValidationError:
+        return None
+    answer = parsed.answer_he.strip()
+    if parsed.verdict not in HONEST_TIERS or not answer:
+        return None
+    by_alias = {cv.alias: cv for cv in cvs}
+    best = by_alias.get(parsed.best_cv_id, cvs[0])
+    return {"method": "honest", "verdict": parsed.verdict, "tier": HONEST_TIERS[parsed.verdict],
+            "answer_he": answer[:HONEST_ANSWER_MAX], "best_cv_ref": best.ref}
+
+
+@dataclass(frozen=True)
+class Method:
+    name: str
+    tool_name: str
+    system: Callable[[list[CvForPrompt], str], str]
+    schema: Callable[[list[str]], dict]
+    normalize: Callable[[dict, list[CvForPrompt]], dict | None]
+    question: str = ""  # asked after the job posting, in the user turn
+
+
+SCORED = Method("scored", TOOL_NAME, build_system_text, tool_schema, normalize_analysis)
+HONEST = Method("honest", HONEST_TOOL, build_honest_text, honest_schema, normalize_honest, HONEST_QUESTION)
+METHODS = {m.name: m for m in (SCORED, HONEST)}
+
+
+def user_text(job: JobForPrompt, method: Method = SCORED) -> str:
+    return f"{job.text}\n\n{method.question}" if method.question else job.text
+
+
 def _usage_of(message) -> dict:
     usage = getattr(message, "usage", None)
     return {
@@ -662,7 +749,7 @@ def _usage_of(message) -> dict:
     }
 
 
-def _model_kwargs(model: str) -> dict:
+def _model_kwargs(model: str, tool_name: str = TOOL_NAME) -> dict:
     """Haiku 4.5 and Haiku 5.5 take a forced tool call; Haiku 5.5 then answers
     with the tool call straight away, without its default adaptive thinking.
     Sonnet 5.5 rejects forced tool_choice, so it gets auto (the rubric demands
@@ -670,7 +757,7 @@ def _model_kwargs(model: str) -> dict:
     turned off, which this one-tool-call task doesn't need and would bill as
     output."""
     if model.startswith("claude-haiku"):
-        return {"tool_choice": {"type": "tool", "name": TOOL_NAME}}
+        return {"tool_choice": {"type": "tool", "name": tool_name}}
     kwargs: dict = {"tool_choice": {"type": "auto"}}
     if model.startswith("claude-sonnet-5"):
         kwargs["extra_body"] = {"thinking": {"type": "between_tools"}}
@@ -689,13 +776,13 @@ def _refuses_forced_tool(exc: Exception) -> bool:
 
 
 async def _create(client, model: str, system_blocks: list, tool: dict, job: JobForPrompt,
-                  max_tokens: int | None = None):
+                  max_tokens: int | None = None, method: Method = SCORED):
     max_tokens = max_tokens or config.LLM_MAX_TOKENS
 
     def send(kwargs: dict, max_tokens: int):
         return client.messages.create(model=model, max_tokens=max_tokens, system=system_blocks, tools=[tool],
-                                      messages=[{"role": "user", "content": job.text}], **kwargs)
-    kwargs = _model_kwargs(model)
+                                      messages=[{"role": "user", "content": user_text(job, method)}], **kwargs)
+    kwargs = _model_kwargs(model, method.tool_name)
     forced = kwargs.get("tool_choice", {}).get("type") == "tool"
     if forced and model in _forced_tool_refused:
         return await send({"tool_choice": {"type": "auto"}}, config.LLM_MAX_TOKENS_AUTO)
@@ -710,7 +797,8 @@ async def _create(client, model: str, system_blocks: list, tool: dict, job: JobF
 
 
 async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
-                    cvs: list[CvForPrompt], usage: dict, model: str, dropped: dict | None = None) -> dict | None:
+                    cvs: list[CvForPrompt], usage: dict, model: str, dropped: dict | None = None,
+                    method: Method = SCORED) -> dict | None:
     def drop(reason: str) -> None:
         logger.warning("[DM] %s job %s: no usable answer (%s)", model, job.job_id, reason)
         if dropped is not None:
@@ -725,7 +813,7 @@ async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
     while True:
         try:
             async with _sem():
-                message = await _create(client, model, system_blocks, tool, job, max_tokens)
+                message = await _create(client, model, system_blocks, tool, job, max_tokens, method)
         except Exception as exc:  # noqa: BLE001 — classified below
             last_exc = exc
             errors_seen += 1
@@ -744,8 +832,8 @@ async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
             reason = "max_tokens"
         else:
             block = next((b for b in message.content
-                          if getattr(b, "type", "") == "tool_use" and getattr(b, "name", "") == TOOL_NAME), None)
-            analysis = normalize_analysis(dict(block.input), cvs) if block is not None else None
+                          if getattr(b, "type", "") == "tool_use" and getattr(b, "name", "") == method.tool_name), None)
+            analysis = method.normalize(dict(block.input), cvs) if block is not None else None
             reason = "no_tool" if block is None else "invalid" if analysis is None else None
         if reason is None:
             analysis["_cost_usd"] = cost  # for the model comparison
@@ -885,17 +973,21 @@ async def _analyze_openrouter(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
 
 async def analyze_jobs(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
                        on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
-                       model: str | None = None, facts: str = "") -> tuple[dict[str, dict | None], dict]:
+                       model: str | None = None, facts: str = "",
+                       method: str = "scored") -> tuple[dict[str, dict | None], dict]:
     """Returns ({job_id: analysis or None}, usage totals). Raises the mapped
     HTTPException (main.ai_error) when the failure is systemic. facts: the
-    candidate's own answers (render_facts), part of the cached prefix."""
+    candidate's own answers (render_facts), part of the cached prefix.
+    method: "scored" (the rubric, the deck's) or "honest" (the plain question,
+    admins' comparison only)."""
+    how = METHODS[method]
     if model and model.startswith(config.OPENROUTER_PREFIX):
         return await _analyze_openrouter(cvs, jobs, model[len(config.OPENROUTER_PREFIX):], facts)
     main = _main()
     client = main._ac()
     model = model or config.LLM_MODEL
-    system_text = build_system_text(cvs, facts)
-    tool = tool_schema([cv.alias for cv in cvs])
+    system_text = how.system(cvs, facts)
+    tool = how.schema([cv.alias for cv in cvs])
     # The tools render before the system block, so they are part of the cached prefix.
     prefix_tokens = estimate_tokens(system_text) + estimate_tokens(json.dumps(tool))
     cacheable = prefix_tokens >= config.CACHE_MIN_TOKENS
@@ -912,7 +1004,7 @@ async def analyze_jobs(cvs: list[CvForPrompt], jobs: list[JobForPrompt],
     async def run(job: JobForPrompt):
         nonlocal done
         try:
-            results[job.job_id] = await _call_one(client, system_blocks, tool, job, cvs, usage, model, dropped)
+            results[job.job_id] = await _call_one(client, system_blocks, tool, job, cvs, usage, model, dropped, how)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[DM] job %s analysis failed: %s: %s", job.job_id, type(exc).__name__, exc)
             errors.append(exc)

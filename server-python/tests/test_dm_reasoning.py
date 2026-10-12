@@ -178,6 +178,46 @@ class TestScore:
         assert reasoning.normalize_analysis({"requirements": []}, CVS) is None
 
 
+class TestThePlainQuestion:
+    """The admins' comparison: the question the owner would ask any chat
+    model, with no rubric, no checklist and no score."""
+
+    def test_the_prompt_is_the_question_and_the_cvs_only(self):
+        text = reasoning.build_honest_text(CVS, "Driver's license: yes")
+        assert '=== cv1 · label: "Backend" ===' in text and "Driver's license: yes" in text
+        assert "not to encourage" in text and "Start at 100" not in text and "requirement" not in text.lower()
+        job = _jobs(1)[0]
+        assert reasoning.user_text(job, reasoning.HONEST).endswith(reasoning.HONEST_QUESTION)
+        assert reasoning.user_text(job) == job.text  # the scored method's user turn is unchanged
+
+    def test_the_tool_asks_the_answer_before_the_word(self):
+        tool = reasoning.honest_schema(["cv1", "cv2"])
+        props = tool["input_schema"]["properties"]
+        assert tool["strict"] is True and list(props) == ["answer_he", "verdict", "best_cv_id"]
+        assert set(tool["input_schema"]["required"]) == set(props) and tool["input_schema"]["additionalProperties"] is False
+        assert props["verdict"]["enum"] == ["strong", "fit", "borderline", "no"]
+
+    def test_a_verdict_maps_to_the_decks_tiers(self):
+        out = reasoning.normalize_honest({"answer_he": "  מתאימה, שווה לשלוח.  ", "verdict": "fit",
+                                          "best_cv_id": "cv2"}, CVS)
+        assert out == {"method": "honest", "verdict": "fit", "tier": "strong", "answer_he": "מתאימה, שווה לשלוח.",
+                       "best_cv_ref": "v-data"}
+        assert reasoning.normalize_honest({"answer_he": "x", "verdict": "borderline", "best_cv_id": "cv9"},
+                                          CVS)["best_cv_ref"] == "main"
+        assert reasoning.normalize_honest({"answer_he": "", "verdict": "fit", "best_cv_id": "cv1"}, CVS) is None
+        assert reasoning.normalize_honest({"answer_he": "x", "verdict": "maybe", "best_cv_id": "cv1"}, CVS) is None
+        assert reasoning.normalize_honest({"verdict": "fit"}, CVS) is None
+
+    async def test_every_job_gets_the_plain_question(self, monkeypatch):
+        fake = FakeClaude()
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        results, usage = await reasoning.analyze_jobs(CVS, _jobs(3), method="honest")
+        assert all(r["method"] == "honest" and r["verdict"] in reasoning.HONEST_TIERS for r in results.values())
+        assert all(c["tool_choice"] == {"type": "tool", "name": "submit_verdict"} for c in fake.calls)
+        assert all(c["messages"][0]["content"].endswith(reasoning.HONEST_QUESTION) for c in fake.calls)
+        assert "THE ARITHMETIC" not in fake.calls[0]["system"][0]["text"] and usage["output_tokens"] == 600
+
+
 class TestCredentials:
     """What a CV leaves out (a driver's license, a degree, a clearance) is
     asked about, not held against the candidate."""

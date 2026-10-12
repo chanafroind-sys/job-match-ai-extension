@@ -80,8 +80,20 @@ class FakeMessages:
         if o.fail_when and o.fail_when(job_text):
             raise o.error_factory()
         system_text = kwargs["system"][0]["text"]
-        cv_part = system_text.split("CANDIDATE CV VERSIONS", 1)[-1]
+        cv_part = system_text.split("CANDIDATE CV VERSIONS", 1)[-1].split("MY CV VERSIONS", 1)[-1]
         enum = kwargs["tools"][0]["input_schema"]["properties"]["best_cv_id"]["enum"]
+        if kwargs["tools"][0]["name"] == "submit_verdict":  # the plain question: a word from the same overlap
+            reqs = fake_requirements(job_text, cv_part)
+            met = sum(r["status"] == "met" for r in reqs) / max(1, len(reqs))
+            verdict = "strong" if met >= 0.75 else "fit" if met >= 0.5 else "borderline" if met >= 0.25 else "no"
+            tool_input = {"answer_he": f"בכנות: {round(met * 100)}% מהדרישות אצלך.", "verdict": verdict,
+                          "best_cv_id": enum[0]}
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="tool_use", name="submit_verdict", input=tool_input)],
+                stop_reason=o.stop_reason,
+                usage=SimpleNamespace(input_tokens=1000, output_tokens=200,
+                                      cache_read_input_tokens=0, cache_creation_input_tokens=0),
+            )
         tool_input = {
             "requirements": fake_requirements(job_text, cv_part),
             "years_required": 0,

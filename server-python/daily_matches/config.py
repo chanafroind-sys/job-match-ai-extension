@@ -63,6 +63,24 @@ WARMUP_DELAY_S = 20.0
 # main one on each card. Empty: off. For deciding whether a pricier model is
 # worth it, on real decks.
 COMPARE_MODEL = (os.getenv("DM_COMPARE_MODEL", "") or "").strip()
+# What admins' runs set the deck against, side by side on every card and in
+# the left-out list:
+#   honest (default): the same model, asked plainly how well the job fits and
+#     whether to send a CV, with no rubric and no checklist (reasoning.HONEST).
+#     The owner's question (2026-10-12): would the plain answer she'd get from
+#     any chat judge fit better than the scored checklist?
+#   model: DM_COMPARE_MODEL, with the same scored method.
+#   off: no comparison.
+COMPARE_METHOD = (os.getenv("DM_COMPARE_METHOD", "honest") or "").strip().lower()
+
+
+def compare_setup() -> tuple[str, str] | None:
+    """(method, model) of the admins' comparison, or None."""
+    if COMPARE_METHOD == "honest":
+        return "honest", LLM_MODEL
+    if COMPARE_METHOD == "model" and COMPARE_MODEL:
+        return "scored", COMPARE_MODEL
+    return None
 
 # ── Comparing a cheaper non-Anthropic model (through OpenRouter) ──────────────
 # DM_COMPARE_MODEL=openrouter:<OpenRouter model id>, for example
