@@ -452,3 +452,19 @@ class TestCompareWithAnotherClaude:
         summary = service.compare_summary(rows, (await db.execute(select(DmRun))).scalar_one())
         assert summary["main_model"] == "claude-haiku-5-5" and summary["cost_other_usd"] == pytest.approx(0.0125, abs=1e-4)
         assert summary["cost_main_usd"] == pytest.approx(5 * (1000 * 0.10 + 300 * 0.50) / 1e6, abs=1e-4)
+
+class TestReport:
+    async def test_the_report_counts_decks_and_never_names_anyone(self, db, env):
+        from daily_matches.report import build_report
+        await _seed_and_embed(db)
+        await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        report = await build_report(db, days=3)
+        run = report["runs"][0]
+        assert run["status"] == "done" and run["sent_to_ai"] == 5 and run["analyzed_ok"] == 5
+        assert run["strong"] + run["maybe"] + run["hidden"] == 5 and sum(run["hidden_reasons"].values()) == run["hidden"]
+        assert run["cost_usd_at_current_prices"] > 0 and 0 <= run["cache_hit_share"] <= 1
+        assert report["pool"]["active"] > 0 and report["model"] == config.LLM_MODEL
+        text = json.dumps(report, ensure_ascii=False)
+        rows = (await db.execute(select(DmRunResult))).scalars().all()
+        assert SUBSCRIBER.subject not in text and "Python" not in text  # no person, no CV, no job text
+        assert not any(r.job_snapshot["title"] in text for r in rows)
