@@ -91,7 +91,8 @@
     ['fit', 'strong', 'מתאימה. ה-Spark וה-Airflow שלך עונים על הליבה, ו-Snowflake לומדים מהר. שווה לשלוח את גרסת ה-Data.'],
     ['no', 'hidden', 'לא הייתי שולח. זו משרת SRE עם תורנויות, והניסיון שלך הוא פיתוח Backend. יש חפיפה בתשתיות, אבל מגייס יחפש מישהו שכבר החזיק On-call.'],
   ];
-  if (COMPARE) DECK.forEach((c, i) => { c.analysis.compare = { model: COMPARE.model, method: 'honest', verdict: HONEST[i][0], tier: HONEST[i][1], answer_he: HONEST[i][2], best_cv_ref: c.best_cv_id }; });
+  if (COMPARE) DECK.forEach((c, i) => { c.analysis.compare = { model: COMPARE.model, method: 'honest', verdict: HONEST[i][0], tier: HONEST[i][1], answer_he: HONEST[i][2], best_cv_ref: c.best_cv_id,
+    cv_tip_he: i === 2 ? '' : 'Kubernetes מופיע אצלך רק בקטנה; אם תפעלת קלאסטר, כדאי להוסיף שורה שמתארת את זה.' }; });
 
   const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
   let built = scenario !== 'building';

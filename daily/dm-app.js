@@ -293,7 +293,8 @@
     if (c.failed) return `<div class="dm-alt dm-honest"><b>🧪 השיטה הישירה:</b> לא החזירה תשובה תקינה</div>`;
     const version = c.best_cv_ref ? ` · לשלוח: ${esc(cvLabel(card, c.best_cv_ref))}` : '';
     return `<div class="dm-alt dm-honest"><div class="dm-honest-h"><b>🧪 השיטה הישירה:</b> <span class="vd vd-${esc(c.verdict)}">${esc(VERDICT_HE[c.verdict] || c.verdict)}</span>${version}</div>
-      <p dir="auto">${esc(c.answer_he)}</p>${judgeHtml(card.id, c.judged)}</div>`;
+      <p dir="auto">${esc(c.answer_he)}</p>
+      ${c.cv_tip_he ? `<p class="dm-cvtip">✏️ <b>טיפ לקורות החיים:</b> <span dir="auto">${esc(c.cv_tip_he)}</span></p>` : ''}${judgeHtml(card.id, c.judged)}</div>`;
   }
 
   function cardHtml(card, i, n) {

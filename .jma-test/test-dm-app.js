@@ -636,7 +636,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   const honest = (verdict, answer, judged) => ({ model: 'claude-haiku-5-5', method: 'honest', verdict,
     tier: { strong: 'strong', fit: 'strong', borderline: 'maybe', no: 'hidden' }[verdict], answer_he: answer, best_cv_ref: 'main', judged });
   const sideBySide = [card(51, 82, 'Backend Engineer', { tier: 'strong', analysis: { ...card(51, 82, 'x').analysis,
-    compare: honest('no', 'בכנות, זו משרת <b>C++</b> משובץ, לא Backend.') } })];
+    compare: { ...honest('fit', 'בכנות, זו משרת <b>C++</b> משובץ, לא Backend.'), cv_tip_he: 'להבליט את Node.js.' } } })];
   const leftHonest = [
     { id: 52, score: 44, title: 'Platform Engineer', company: 'Gamma', url: '', reason: { kind: 'cap', name: 'level_unproven', value: 65 },
       requirements: [], breakdown: [], cap: null, to_confirm: [], user_action: null, compare: honest('fit', 'מתאימה, שווה לשלוח.') },
@@ -653,8 +653,9 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('admins see the two methods summed up', sum && sum.open && sum.textContent.includes('השאלה הישירה') &&
      sum.textContent.includes('מתאימה 1') && sum.textContent.includes('33%'), sum && sum.textContent);
   const plain = ctx.doc.querySelector('.dm-honest');
-  ok('each card shows the plain answer in full, escaped', plain && plain.textContent.includes('לא מתאימה') &&
-     plain.textContent.includes('<b>C++</b>') && !plain.querySelector('p b'));
+  ok('each card shows the plain answer in full, escaped', plain && plain.textContent.includes('מתאימה') &&
+     plain.textContent.includes('<b>C++</b>') && !plain.querySelector('p span b'));
+  ok('with its tip for the CV', plain.querySelector('.dm-cvtip') && plain.querySelector('.dm-cvtip').textContent.includes('Node.js'));
   plain.querySelector('[data-winner="other"]').click();
   await tick();
   const judgeReqs = () => ctx.log.requests.filter(r => r.path.endsWith('/judge')).map(r => `${r.path.split('/')[2]}:${r.body.winner}`);

@@ -653,23 +653,55 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
 
 
 # ── The plain question (admins' comparison, config.COMPARE_METHOD) ──────────
-# The question the owner would ask any chat model, and nothing more: how well
-# does this job fit me, and should I send my CV? No rubric, no checklist, no
-# score. The tool asks only for what a deck can't do without: one word to
-# sort by, and the version to send. Its answer comes first, so the word is
+# The question the owner would ask any chat model: how well does this job fit
+# me, and should I send my CV? No rubric, no checklist, no score. The tool asks
+# only for what a deck can't do without: one word to sort by, the version to
+# send, and a tip for that version. Its answer comes first, so the word is
 # decided after it.
+#
+# The first wording (2026-10-12) judged like a mirror: it wanted the CV to
+# repeat the posting with the same weights, called Node.js "niche" for a
+# candidate whose CV mentions it in passing, and turned down roles below the
+# candidate's level. The owner, after marking a deck: nobody's CV mirrors a
+# posting, recruiters don't expect one, a language is usually a tool, and she
+# wants to see roles below her level. Hence "how hiring really works" below.
 HONEST_TOOL = "submit_verdict"
 HONEST_TIERS = {"strong": "strong", "fit": "strong", "borderline": "maybe", "no": "hidden"}
 HONEST_ANSWER_MAX = 1500
+HONEST_TIP_MAX = 300
 HONEST_QUESTION = "כמה המשרה הזו מתאימה לי, בכנות, והאם כדאי לשלוח אליה קורות חיים?"
 HONEST_SYSTEM = """\
 A candidate in Israel's tech market asks you about one job posting at a time: \
-how well it fits them, honestly, and whether to send their CV. Answer the way \
-a senior tech recruiter who gets 200 CVs for every role would answer a \
-friend: plainly and honestly, not to encourage. Write in Hebrew, a few \
-sentences, technology names in English, addressing the candidate without \
-assuming their gender. Then give your verdict in one word, and the CV version \
-to send. Answer through the submit_verdict tool."""
+how well it fits them, honestly, and whether to send their CV. Answer as a \
+senior tech recruiter who knows how hiring really works, telling a friend.
+
+How hiring really works:
+- Nobody's CV mirrors a posting, and recruiters don't expect one. They look \
+for someone who has done this kind of work at a comparable level and can \
+pick up the rest.
+- Judge the kind of work first: the discipline (backend, full stack, data, \
+DevOps, QA...), the level and the years. A programming language or a \
+framework is usually a tool: a backend developer who worked mostly in Java, \
+with some Python, fits a Python backend role at a comparable level. A missing \
+technology weighs much only when the role is built around it (native iOS, \
+embedded C++, "expert in X") or the posting insists on it.
+- Whatever the CVs mention, the candidate has, even when it was a small part \
+of their work: Node.js mentioned once is Node.js they know. Their own answers \
+count the same.
+- A role below the candidate's level fits when the work fits. They want to \
+see such roles: never call one unsuitable for being junior to them.
+- Say no when the work itself is different (another discipline, a domain \
+they never touched), or a hard requirement is clearly missing (a security \
+clearance, a specific degree, leading people they never led, far more years \
+than they have).
+- Be honest, not encouraging: a role whose work is different is no fit. But \
+between fit and borderline, remember that missing a good role costs the \
+candidate more than one more application.
+
+Write in Hebrew, a few sentences, technology names in English, addressing \
+the candidate without assuming their gender. Then give your verdict in one \
+word, the CV version to send, and one tip for that version when one is worth \
+it. Answer through the submit_verdict tool."""
 
 
 def build_honest_text(cvs: list[CvForPrompt], facts: str = "") -> str:
@@ -688,13 +720,21 @@ def honest_schema(aliases: list[str]) -> dict:
         "input_schema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["answer_he", "verdict", "best_cv_id"],
+            "required": ["answer_he", "verdict", "best_cv_id", "cv_tip_he"],
             "properties": {
                 "answer_he": {"type": "string", "description": "Your answer to the candidate's question, in Hebrew"},
                 "verdict": {"type": "string", "enum": list(HONEST_TIERS),
-                            "description": "strong: a strong candidate, likely to be called; fit: worth sending "
-                                           "the CV; borderline: a long shot; no: not worth an application"},
+                            "description": "strong: the work and the level fit well, likely to be called; fit: "
+                                           "worth sending, the core fits and the gaps are learnable; borderline: "
+                                           "a stretch, but a real shot; no: different work, or a hard requirement "
+                                           "clearly missing"},
                 "best_cv_id": {"type": "string", "enum": list(aliases), "description": "The CV version to send"},
+                "cv_tip_he": {"type": "string",
+                              "description": "One concrete change to that CV version for this job, in Hebrew, at "
+                                             "most 25 words: something the posting leans on that the CV barely "
+                                             "shows, e.g. 'Node.js מופיע רק בקטנה; אם עבדת איתו בפרויקטים, כדאי "
+                                             "להוסיף שורה שמתארת את העבודה'. Never invent experience. Empty when "
+                                             "nothing is worth changing, or when the verdict is no."},
             },
         },
     }
@@ -704,6 +744,7 @@ class _RawVerdict(BaseModel):
     answer_he: str
     verdict: str
     best_cv_id: str
+    cv_tip_he: str = ""
 
 
 def normalize_honest(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
@@ -716,8 +757,9 @@ def normalize_honest(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
         return None
     by_alias = {cv.alias: cv for cv in cvs}
     best = by_alias.get(parsed.best_cv_id, cvs[0])
+    tip = parsed.cv_tip_he.strip() if parsed.verdict != "no" else ""
     return {"method": "honest", "verdict": parsed.verdict, "tier": HONEST_TIERS[parsed.verdict],
-            "answer_he": answer[:HONEST_ANSWER_MAX], "best_cv_ref": best.ref}
+            "answer_he": answer[:HONEST_ANSWER_MAX], "best_cv_ref": best.ref, "cv_tip_he": tip[:HONEST_TIP_MAX]}
 
 
 @dataclass(frozen=True)

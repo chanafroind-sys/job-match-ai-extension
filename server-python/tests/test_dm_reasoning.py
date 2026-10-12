@@ -185,7 +185,11 @@ class TestThePlainQuestion:
     def test_the_prompt_is_the_question_and_the_cvs_only(self):
         text = reasoning.build_honest_text(CVS, "Driver's license: yes")
         assert '=== cv1 · label: "Backend" ===' in text and "Driver's license: yes" in text
-        assert "not to encourage" in text and "Start at 100" not in text and "requirement" not in text.lower()
+        assert "Start at 100" not in text and "THE ARITHMETIC" not in text and "importance" not in text
+        # How hiring really works, as the owner put it after marking a deck.
+        for idea in ("Nobody's CV mirrors a posting", "usually a tool", "Node.js mentioned once is Node.js they know",
+                     "never call one unsuitable for being junior to them", "Be honest, not encouraging"):
+            assert idea in text, idea
         job = _jobs(1)[0]
         assert reasoning.user_text(job, reasoning.HONEST).endswith(reasoning.HONEST_QUESTION)
         assert reasoning.user_text(job) == job.text  # the scored method's user turn is unchanged
@@ -193,15 +197,18 @@ class TestThePlainQuestion:
     def test_the_tool_asks_the_answer_before_the_word(self):
         tool = reasoning.honest_schema(["cv1", "cv2"])
         props = tool["input_schema"]["properties"]
-        assert tool["strict"] is True and list(props) == ["answer_he", "verdict", "best_cv_id"]
+        assert tool["strict"] is True and list(props) == ["answer_he", "verdict", "best_cv_id", "cv_tip_he"]
         assert set(tool["input_schema"]["required"]) == set(props) and tool["input_schema"]["additionalProperties"] is False
         assert props["verdict"]["enum"] == ["strong", "fit", "borderline", "no"]
 
     def test_a_verdict_maps_to_the_decks_tiers(self):
         out = reasoning.normalize_honest({"answer_he": "  מתאימה, שווה לשלוח.  ", "verdict": "fit",
-                                          "best_cv_id": "cv2"}, CVS)
+                                          "best_cv_id": "cv2", "cv_tip_he": " להבליט את Spark. "}, CVS)
         assert out == {"method": "honest", "verdict": "fit", "tier": "strong", "answer_he": "מתאימה, שווה לשלוח.",
-                       "best_cv_ref": "v-data"}
+                       "best_cv_ref": "v-data", "cv_tip_he": "להבליט את Spark."}
+        no_fit = reasoning.normalize_honest({"answer_he": "לא.", "verdict": "no", "best_cv_id": "cv1",
+                                             "cv_tip_he": "להוסיף Go"}, CVS)
+        assert no_fit["cv_tip_he"] == ""  # no tip for a job not worth an application
         assert reasoning.normalize_honest({"answer_he": "x", "verdict": "borderline", "best_cv_id": "cv9"},
                                           CVS)["best_cv_ref"] == "main"
         assert reasoning.normalize_honest({"answer_he": "", "verdict": "fit", "best_cv_id": "cv1"}, CVS) is None
