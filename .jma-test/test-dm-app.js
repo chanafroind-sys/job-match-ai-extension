@@ -8,7 +8,7 @@ const { JSDOM } = require('jsdom');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-const SCRIPTS = ['jma-auth.js', 'daily/dm-docx.js', 'daily/dm-api.js', 'daily/dm-cv-library.js',
+const SCRIPTS = ['jma-auth.js', 'matcher.js', 'daily/dm-docx.js', 'daily/dm-api.js', 'daily/dm-cv-library.js',
   'daily/dm-apply.js', 'daily/dm-app.js'].map(read);
 
 let passed = 0, failed = 0;
@@ -181,7 +181,8 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
 
   // ── PDF main CV: text comes back once and is kept ─────────────────────────────
   const blob = '[PDF_BASE64:JVBERi0xLjQK]';
-  ctx = await boot({ statuses: [SUB(null)], storage: { cvText: blob, cvName: 'cv.pdf' },
+  ctx = await boot({ statuses: [SUB(null)], storage: { cvText: blob, cvName: 'cv.pdf',
+    jma_dm_cv_library: { versions: [], focusConfirmed: true, mainFocus: ['Backend'] } },  // an unread PDF needs a chosen field
     runEvents: [{ type: 'started', run_id: 1 }, { type: 'cv_text', cv_id: 'main', text: CV }, ...events.slice(1)] });
   ok('a PDF CV is flagged for reading on the first run', ctx.doc.querySelector('.cv-row-meta').textContent.includes('PDF'));
   ctx.doc.querySelector('[data-act="build"]').click();
@@ -321,6 +322,43 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ctx = await boot({ statuses: [SUB(null)], storage: {} });
   ok('with no CV at all, the deck asks for one first', ctx.app.state.view === 'nocv' &&
      ctx.doc.querySelector('[data-act="library"]').textContent.includes('העלאת קורות חיים'));
+
+  // ── a person with no CV: the first upload becomes the main CV ─────────────────
+  ctx = await boot({ statuses: [SUB(null)], storage: {} });
+  const cvFile = new ctx.window.File([CV + '\n' + 'Python Django PostgreSQL REST APIs microservices backend '.repeat(4)],
+    'Noa_Levi_CV.txt', { type: 'text/plain' });
+  const mainId = await ctx.window.JMA_DM.cvLibrary.add(cvFile, '', ['Backend']);
+  ok('with no CV at all, the first upload becomes the main CV of the whole extension', mainId === 'main' &&
+     ctx.storage.cvText && ctx.storage.cvText.startsWith('Noa Levi') && ctx.storage.cvName === 'Noa_Levi_CV.txt' &&
+     (ctx.storage.jma_dm_cv_library.versions || []).length === 0);
+  ok('with the free local profile the matcher needs, for the popup to upgrade', !!ctx.storage.jma_user_profile &&
+     ctx.storage.jma_user_profile._isFallback === true);
+  const asMain = await ctx.window.JMA_DM.cvLibrary.list();
+  ok('it shows once, as the main version, with its fields', asMain.length === 1 && asMain[0].id === 'main' &&
+     JSON.stringify(asMain[0].focus) === '["Backend"]');
+  const secondId = await ctx.window.JMA_DM.cvLibrary.add(new ctx.window.File([CV + ' Kubernetes Terraform Helm DevOps '.repeat(6)],
+    'devops.txt', { type: 'text/plain' }), 'DevOps', []);
+  ok('the next upload is an extra version, the main CV untouched', secondId !== 'main' &&
+     ctx.storage.cvName === 'Noa_Levi_CV.txt' && ctx.storage.jma_dm_cv_library.versions.length === 1);
+
+  // ── never a search in every field ─────────────────────────────────────────────
+  ctx = await boot({ statuses: [SUB(null)], runEvents: events,
+    storage: { cvText: 'Noa Levi\n' + 'Worked on many things at several companies for years. '.repeat(10),
+      jma_dm_cv_library: { versions: [], focusConfirmed: true } } });
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(150);
+  ok('a CV with no field found asks for one, even after the first deck', ctx.app.state.view === 'confirm' &&
+     ctx.doc.querySelector('.cf-v').textContent.includes('לא זיהינו תחום'));
+  ctx.doc.querySelector('[data-act="confirm-focus"]').click();
+  await tick(150);
+  ok('and won\'t build without one', ctx.app.state.view === 'confirm' && !!ctx.doc.querySelector('.dm-error') &&
+     ctx.log.requests.every(r => r.path !== '/run'));
+  ctx.doc.querySelector('.cf-v [data-act="toggle-focus"][data-cat="Backend"]').click();
+  await tick();
+  ctx.doc.querySelector('[data-act="confirm-focus"]').click();
+  await tick(250);
+  const onlyBackend = ctx.log.requests.find(r => r.path === '/run');
+  ok('once a field is chosen, the deck is built in it', onlyBackend && JSON.stringify(onlyBackend.body.cvs[0].focus) === '["Backend"]');
 
   // ── the application details page ──────────────────────────────────────────────
   ctx = await boot({ statuses: [SUB(null)], storage: { cvText: CV } });

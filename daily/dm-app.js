@@ -143,13 +143,13 @@
   function confirmFocus() {
     const versions = state.cvs.map(v => `<div class="dm-card-plain cf-v"><div class="cvv-top"><span aria-hidden="true">📄</span><span class="cv-row-name">${esc(v.label)}</span></div>
       <div class="lib-focus">${focusChips(v, true)}
-        ${v.needsExtraction ? '<p class="dm-fine">הקובץ ייקרא בבנייה. אפשר לבחור תחומים עכשיו; בלי בחירה נחפש בכל התחומים.</p>' : ''}
-        ${!v.needsExtraction && !DM.cvLibrary.effectiveFocus(v).length ? '<p class="dm-fine">לא זיהינו תחום. בלי בחירה נחפש בכל התחומים.</p>' : ''}</div></div>`).join('');
+        ${!DM.cvLibrary.effectiveFocus(v).length ? `<p class="dm-fine">${v.needsExtraction ? 'הקובץ ייקרא רק בבנייה, אז כאן נבחר ידנית.' : 'לא זיהינו תחום בגרסה הזו.'} בחר/י את התחומים שמעניינים אותך.</p>` : ''}</div></div>`).join('');
     return `${topBar('🎯 באילו תחומים לחפש?')}<div class="dm-body">
       <p class="dm-muted">לפני החפיסה הראשונה: בכל גרסה של קורות החיים סימנו את התחומים שזיהינו בה. נחפש רק משרות בתחומים המסומנים, אז כדאי לוודא שלא חסר תחום שמעניין אותך. אפשר לסמן כמה.</p>
       ${versions}
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2><div class="lvls" role="group" aria-label="רמת ניסיון">${levelButtons()}</div>
         <p class="dm-fine">${state.level === 'junior' ? 'משרות לבכירים לא ייכנסו לחפיסה.' : 'נבדוק משרות בכל הרמות, גם ברמה נמוכה משלך.'}</p></div>
+      ${state.confirmError ? `<p class="dm-error" role="alert">${esc(state.confirmError)}</p>` : ''}
       <div class="dm-stack"><button type="button" class="btn btn-primary" data-act="confirm-focus">✓ זה נכון, לבנות את החפיסה</button>
         <button type="button" class="link-btn" data-act="library">עריכת הגרסאות</button></div></div>`;
   }
@@ -675,8 +675,13 @@
     if (state.busy) return;
     const payload = await DM.cvLibrary.runPayload();
     if (!payload.cvs.length) return setView('nocv');
-    if (!(await DM.cvLibrary.getFocusConfirmed())) {
-      state.cvs = await DM.cvLibrary.list();
+    // Not before the fields are confirmed once, and never with no field at all:
+    // a search in every field fills the analyses with jobs that aren't the person's.
+    const versions = await DM.cvLibrary.list();
+    const anyField = versions.some(v => DM.cvLibrary.effectiveFocus(v).length);
+    if (!(await DM.cvLibrary.getFocusConfirmed()) || !anyField) {
+      state.cvs = versions;
+      state.confirmError = '';
       return setView('confirm');
     }
     state.busy = true;
@@ -840,9 +845,16 @@
     const card = state.cards[state.idx];
     switch (actName) {
       case 'build': return build();
-      case 'confirm-focus':
+      case 'confirm-focus': {
+        const fresh = await DM.cvLibrary.list();
+        if (!fresh.some(v => DM.cvLibrary.effectiveFocus(v).length)) {
+          state.cvs = fresh;
+          state.confirmError = 'צריך לסמן לפחות תחום אחד, כדי שנחפש רק משרות שרלוונטיות אליך.';
+          return render();
+        }
         await DM.cvLibrary.setFocusConfirmed();
         return build();
+      }
       case 'reload': state.notice = ''; return refresh();
       case 'prev': return goTo(state.idx - 1);
       case 'next': return goTo(state.idx + 1);

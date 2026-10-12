@@ -150,9 +150,33 @@
     }
   }
 
+  // A person with no CV at all: the first file uploaded here becomes the main
+  // CV of the whole extension (V1's cvText / cvName), not a side version, so
+  // the regular job analysis has it too. The matcher's free local profile is
+  // seeded the way the settings screen does (popup.js _extractAndSaveProfile,
+  // step 1, marked _isFallback), and the popup upgrades it with AI on its next
+  // open (_upgradeLocalProfileIfPossible).
+  async function _becomeMain(file, read, label, focus) {
+    await chrome.storage.local.set({ cvText: read.text, cvName: file.name });
+    const lib = await _load();
+    lib.mainFocus = cleanFocus(focus);
+    if ((label || '').trim()) lib.mainLabel = label.trim().slice(0, 60);
+    await _save(lib);
+    await _storeFile(MAIN_FILE_KEY, file, { read, fields: { cvHash: await sha256(read.text) } });
+    try {
+      const stub = root.JMA_Matcher && root.JMA_Matcher.profileFromCvText(read.text);
+      const { jma_user_profile: existing } = await chrome.storage.local.get('jma_user_profile');
+      if (stub && !existing) await chrome.storage.local.set({ jma_user_profile: stub });
+    } catch (e) {
+      console.warn('[JMA:DM] local CV profile not built:', e && e.message);
+    }
+    return 'main';
+  }
+
   async function add(file, label, focus) {
     if ((await list()).length >= MAX_VERSIONS) throw new Error(`אפשר לשמור עד ${MAX_VERSIONS} גרסאות קורות חיים.`);
     const read = await _readFile(file);
+    if (!(await chrome.storage.local.get('cvText')).cvText) return _becomeMain(file, read, label, focus);
     const id = 'v' + Date.now().toString(36);
     const hasFile = await _storeFile(FILE_PREFIX + id, file, { read });
     const lib = await _load();
