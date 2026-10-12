@@ -79,7 +79,7 @@
   function render() {
     const views = {
       loading, disabled, error: errorView, nocv, ready, building, deck, quiet, apply: applyView,
-      end, saved: savedView, skipped: skippedView, paywall, library, profile,
+      end, saved: savedView, skipped: skippedView, paywall, library, profile, confirm: confirmFocus,
     };
     app().innerHTML = (views[state.view] || loading)();
     if (state.view === 'deck') afterDeckRender();
@@ -115,8 +115,9 @@
 
   function nocv() {
     return `${topBar('✨ ההתאמות היומיות')}<div class="dm-body"><div class="dm-card-plain"><h2 class="dm-h2">קודם כל, קורות חיים</h2>
-      <p class="dm-muted">כדי לבנות חפיסה צריך לפחות גרסה אחת של קורות החיים. אפשר להעלות אותה בהגדרות ⚙️ של התוסף, או להוסיף כאן.</p>
-      <button type="button" class="btn btn-primary" data-act="library">הוספת קורות חיים</button></div></div>`;
+      <p class="dm-muted">כדי למצוא לך משרות מתאימות צריך את קורות החיים שלך. מעלים קובץ PDF, DOCX או TXT, כאן או בהגדרות ⚙️ של התוסף. אחר כך אפשר להוסיף גרסאות נוספות, למשל Backend ו-DevOps.</p>
+      <button type="button" class="btn btn-primary" data-act="library">📄 העלאת קורות חיים</button>
+      <p class="dm-fine">הקובץ נשמר רק בדפדפן שלך.</p></div></div>`;
   }
 
   // A version's categories as chips: read-only, or toggles in the library.
@@ -134,6 +135,25 @@
       (chosen.length ? '' : '<span class="dm-fine">(זוהה אוטומטית)</span>');
   }
 
+  const levelButtons = () => LEVELS.map(([k, label, sub]) => `<button type="button" class="lvl${state.level === k ? ' is-on' : ''}" data-act="set-level" data-level="${k}" aria-pressed="${state.level === k}">${label}${sub ? `<small>${sub}</small>` : ''}</button>`).join('');
+
+  // Before the first deck: the fields each version will be searched in, guessed
+  // from its text, for the person to confirm or change. A field left out is a
+  // field never searched, so this is asked once, up front.
+  function confirmFocus() {
+    const versions = state.cvs.map(v => `<div class="dm-card-plain cf-v"><div class="cvv-top"><span aria-hidden="true">📄</span><span class="cv-row-name">${esc(v.label)}</span></div>
+      <div class="lib-focus">${focusChips(v, true)}
+        ${v.needsExtraction ? '<p class="dm-fine">הקובץ ייקרא בבנייה. אפשר לבחור תחומים עכשיו; בלי בחירה נחפש בכל התחומים.</p>' : ''}
+        ${!v.needsExtraction && !DM.cvLibrary.effectiveFocus(v).length ? '<p class="dm-fine">לא זיהינו תחום. בלי בחירה נחפש בכל התחומים.</p>' : ''}</div></div>`).join('');
+    return `${topBar('🎯 באילו תחומים לחפש?')}<div class="dm-body">
+      <p class="dm-muted">לפני החפיסה הראשונה: בכל גרסה של קורות החיים סימנו את התחומים שזיהינו בה. נחפש רק משרות בתחומים המסומנים, אז כדאי לוודא שלא חסר תחום שמעניין אותך. אפשר לסמן כמה.</p>
+      ${versions}
+      <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2><div class="lvls" role="group" aria-label="רמת ניסיון">${levelButtons()}</div>
+        <p class="dm-fine">${state.level === 'junior' ? 'משרות לבכירים לא ייכנסו לחפיסה.' : 'נבדוק משרות בכל הרמות, גם ברמה נמוכה משלך.'}</p></div>
+      <div class="dm-stack"><button type="button" class="btn btn-primary" data-act="confirm-focus">✓ זה נכון, לבנות את החפיסה</button>
+        <button type="button" class="link-btn" data-act="library">עריכת הגרסאות</button></div></div>`;
+  }
+
   function ready() {
     const s = state.status || {};
     const trial = s.entitlement === 'trial';
@@ -143,7 +163,7 @@
     const poolNote = !pool.embedded ? 'מאגר המשרות של היום עדיין מתעדכן.'
       : pool.fresh != null ? `${fmtInt(pool.fresh)} משרות חדשות נכנסו למאגר ב-3 הימים האחרונים.`
         : `${fmtInt(pool.active)} משרות פעילות במאגר של היום.`;
-    const levels = LEVELS.map(([k, label, sub]) => `<button type="button" class="lvl${state.level === k ? ' is-on' : ''}" data-act="set-level" data-level="${k}" aria-pressed="${state.level === k}">${label}${sub ? `<small>${sub}</small>` : ''}</button>`).join('');
+    const levels = levelButtons();
     return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
       ${state.notice ? `<p class="dm-notice">${esc(state.notice)}</p>` : ''}
       <div class="dm-card-plain"><h2 class="dm-h2">${trial ? 'הרצה אחת עלינו 🎁' : 'החפיסה של היום מחכה'}</h2>
@@ -655,6 +675,10 @@
     if (state.busy) return;
     const payload = await DM.cvLibrary.runPayload();
     if (!payload.cvs.length) return setView('nocv');
+    if (!(await DM.cvLibrary.getFocusConfirmed())) {
+      state.cvs = await DM.cvLibrary.list();
+      return setView('confirm');
+    }
     state.busy = true;
     const pool = state.status && state.status.pool;
     state.build = { s1: 'active', s1text: pool && pool.fresh ? `${fmtInt(pool.fresh)} משרות חדשות במאגר מ-3 הימים האחרונים` : '', s2: 'wait', done: 0, total: 0, s3: 'wait' };
@@ -816,6 +840,9 @@
     const card = state.cards[state.idx];
     switch (actName) {
       case 'build': return build();
+      case 'confirm-focus':
+        await DM.cvLibrary.setFocusConfirmed();
+        return build();
       case 'reload': state.notice = ''; return refresh();
       case 'prev': return goTo(state.idx - 1);
       case 'next': return goTo(state.idx + 1);

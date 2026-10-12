@@ -49,7 +49,9 @@ const SUB = (today) => ({ enabled: true, entitlement: 'subscription', reason: ''
   next_reset_at: '2026-10-05T00:00:00+03:00' });
 
 async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_size: 1284 }, cards: DECK, entitlement: 'subscription' },
-  runEvents = [], storage = {}, injection = null, access = true, grantOnAsk = true }) {
+  runEvents = [], storage = {}, injection = null, access = true, grantOnAsk = true, confirmed = true }) {
+  // Most tests are past the first deck's fields check (confirmFocus).
+  if (confirmed) storage.jma_dm_cv_library = { versions: [], focusConfirmed: true, ...(storage.jma_dm_cv_library || {}) };
   const dom = new JSDOM('<main id="dm-app"></main>', { runScripts: 'outside-only', pretendToBeVisual: true,
     url: 'chrome-extension://abc/daily/daily.html' });
   const { window } = dom;
@@ -296,6 +298,29 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   await tick(200);
   ok('skipping only opens the job, with the CV and details to copy', ctx.log.tabs[0].url.includes('papaya.dev') &&
      ctx.log.scripting.length === 0 && ctx.app.state.view === 'apply' && !!ctx.doc.querySelector('.dl-btn, .dm-nofile'));
+
+  // ── the first deck: confirm the fields first ──────────────────────────────────
+  ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV }, confirmed: false });
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(150);
+  ok('the first build asks to confirm the fields, with the guess marked', ctx.app.state.view === 'confirm' &&
+     ctx.doc.querySelectorAll('.cf-v').length === 1 && !!ctx.doc.querySelector('.cf-v .fchip.is-on') &&
+     ctx.log.requests.every(r => r.path !== '/run'));
+  ctx.doc.querySelector('.cf-v [data-act="toggle-focus"]:not(.is-on)').click();
+  await tick();
+  const picked = ctx.storage.jma_dm_cv_library.mainFocus;
+  ctx.doc.querySelector('[data-act="confirm-focus"]').click();
+  await tick(250);
+  const firstRun = ctx.log.requests.find(r => r.path === "/run");
+  ok("a change there is kept, and confirming builds with it", picked.length >= 2 && firstRun &&
+     JSON.stringify(firstRun.body.cvs[0].focus) === JSON.stringify(picked) && ctx.storage.jma_dm_cv_library.focusConfirmed === true);
+  ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV, jma_dm_cv_library: { versions: [], focusConfirmed: true } } });
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(250);
+  ok('after that, building goes straight on', !!ctx.log.requests.find(r => r.path === '/run'));
+  ctx = await boot({ statuses: [SUB(null)], storage: {} });
+  ok('with no CV at all, the deck asks for one first', ctx.app.state.view === 'nocv' &&
+     ctx.doc.querySelector('[data-act="library"]').textContent.includes('העלאת קורות חיים'));
 
   // ── the application details page ──────────────────────────────────────────────
   ctx = await boot({ statuses: [SUB(null)], storage: { cvText: CV } });

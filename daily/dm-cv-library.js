@@ -187,6 +187,18 @@
     await _save(lib);
   }
 
+  // Whether the person has looked at their versions' fields once, before a
+  // first deck: until then a build asks them to (dm-app.js, the confirm view).
+  async function getFocusConfirmed() {
+    return !!(await _load()).focusConfirmed;
+  }
+
+  async function setFocusConfirmed() {
+    const lib = await _load();
+    lib.focusConfirmed = true;
+    await _save(lib);
+  }
+
   async function getLevel() {
     const lib = await _load();
     return LEVELS.includes(lib.level) ? lib.level : null;
@@ -251,6 +263,6 @@
   root.JMA_DM = root.JMA_DM || {};
   root.JMA_DM.cvLibrary = {
     MAX_VERSIONS, CATEGORIES, LEVELS, list, add, rename, remove, cacheExtracted, getFile, runPayload, isPdfBlob,
-    setFocus, getLevel, setLevel, attachMainFile, suggestFocus, effectiveFocus,
+    setFocus, getLevel, setLevel, attachMainFile, suggestFocus, effectiveFocus, getFocusConfirmed, setFocusConfirmed,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : self);
