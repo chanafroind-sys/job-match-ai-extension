@@ -352,8 +352,13 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             await session.commit()
             emit({"type": "cv_ready", "count": len(prepared), "embedded_now": len(missing)})
 
-            # Stage 1: fresh, unseen, in focus, at level; the closest MAX_ANALYZED.
+            # Stage 1: fresh, unseen, in focus, at level; the closest MAX_ANALYZED,
+            # or MAX_ANALYZED_FIRST on the person's first deck.
             now = config.utcnow()
+            had_deck = (await session.execute(select(DmRun.id).where(
+                DmRun.subject == access.subject, DmRun.id != run_id, DmRun.status == "done",
+                DmRun.candidates > 0).limit(1))).scalar() is not None
+            cap = config.MAX_ANALYZED if had_deck else config.MAX_ANALYZED_FIRST
             run_filter, cv_filters = job_filters(access, prepared, prefs, now)
             counts = await store.pool_counts(session, run_filter.active_since)
             if counts["active"] == 0:
@@ -361,9 +366,9 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             fresh_total = await store.count_fresh(session, run_filter)
             per_cv: dict[str, list[tuple[str, float]]] = {}
             for alias, row_id in cv_rows.items():
-                found = await store.search_jobs(session, {alias: row_id}, cv_filters[alias], config.MAX_ANALYZED)
+                found = await store.search_jobs(session, {alias: row_id}, cv_filters[alias], cap)
                 per_cv.update(found)
-            candidates = retrieval.merge_candidates(per_cv, config.MAX_ANALYZED, config.MIN_PER_CV)
+            candidates = retrieval.merge_candidates(per_cv, cap, config.MIN_PER_CV)
             jobs = {}
             if candidates:
                 rows = await session.execute(select(DailyJobPool).where(

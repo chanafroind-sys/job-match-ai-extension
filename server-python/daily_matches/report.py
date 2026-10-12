@@ -63,4 +63,5 @@ async def build_report(session, now=None, days: int = 3) -> dict:
         })
     counts = await store.pool_counts(session, now - config.ACTIVE_WINDOW, now=now)
     return {"utc": now.strftime("%Y-%m-%d %H:%M"), "model": config.LLM_MODEL, "max_analyzed": config.MAX_ANALYZED,
+            "max_analyzed_first": config.MAX_ANALYZED_FIRST,
             "pool": counts, "runs": out_runs}

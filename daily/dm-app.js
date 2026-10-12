@@ -26,7 +26,7 @@
   };
   const LEVELS = [['junior', 'ג׳וניור', '0-2 שנים'], ['mid', 'מיד', '2-5 שנים'], ['senior', 'סניור', '5+ שנים'],
     ['lead', 'ליד / ניהול', '']];
-  const MAX_ANALYZED = 48; // server-python/daily_matches/config.py MAX_ANALYZED
+  const MAX_ANALYZED = 150; // server-python/daily_matches/config.py MAX_ANALYZED (250 on a first deck)
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, ch => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -147,7 +147,7 @@
     return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
       ${state.notice ? `<p class="dm-notice">${esc(state.notice)}</p>` : ''}
       <div class="dm-card-plain"><h2 class="dm-h2">${trial ? 'הרצה אחת עלינו 🎁' : 'החפיסה של היום מחכה'}</h2>
-        <p class="dm-muted">${esc(poolNote)} נבדוק רק משרות שעוד לא ראית, בתחומים של גרסאות הקו״ח שלך, ננתח לעומק עד ${MAX_ANALYZED} מהן, ונציג רק את אלה שבאמת מתאימות.</p>
+        <p class="dm-muted">${esc(poolNote)} נבדוק רק משרות שעוד לא ראית, בתחומים של גרסאות הקו״ח שלך, ננתח לעומק את כולן (עד ${MAX_ANALYZED} ביום, ובחפיסה הראשונה עד 250), ונציג רק את אלה שבאמת מתאימות.</p>
         <button type="button" class="btn btn-primary dm-cta" data-act="build">בניית החפיסה של היום</button>
         <p class="dm-fine">${trial ? 'ניסיון חינם חד-פעמי. ריצה שנכשלת או שלא מצאה כלום לא נספרת.' : 'פעם ביום · מתאפס בחצות (שעון ישראל) · ריצה שנכשלת לא נספרת'}</p></div>
       <div class="dm-card-plain"><div class="dm-row"><h2 class="dm-h2">📄 גרסאות הקו״ח שלי <span class="dm-fine">(${n}/${DM.cvLibrary.MAX_VERSIONS})</span></h2><button type="button" class="link-btn" data-act="library">עריכה</button></div>
@@ -156,7 +156,7 @@
         ${n < DM.cvLibrary.MAX_VERSIONS ? '<button type="button" class="btn btn-secondary" data-act="library">➕ הוספת גרסת קו״ח</button>' : ''}</div>
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2>
         <div class="lvls" role="group" aria-label="רמת ניסיון">${levels}</div>
-        <p class="dm-fine">${state.level ? 'משרות ברמה שלא מתאימה לך לא ייכנסו לחפיסה.' : 'בלי בחירה נבדוק משרות בכל הרמות.'}</p></div>
+        <p class="dm-fine">${state.level === 'junior' ? 'משרות לבכירים לא ייכנסו לחפיסה.' : 'נבדוק משרות בכל הרמות, גם ברמה נמוכה משלך.'}</p></div>
       <button type="button" class="btn btn-secondary" data-act="profile">📝 פרטי הגשה ושאלות נפוצות${detailsNote()}</button>
     </div>`;
   }

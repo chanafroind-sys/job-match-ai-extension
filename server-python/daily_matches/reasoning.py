@@ -57,7 +57,7 @@ NICE_COST_MAX = 15
 YEARS_WEIGHT = 30  # a shortfall of the whole requirement costs this much
 OFFSETS = ("strong_academics", "adjacent_skills", "relevant_projects")
 OFFSET_POINTS, OFFSETS_MAX = 5, 10
-CAPS = {"level_unproven": 65, "no_people_leadership": 55, "overqualified": 55, "hard_blocker": 40,
+CAPS = {"level_unproven": 65, "no_people_leadership": 55, "hard_blocker": 40,
         "domain_mismatch": 55, "not_a_job": 0}
 NO_REQUIREMENTS_CAP = 65  # a posting that states no must requirement can't be judged as a strong match
 # Nor one judged on fewer than this many requirements: a posting with no
@@ -218,8 +218,6 @@ caps: every limit that applies, else an empty list:
 CV shows no evidence of that level.
   no_people_leadership: a Team Lead, Group Lead or Engineering Manager role, \
 and the CV shows no leading of people.
-  overqualified: a junior, entry-level, student or intern role for a clearly \
-senior candidate. Such applications rarely convert.
   hard_blocker: a security clearance, citizenship, a degree in a specific \
 field ("B.Sc. in Electrical Engineering"), a spoken language, or relocation \
 that the posting requires and the CV doesn't show.
@@ -239,7 +237,7 @@ core 20 / 8, supporting 12 / 5. A nice item costs: core 6 / 2, supporting \
 (required - relevant) / required x 30. Each offset gives back 5, at most 10 \
 in all, and never more than the nice items cost. Then the lowest applying \
 cap limits the result: level_unproven 65, no_people_leadership 55, \
-overqualified 55, hard_blocker 40, domain_mismatch 55, not_a_job 0. A \
+hard_blocker 40, domain_mismatch 55, not_a_job 0. A \
 posting that lists no must requirement, or fewer than three requirements in \
 all, is capped at 65: it doesn't say enough to call it a strong match. A job \
 shows as a match from 70, and as worth a look from 60.
@@ -304,7 +302,8 @@ Spark: must primary met · Airflow: must core met · leading engineers: must \
 core missing · years 7 / 8 · caps no_people_leadership → 55, not shown.
 5. Junior Software Engineer. CS degree, Python or Java, 0-2 years. CV: 9 \
 years, senior engineer and architect.
-Every item met · years 0 / 9 · caps overqualified → 55, not shown.
+Every item met · years 0 / 9 → 100, a match: a role below the candidate's \
+level is judged like any other; whether to apply down is theirs to decide.
 6. DevOps Engineer. 4+ years, Kubernetes in production, Terraform, AWS, \
 Hebrew and English. CV: in English, Israeli employers, 3 years of DevOps with \
 EKS, Pulumi and AWS.
@@ -618,7 +617,10 @@ async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
         except Exception as exc:  # noqa: BLE001 — classified below
             last_exc = exc
             errors_seen += 1
-            if not main._retryable(exc) or errors_seen == 2:
+            if _rate_limited(exc) and errors_seen < config.RATE_LIMIT_TRIES:
+                await _rate_pause(exc, errors_seen)  # the account's per-minute limit: wait it out
+                continue
+            if not main._retryable(exc) or errors_seen >= 2:
                 raise
             await _retry_pause()
             continue
@@ -648,6 +650,20 @@ async def _call_one(client, system_blocks: list, tool: dict, job: JobForPrompt,
 
 async def _retry_pause() -> None:
     await asyncio.sleep(1.5)
+
+
+def _rate_limited(exc: Exception) -> bool:
+    return getattr(exc, "status_code", 0) in (429, 529)
+
+
+async def _rate_pause(exc: Exception, tries: int) -> None:
+    """Waits what the API asks (retry-after), else 2, 4, 8... seconds."""
+    wait = 0.0
+    try:
+        wait = float(exc.response.headers.get("retry-after") or 0)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        pass
+    await asyncio.sleep(min(30.0, wait or 2.0 ** tries))
 
 
 # ── OpenRouter (comparison only) ───────────────────────────────────────────────

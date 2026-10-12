@@ -293,6 +293,22 @@ class TestFanOut:
         assert [c["max_tokens"] for c in again] == [config.LLM_MAX_TOKENS, config.LLM_MAX_TOKENS_AUTO]
         assert usage["output_tokens"] == 4 * 300  # both answers are paid for
 
+    async def test_a_rate_limited_call_waits_and_tries_again(self, monkeypatch):
+        # A 250-job first deck can hit the account's per-minute limit.
+        fake = FakeClaude()
+        real = fake.messages.create
+        refused = []
+
+        async def create(**kwargs):
+            if len(refused) < 3:
+                refused.append(1)
+                raise _status_error(429)
+            return await real(**kwargs)
+        monkeypatch.setattr(fake.messages, "create", create)
+        monkeypatch.setattr(main_module, "_ac", lambda: fake)
+        results, _ = await reasoning.analyze_jobs(CVS, _jobs(1))
+        assert results["j0"] and len(refused) == 3
+
     async def test_an_answer_without_the_tool_call_is_asked_again(self, monkeypatch):
         fake = FakeClaude()
         real = fake.messages.create

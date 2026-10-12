@@ -84,22 +84,32 @@ OPENROUTER_TIMEOUT_S = 90.0
 # A deck holds only jobs published in the last FRESH_WINDOW that this person
 # was never shown or analyzed for: for a daily user, the last day's jobs.
 FRESH_WINDOW = timedelta(days=3)
-MAX_ANALYZED = _int("DM_MAX_ANALYZED", 48)  # LLM calls per run; the cost cap
+# LLM calls per run; the cost cap (~$0.0006 a job with Haiku 5.5). A person's
+# first deck (the free trial, or a new subscriber's first day) gets more, to
+# show everything new in their fields; after that each day only pays for
+# what's new since the last deck, since an analyzed job is never analyzed again.
+MAX_ANALYZED = _int("DM_MAX_ANALYZED", 150)
+MAX_ANALYZED_FIRST = _int("DM_MAX_ANALYZED_FIRST", 250)
+# A rate-limited or overloaded call waits and tries again, this many times at
+# most: a 250-job first deck may run into the account's per-minute limits.
+RATE_LIMIT_TRIES = 6
 MIN_PER_CV = 3  # each CV version is guaranteed this many of the analyzed slots
 STRONG_SCORE = _int("DM_STRONG_SCORE", 70)  # the deck
 MAYBE_SCORE = _int("DM_MAYBE_SCORE", 60)  # shown after the strong ones, marked "worth a look"
 ACTIVE_WINDOW = timedelta(hours=48)  # same "still open" rule as app/routes/jobs.py
-RUN_STALE_AFTER = timedelta(minutes=6)  # a "running" row older than this is retryable
+RUN_STALE_AFTER = timedelta(minutes=15)  # a "running" row older than this is retryable (250 jobs + rate limits)
 
 # What the extension may send as a CV version's focus: the pool's own categories.
 CATEGORIES = ("Backend", "Frontend", "Full Stack", "DevOps", "Mobile", "Data", "AI / ML",
               "QA", "Security", "Embedded", "Hardware")
 # Experience level → job seniorities left out. Unknown seniority always stays in.
+# Only roles above the person's level are left out: many people apply to roles
+# below their level, and those are judged like any other (2026-10-12).
 LEVEL_EXCLUDES = {
     "junior": ("Senior",),
     "mid": (),
-    "senior": ("Junior",),
-    "lead": ("Junior", "Mid"),
+    "senior": (),
+    "lead": (),
 }
 
 # ── Free trial ────────────────────────────────────────────────────────────────

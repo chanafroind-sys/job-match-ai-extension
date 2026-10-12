@@ -41,6 +41,16 @@ async def user(db):
 
 
 @pytest.fixture(autouse=True)
+def _no_rate_limit_waits(monkeypatch):
+    """A rate-limited call waits up to 30 s in production; tests don't."""
+    from daily_matches import reasoning
+
+    async def instant(exc, tries):
+        return None
+    monkeypatch.setattr(reasoning, "_rate_pause", instant)
+
+
+@pytest.fixture(autouse=True)
 def _reset_daily_matches_process_state():
     """Daily Matches keeps two per-process timers (store.cached_pool_counts,
     entitlement's reservation cleanup); each test starts with them cold."""

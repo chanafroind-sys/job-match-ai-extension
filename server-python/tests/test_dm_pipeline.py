@@ -255,8 +255,20 @@ class TestFreshDeck:
         assert done["count"] == shown and done["analyzed"] == 5
         assert (await db.execute(select(DmRun.results))).scalar() == shown
 
+    async def test_a_first_deck_gets_the_larger_cap_and_later_ones_the_daily_one(self, db, env):
+        mp = env["monkeypatch"]
+        mp.setattr(config, "MAX_ANALYZED_FIRST", 3)
+        mp.setattr(config, "MAX_ANALYZED", 1)
+        await _seed_and_embed(db)
+        first = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert next(e for e in first if e["type"] == "candidates")["candidates"] == 3
+        mp.setattr(config, "match_day", lambda now=None: date.today() + timedelta(days=1))
+        later = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert next(e for e in later if e["type"] == "candidates")["candidates"] == 1  # 2 unseen left, the daily cap is 1
+
     async def test_cap_limits_the_calls_and_counts_the_rest(self, db, env):
         env["monkeypatch"].setattr(config, "MAX_ANALYZED", 2)
+        env["monkeypatch"].setattr(config, "MAX_ANALYZED_FIRST", 2)
         await _seed_and_embed(db)
         events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
         cand = next(e for e in events if e["type"] == "candidates")

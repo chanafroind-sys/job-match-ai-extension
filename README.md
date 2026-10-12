@@ -236,7 +236,7 @@ Three design choices stand out as deliberate, not incidental:
 <table>
 <tr>
 <td width="25%" align="center"><h3>🌅</h3><b>Fresh only</b><br/><sub>Jobs published in the last 3 days that this person was never shown or analyzed for. Nothing repeats.</sub></td>
-<td width="25%" align="center"><h3>🎯</h3><b>Funnel, not a firehose</b><br/><sub>Hard filters → vector ranking → one LLM call per job → plain sorting. Up to 48 jobs analyzed a day.</sub></td>
+<td width="25%" align="center"><h3>🎯</h3><b>Funnel, not a firehose</b><br/><sub>Hard filters → vector ranking → one LLM call per job → plain sorting. Up to 150 jobs analyzed a day (250 on a first deck).</sub></td>
 <td width="25%" align="center"><h3>🧮</h3><b>Explainable scores</b><br/><sub>The model classifies; code computes. Same gaps, same score — and every card shows its own arithmetic.</sub></td>
 <td width="25%" align="center"><h3>📄</h3><b>Right CV, every time</b><br/><sub>Up to 5 focused CV versions. Each job names the version to submit and why.</sub></td>
 </tr>
@@ -262,7 +262,7 @@ flowchart TB
         direction LR
         F["Stage 1 — filter<br/>fresh · unseen · focus · level"]
         V["Stage 1 — rank<br/>cosine similarity per CV version"]
-        L["Stage 2 — up to 48 parallel<br/>Claude Haiku 5.5 calls"]
+        L["Stage 2 — up to 150 (first deck: 250)<br/>Claude Haiku 5.5 calls"]
         C["score_of()<br/>deterministic arithmetic"]
         T{"tier"}
         F --> V --> L --> C --> T
@@ -358,7 +358,7 @@ The rubric (≈4.3K tokens) teaches the *judgment*: what counts as primary, what
 
 | | Per deck | Per active user / month |
 |---|---:|---:|
-| Haiku 5.5, up to 48 jobs | ≈ $0.02 | ≤ ≈ $0.7 (a deck every day) |
+| Haiku 5.5, ~$0.0006 a job; only jobs new since the last deck | ≈ $0.06 for 100 new jobs (cap 150 ≈ $0.09; a first deck, cap 250 ≈ $0.15) | ≈ $1.8 at 100 new jobs a day |
 | *(Haiku 4.5, until 2026-10-08)* | *≈ $0.12* | *≤ ≈ $3.6* |
 | Fixed platform cost | — | **$0** on top of the existing hosting |
 
