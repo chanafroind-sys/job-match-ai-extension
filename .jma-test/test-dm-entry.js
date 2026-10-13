@@ -141,8 +141,8 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
   let ann = ctx.doc.getElementById('jma-dm-announce');
   ok('someone who can try it sees the announcement', ann && ann.getAttribute('role') === 'dialog' &&
      ann.textContent.includes('ניסיון אחד עלינו') && ann.querySelectorAll('.dm-ann-steps li').length === 4);
-  ok('it says what the feature is: most new jobs, a quick-apply reel, the right CV, autofill',
-     ['רוב המשרות החדשות בהייטק', 'גלגלת הגשה מהירה', 'גרסת קורות החיים המתאימה', 'אוטומטית כשאפשר']
+  ok('it says what the feature is: hundreds of new jobs, a quick-apply reel, the right CV, autofill',
+     ['מאות משרות הייטק חדשות', 'גלגלת הגשה מהירה', 'גרסת קורות החיים המתאימה', 'אוטומטית כשאפשר']
        .every(t => ann.textContent.includes(t)));
   ann.querySelector('[data-ann="go"]').click();
   await tick();
