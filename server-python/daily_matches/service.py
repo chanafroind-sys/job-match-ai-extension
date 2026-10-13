@@ -256,6 +256,7 @@ def merge_compare(analyses: dict[str, dict | None], other: dict[str, dict | None
         if alt.get("method") == "honest":
             main_analysis["compare"] = {
                 "model": model, "method": "honest", "verdict": alt["verdict"], "tier": alt["tier"],
+                "match_score": alt.get("match_score"),
                 "answer_he": alt["answer_he"], "best_cv_ref": alt["best_cv_ref"], "cv_tip_he": alt.get("cv_tip_he", ""),
                 "cost_usd": round(float(alt.get("_cost_usd") or 0), 6),
             }

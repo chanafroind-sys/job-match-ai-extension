@@ -668,6 +668,11 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
 # wants to see roles below her level. Hence "how hiring really works" below.
 HONEST_TOOL = "submit_verdict"
 HONEST_TIERS = {"strong": "strong", "fit": "strong", "borderline": "maybe", "no": "hidden"}
+# A number within the verdict's range, decided after the answer and the word:
+# it only orders the jobs that share a word (64 "borderline" on one deck had no
+# order). Asked for before any reasoning, a score once came out 72 on almost
+# every card; here the word has already set the range.
+HONEST_BANDS = {"strong": (85, 100), "fit": (70, 84), "borderline": (50, 69), "no": (0, 49)}
 HONEST_ANSWER_MAX = 1500
 HONEST_TIP_MAX = 300
 # The level reminder repeats the system rule in the candidate's own words, next
@@ -708,8 +713,9 @@ candidate more than one more application.
 
 Write in Hebrew, a few sentences, technology names in English, addressing \
 the candidate without assuming their gender. Then give your verdict in one \
-word, the CV version to send, and one tip for that version when one is worth \
-it. Answer through the submit_verdict tool."""
+word, a score within that word's range, the CV version to send, and one tip \
+for that version when one is worth it. Answer through the submit_verdict \
+tool."""
 
 
 def build_honest_text(cvs: list[CvForPrompt], facts: str = "") -> str:
@@ -728,7 +734,7 @@ def honest_schema(aliases: list[str]) -> dict:
         "input_schema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["answer_he", "verdict", "best_cv_id", "cv_tip_he"],
+            "required": ["answer_he", "verdict", "score", "best_cv_id", "cv_tip_he"],
             "properties": {
                 "answer_he": {"type": "string", "description": "Your answer to the candidate's question, in Hebrew"},
                 "verdict": {"type": "string", "enum": list(HONEST_TIERS),
@@ -736,6 +742,9 @@ def honest_schema(aliases: list[str]) -> dict:
                                            "worth sending, the core fits and the gaps are learnable; borderline: "
                                            "a stretch, but a real shot; no: different work, or a hard requirement "
                                            "clearly missing"},
+                "score": {"type": "integer",
+                          "description": "How likely the candidate is to be called for an interview, within the "
+                                         "verdict's range: strong 85-100, fit 70-84, borderline 50-69, no 0-49"},
                 "best_cv_id": {"type": "string", "enum": list(aliases), "description": "The CV version to send"},
                 "cv_tip_he": {"type": "string",
                               "description": "One concrete change to that CV version for this job, in Hebrew, at "
@@ -764,6 +773,7 @@ def until_markup(text: str) -> str:
 class _RawVerdict(BaseModel):
     answer_he: str
     verdict: str
+    score: int | None = None
     best_cv_id: str
     cv_tip_he: str = ""
 
@@ -781,7 +791,11 @@ def normalize_honest(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
     tip = parsed.cv_tip_he.strip() if parsed.verdict != "no" else ""
     if _LEAKED_MARKUP.search(tip):
         tip = ""
-    return {"method": "honest", "verdict": parsed.verdict, "tier": HONEST_TIERS[parsed.verdict],
+    low, high = HONEST_BANDS[parsed.verdict]
+    # Kept inside the word's range (strict tool schemas can't bound integers);
+    # no number at all gets the middle of the range.
+    score = (low + high) // 2 if parsed.score is None else max(low, min(high, parsed.score))
+    return {"method": "honest", "verdict": parsed.verdict, "tier": HONEST_TIERS[parsed.verdict], "match_score": score,
             "answer_he": answer[:HONEST_ANSWER_MAX], "best_cv_ref": best.ref, "cv_tip_he": tip[:HONEST_TIP_MAX]}
 
 

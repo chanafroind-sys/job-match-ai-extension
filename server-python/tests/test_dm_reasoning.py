@@ -197,18 +197,30 @@ class TestThePlainQuestion:
     def test_the_tool_asks_the_answer_before_the_word(self):
         tool = reasoning.honest_schema(["cv1", "cv2"])
         props = tool["input_schema"]["properties"]
-        assert tool["strict"] is True and list(props) == ["answer_he", "verdict", "best_cv_id", "cv_tip_he"]
+        assert tool["strict"] is True and list(props) == ["answer_he", "verdict", "score", "best_cv_id", "cv_tip_he"]
+        assert props["score"]["type"] == "integer" and "borderline 50-69" in props["score"]["description"]
         assert set(tool["input_schema"]["required"]) == set(props) and tool["input_schema"]["additionalProperties"] is False
         assert props["verdict"]["enum"] == ["strong", "fit", "borderline", "no"]
 
     def test_a_verdict_maps_to_the_decks_tiers(self):
-        out = reasoning.normalize_honest({"answer_he": "  מתאימה, שווה לשלוח.  ", "verdict": "fit",
+        out = reasoning.normalize_honest({"answer_he": "  מתאימה, שווה לשלוח.  ", "verdict": "fit", "score": 78,
                                           "best_cv_id": "cv2", "cv_tip_he": " להבליט את Spark. "}, CVS)
-        assert out == {"method": "honest", "verdict": "fit", "tier": "strong", "answer_he": "מתאימה, שווה לשלוח.",
-                       "best_cv_ref": "v-data", "cv_tip_he": "להבליט את Spark."}
+        assert out == {"method": "honest", "verdict": "fit", "tier": "strong", "match_score": 78,
+                       "answer_he": "מתאימה, שווה לשלוח.", "best_cv_ref": "v-data", "cv_tip_he": "להבליט את Spark."}
         no_fit = reasoning.normalize_honest({"answer_he": "לא.", "verdict": "no", "best_cv_id": "cv1",
                                              "cv_tip_he": "להוסיף Go"}, CVS)
         assert no_fit["cv_tip_he"] == ""  # no tip for a job not worth an application
+
+    def test_the_number_stays_inside_its_words_range(self):
+        def score(verdict, n):
+            raw = {"answer_he": "x", "verdict": verdict, "best_cv_id": "cv1"}
+            if n is not None:
+                raw["score"] = n
+            return reasoning.normalize_honest(raw, CVS)["match_score"]
+        assert score("strong", 93) == 93 and score("strong", 70) == 85 and score("fit", 99) == 84
+        assert score("borderline", 10) == 50 and score("no", 65) == 49
+        assert score("borderline", None) == 59  # no number: the middle of the range
+        assert reasoning.HONEST_BANDS["fit"][0] >= 70 > reasoning.HONEST_BANDS["borderline"][1]  # bands follow the tiers
 
     def test_tool_markup_that_leaks_into_the_text_is_cut(self):
         # Seen on a real deck: the rest of the tool call inside the string.

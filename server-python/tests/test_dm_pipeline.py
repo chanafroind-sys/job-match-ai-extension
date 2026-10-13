@@ -479,9 +479,11 @@ class TestThePlainQuestionSideBySide:
         rows = (await db.execute(select(DmRunResult))).scalars().all()
         alt = rows[0].analysis["compare"]
         assert alt["method"] == "honest" and alt["model"] == config.LLM_MODEL and alt["answer_he"]
-        assert alt["tier"] == reasoning.HONEST_TIERS[alt["verdict"]] and "match_score" not in alt and "cv_tip_he" in alt
+        assert alt["tier"] == reasoning.HONEST_TIERS[alt["verdict"]] and "cv_tip_he" in alt
+        low, high = reasoning.HONEST_BANDS[alt["verdict"]]
+        assert low <= alt["match_score"] <= high
         summary = service.compare_summary(rows, (await db.execute(select(DmRun))).scalar_one())
-        assert summary["method"] == "honest" and summary["jobs"] == 5 and summary["mean_abs_diff"] is None
+        assert summary["method"] == "honest" and summary["jobs"] == 5 and summary["mean_abs_diff"] is not None
         assert sum(summary["verdicts"].values()) == 5 and 0 <= summary["same_tier"] <= 100
         assert summary["judged"] == {"main": 0, "other": 0, "both": 0, "neither": 0} and summary["cost_other_usd"] > 0
 

@@ -636,10 +636,12 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   const honest = (verdict, answer, judged) => ({ model: 'claude-haiku-5-5', method: 'honest', verdict,
     tier: { strong: 'strong', fit: 'strong', borderline: 'maybe', no: 'hidden' }[verdict], answer_he: answer, best_cv_ref: 'main', judged });
   const sideBySide = [card(51, 82, 'Backend Engineer', { tier: 'strong', analysis: { ...card(51, 82, 'x').analysis,
-    compare: { ...honest('fit', 'בכנות, זו משרת <b>C++</b> משובץ, לא Backend.'), cv_tip_he: 'להבליט את Node.js.' } } })];
+    compare: { ...honest('fit', 'בכנות, זו משרת <b>C++</b> משובץ, לא Backend.'), cv_tip_he: 'להבליט את Node.js.', match_score: 78 } } })];
   const leftHonest = [
     { id: 52, score: 44, title: 'Platform Engineer', company: 'Gamma', url: '', reason: { kind: 'cap', name: 'level_unproven', value: 65 },
-      requirements: [], breakdown: [], cap: null, to_confirm: [], user_action: null, compare: honest('fit', 'מתאימה, שווה לשלוח.') },
+      requirements: [], breakdown: [], cap: null, to_confirm: [], user_action: null, compare: { ...honest('borderline', 'גבולית.'), match_score: 55 } },
+    { id: 56, score: 41, title: 'Data Platform Engineer', company: 'Eta', url: '', reason: { kind: 'cap', name: 'level_unproven', value: 65 },
+      requirements: [], breakdown: [], cap: null, to_confirm: [], user_action: null, compare: { ...honest('fit', 'מתאימה, שווה לשלוח.'), match_score: 80 } },
     { id: 53, score: 30, title: 'QA Lead', company: 'Delta', url: '', reason: { kind: 'cap', name: 'no_people_leadership', value: 55 },
       requirements: [], breakdown: [], cap: null, to_confirm: [], user_action: null, compare: honest('no', 'לא מתאימה.') },
   ];
@@ -656,6 +658,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('each card shows the plain answer in full, escaped', plain && plain.textContent.includes('מתאימה') &&
      plain.textContent.includes('<b>C++</b>') && !plain.querySelector('p span b'));
   ok('with its tip for the CV', plain.querySelector('.dm-cvtip') && plain.querySelector('.dm-cvtip').textContent.includes('Node.js'));
+  ok('and its number next to the word', plain.querySelector('.vd').textContent.includes('מתאימה · 78'));
   const leakedDeck = [card(54, 75, 'AI Engineer', { tier: 'strong', analysis: { ...card(54, 75, 'x').analysis,
     compare: { ...honest('borderline', 'חלקית. הפער קטן.</answer_he> <parameter name="verdict">borderline'),
       cv_tip_he: 'Senior AI/Backend Engineer, שם הפער קטן בהרבה.</answer_he> <parameter name="verdict">borderline' } } })];
@@ -678,12 +681,13 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ctx.doc.querySelector('[data-act="skipped"]').click();
   await tick();
   const skipHeads = [...ctx.doc.querySelectorAll('.skip-h')].map(h => h.textContent);
-  ok('left-out jobs the plain question would show come first', skipHeads[0].includes('השאלה הישירה הייתה מכניסה') &&
-     ctx.doc.querySelector('.skip-row').textContent.includes('Platform Engineer') &&
-     ctx.doc.querySelectorAll('.skip-row .dm-honest').length === 2, skipHeads.join(' | '));
+  ok('left-out jobs the plain question would show come first, by its number', skipHeads[0].includes('השאלה הישירה הייתה מכניסה') &&
+     ctx.doc.querySelector('.skip-row').textContent.includes('Data Platform Engineer') &&
+     ctx.doc.querySelectorAll('.skip-row')[1].textContent.includes('Platform Engineer') &&
+     ctx.doc.querySelectorAll('.skip-row .dm-honest').length === 3, skipHeads.join(' | '));
   ctx.doc.querySelector('.skip-row [data-winner="main"]').click();
   await tick();
-  ok('and can be judged right there', judgeReqs().includes('52:main'));
+  ok('and can be judged right there', judgeReqs().includes('56:main'));
   ctx = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV },
     today: { run: { id: 50, status: 'done', candidates: 3 }, cards: sideBySide, entitlement: 'subscription', skipped: leftHonest } });
   ok('nobody else sees any of it', !ctx.doc.querySelector('.dm-honest') && !ctx.doc.querySelector('.dm-cmp-sum'));

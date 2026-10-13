@@ -87,6 +87,7 @@ class FakeMessages:
             met = sum(r["status"] == "met" for r in reqs) / max(1, len(reqs))
             verdict = "strong" if met >= 0.75 else "fit" if met >= 0.5 else "borderline" if met >= 0.25 else "no"
             tool_input = {"answer_he": f"בכנות: {round(met * 100)}% מהדרישות אצלך.", "verdict": verdict,
+                          "score": {"strong": 90, "fit": 75, "borderline": 60, "no": 20}[verdict],
                           "best_cv_id": enum[0], "cv_tip_he": "" if verdict == "no" else "כדאי להבליט את Kafka."}
             return SimpleNamespace(
                 content=[SimpleNamespace(type="tool_use", name="submit_verdict", input=tool_input)],

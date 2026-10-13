@@ -298,7 +298,7 @@
     }
     if (c.failed) return `<div class="dm-alt dm-honest"><b>🧪 השיטה הישירה:</b> לא החזירה תשובה תקינה</div>`;
     const version = c.best_cv_ref ? ` · לשלוח: ${esc(cvLabel(card, c.best_cv_ref))}` : '';
-    return `<div class="dm-alt dm-honest"><div class="dm-honest-h"><b>🧪 השיטה הישירה:</b> <span class="vd vd-${esc(c.verdict)}">${esc(VERDICT_HE[c.verdict] || c.verdict)}</span>${version}</div>
+    return `<div class="dm-alt dm-honest"><div class="dm-honest-h"><b>🧪 השיטה הישירה:</b> <span class="vd vd-${esc(c.verdict)}">${esc(VERDICT_HE[c.verdict] || c.verdict)}${c.match_score != null ? ` · <b dir="ltr">${esc(c.match_score)}</b>` : ''}</span>${version}</div>
       <p dir="auto">${esc(c.answer_he)}</p>
       ${c.cv_tip_he ? `<p class="dm-cvtip">✏️ <b>טיפ לקורות החיים:</b> <span dir="auto">${esc(c.cv_tip_he)}</span></p>` : ''}${judgeHtml(card.id, c.judged)}</div>`;
   }
@@ -398,6 +398,7 @@
       ['אותה החלטה (בחפיסה / הצצה / בחוץ)', c.same_tier == null ? '—' : `${c.same_tier}%`],
       ['נכנסות לחפיסה', `הנוכחית ${c.shown_main} · הישירה ${c.shown_other} · בשתיהן ${c.shown_both}`],
       ['ההחלטות של הישירה', `מתאימה מאוד ${v.strong || 0} · מתאימה ${v.fit || 0} · גבולית ${v.borderline || 0} · לא מתאימה ${v.no || 0}`],
+      ...(c.mean_abs_diff == null ? [] : [['הפרש ממוצע בציון', `${c.mean_abs_diff} נק׳ (הישירה ${c.mean_diff > 0 ? '+' : ''}${c.mean_diff} בממוצע)`]]),
       ['סימנת מי צדק', `הנוכחית ${j.main || 0} · הישירה ${j.other || 0} · שתיהן ${j.both || 0} · אף אחת ${j.neither || 0}`],
       ['עלות הריצה', `הנוכחית $${c.cost_main_usd} · הישירה $${c.cost_other_usd}`],
     ];
@@ -560,7 +561,7 @@
     // Admins comparing with the plain question: first the jobs it would have
     // put in the deck, where the two methods disagree most usefully.
     const honestIn = (s) => isAdmin() && s.compare && s.compare.method === 'honest' && ['strong', 'maybe'].includes(s.compare.tier);
-    const theirs = list.filter(honestIn);
+    const theirs = list.filter(honestIn).sort((a, b) => (b.compare.match_score || 0) - (a.compare.match_score || 0));
     const near = list.filter(s => !honestIn(s) && (s.score || 0) >= NEAR_MISS);
     const rest = list.filter(s => !honestIn(s) && (s.score || 0) < NEAR_MISS);
     const part = (title, rows) => (rows.length ? `<h2 class="dm-h2 skip-h">${title} <span class="dm-fine">(${rows.length})</span></h2>${rows.map(row).join('')}` : '');
