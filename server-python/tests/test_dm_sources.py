@@ -13,11 +13,12 @@ import daily_matches.models  # noqa: F401  (registers dm_* tables before conftes
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
 from daily_matches.models import DmSource
-from daily_matches.sources import aggregators, collect_extra, comeet, linkedin, probe, registry
+from daily_matches.sources import aggregators, collect_extra, comeet, employers, linkedin, probe, registry
 from daily_matches.sources.dedupe import drop_copies, job_key
 
 
 REAL_SEEDS = comeet.SEED_BOARDS  # before _no_live_comeet empties it
+REAL_EMPLOYERS = employers.SEED_BOARDS
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +26,7 @@ def _no_live_comeet(monkeypatch):
     """No test reads Comeet for real: no seed boards, and a board answers
     like a missing one unless a test fakes it (_fake_fetchers)."""
     monkeypatch.setattr(comeet, "SEED_BOARDS", ())
+    monkeypatch.setattr(employers, "SEED_BOARDS", ())
 
     async def missing(client, company, params):
         raise httpx.HTTPStatusError("404", request=httpx.Request("GET", "https://x"), response=httpx.Response(404))
@@ -443,6 +445,24 @@ class TestComeet:
         uids = [uid.lower() for _, uid, _ in REAL_SEEDS]
         assert len(REAL_SEEDS) >= 40 and len(uids) == len(set(uids))
         assert all(registry.board_from_url(f"https://www.comeet.com/jobs/{slug}/{uid}") for slug, uid, _ in REAL_SEEDS)
+
+
+class TestEmployers:
+    async def test_the_mapped_employers_seed_the_registry_once(self, db):
+        seeds = (("workday", {"host": "paloaltonetworks.wd5.myworkdayjobs.com", "site": "panwexternalcareers"}, "PANW"),
+                 ("greenhouse", {"board": "aidocmedical"}, "Aidoc"),
+                 ("lever", {"site": "mobileye", "region": "eu"}, "Mobileye"))  # already in V1's list
+        assert await registry.seed_employers(db, seeds) == 2
+        await db.commit()
+        assert await registry.seed_employers(db, seeds) == 0
+        slugs = {r.slug for r in (await db.execute(select(DmSource))).scalars()}
+        assert slugs == {"paloaltonetworks.wd5.myworkdayjobs.com/panwexternalcareers", "aidocmedical"}
+
+    def test_the_list_is_readable_and_new(self):
+        known = {(c["ats"], registry._slug_of(c["ats"], c["params"])) for c in registry.COMPANIES}
+        keys = [(ats, registry._slug_of(ats, params)) for ats, params, _ in REAL_EMPLOYERS]
+        assert len(keys) == len(set(keys)) and not set(keys) & known
+        assert all(ats in registry.FETCHABLE for ats, _ in keys)
 
 
 class TestCollectExtra:

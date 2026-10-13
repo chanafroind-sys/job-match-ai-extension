@@ -23,7 +23,7 @@ from app.services import job_aggregator as agg
 from app.services.israel_job_sources import COMPANIES
 from daily_matches import config
 from daily_matches.models import DmSource
-from daily_matches.sources import comeet
+from daily_matches.sources import comeet, employers
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,23 @@ async def seed_boards(session, seeds=None) -> int:
         uids.add(uid.lower())
         session.add(DmSource(ats="comeet", slug=f"{slug}/{uid}".lower(), company=company[:255],
                              params={"slug": slug, "uid": uid}, found_via="seed",
+                             first_seen_at=config.utcnow(), failures=0))
+        added += 1
+    return added
+
+
+async def seed_employers(session, seeds=None) -> int:
+    """Adds the mapped large employers (employers.SEED_BOARDS) the registry
+    and V1's list don't hold yet. Returns how many were added. Caller commits."""
+    seeds = employers.SEED_BOARDS if seeds is None else seeds
+    seen = {(s.ats, s.slug) for s in (await session.execute(select(DmSource.ats, DmSource.slug))).all()}
+    added = 0
+    for ats, params, company in seeds:
+        key = (ats, _slug_of(ats, params))
+        if key in seen or key in _KNOWN:
+            continue
+        seen.add(key)
+        session.add(DmSource(ats=ats, slug=key[1], company=company[:255], params=dict(params), found_via="seed",
                              first_seen_at=config.utcnow(), failures=0))
         added += 1
     return added
