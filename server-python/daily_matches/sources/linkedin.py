@@ -46,9 +46,16 @@ SEARCHES = _env_list("DM_LINKEDIN_SEARCHES", [
 ])
 HOURS = _int("DM_LINKEDIN_HOURS", 26)  # a day plus slack, so consecutive 06:00 runs overlap
 MAX_PAGES = _int("DM_LINKEDIN_PAGES", 10)  # ten cards a page
+# The searches that filled all ten pages every day (2026-10-10/11: 100 cards
+# each, while LinkedIn showed 304 "software engineer" jobs in Israel in 24h)
+# get twice as many. Kept at 20, not more: a search page brings ten jobs, but
+# each new job is one more detail request, and those are what LinkedIn blocked.
+WIDE_SEARCHES = ("backend", '"software engineer"', "developer OR programmer",
+                 '"team lead" OR "engineering manager" OR "tech lead"')
+WIDE_PAGES = _int("DM_LINKEDIN_WIDE_PAGES", 20)
 MAX_DETAILS = _int("DM_LINKEDIN_DETAILS", 700)
 PAGE_PAUSE = (1.5, 3.5)  # seconds between search pages
-DETAIL_PAUSE = (0.6, 1.4)
+DETAIL_PAUSE = (1.0, 2.2)  # slower since the wider searches: the detail phase was blocked on 2026-10-11
 DETAIL_CONCURRENCY = 2
 BLOCK_PAUSE = 45  # after a 429
 MAX_BLOCKS = 3  # 429s in a row before a phase gives up
@@ -143,7 +150,8 @@ async def fetch_linkedin(known_ids: set[str] | frozenset = frozenset(), *, trans
         try:
             for query in SEARCHES:
                 found = 0
-                for page in range(MAX_PAGES):
+                pages = WIDE_PAGES if query in WIDE_SEARCHES else MAX_PAGES
+                for page in range(pages):
                     params = {"keywords": query, "location": "Israel", "f_TPR": f"r{HOURS * 3600}",
                               "start": page * 10}
                     body = await _get(client, SEARCH_URL, params, state, sleep)
@@ -154,7 +162,8 @@ async def fetch_linkedin(known_ids: set[str] | frozenset = frozenset(), *, trans
                     if len(page_cards) < 10:
                         break  # the query ran dry
                     await pause(PAGE_PAUSE)
-                report["searches"].append({"query": query, "cards": found})
+                # capped: the query still had more when its pages ran out (a missed share).
+                report["searches"].append({"query": query, "cards": found, "capped": found >= pages * 10})
                 await pause(PAGE_PAUSE)
         except _Blocked:
             report["blocked"] = "search"

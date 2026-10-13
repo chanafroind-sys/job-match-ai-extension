@@ -230,7 +230,7 @@ class TestLinkedIn:
         assert by_title["Backend Developer"]["url"] == "https://www.linkedin.com/jobs/view/1"
         assert by_title["Backend Developer"]["published_at"] == datetime(2026, 10, 6, tzinfo=timezone.utc)
         assert by_title["DevOps Engineer"]["url"] == "https://job-boards.greenhouse.io/delta/jobs/9"
-        assert report["searches"][0] == {"query": linkedin.SEARCHES[0], "cards": 4}
+        assert report["searches"][0] == {"query": linkedin.SEARCHES[0], "cards": 4, "capped": False}
         params = fake.searches[0]
         assert params["location"] == "Israel" and params["f_TPR"] == f"r{linkedin.HOURS * 3600}"
 
@@ -239,6 +239,17 @@ class TestLinkedIn:
         _, report = await linkedin.fetch_linkedin(transport=fake.transport, sleep=_no_sleep)
         first = [p["start"] for p in fake.searches if p["keywords"] == linkedin.SEARCHES[0]]
         assert first == ["0", "10", "20"] and report["cards"] == 25
+
+    async def test_the_searches_that_fill_their_pages_get_twice_as_many(self, monkeypatch):
+        monkeypatch.setattr(linkedin, "SEARCHES", ["backend", "frontend"])  # the fake answers only the first
+        monkeypatch.setattr(linkedin, "MAX_PAGES", 2)
+        monkeypatch.setattr(linkedin, "WIDE_PAGES", 4)
+        fake = FakeLinkedIn([_lj(str(i), f"Backend Developer {i}", "Alpha") for i in range(60)])
+        _, report = await linkedin.fetch_linkedin(transport=fake.transport, sleep=_no_sleep)
+        backend = [p["start"] for p in fake.searches if p["keywords"] == "backend"]
+        assert backend == ["0", "10", "20", "30"]  # four pages, not two
+        assert report["searches"][0] == {"query": "backend", "cards": 40, "capped": True}
+        assert report["searches"][1] == {"query": "frontend", "cards": 0, "capped": False}
 
     async def test_a_429_is_waited_out(self):
         pauses = []
