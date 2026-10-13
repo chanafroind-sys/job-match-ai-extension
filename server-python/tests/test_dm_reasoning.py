@@ -209,6 +209,23 @@ class TestThePlainQuestion:
         no_fit = reasoning.normalize_honest({"answer_he": "לא.", "verdict": "no", "best_cv_id": "cv1",
                                              "cv_tip_he": "להוסיף Go"}, CVS)
         assert no_fit["cv_tip_he"] == ""  # no tip for a job not worth an application
+
+    def test_tool_markup_that_leaks_into_the_text_is_cut(self):
+        # Seen on a real deck: the rest of the tool call inside the string.
+        leaked = 'שם הפער קטן בהרבה.</answer_he> <parameter name="verdict">borderline'
+        out = reasoning.normalize_honest({"answer_he": "מתאימה בחלקה. " + leaked, "verdict": "borderline",
+                                          "best_cv_id": "cv1", "cv_tip_he": leaked}, CVS)
+        assert out["answer_he"] == "מתאימה בחלקה. שם הפער קטן בהרבה." and out["cv_tip_he"] == ""
+        assert reasoning.until_markup("C# <b>ו-.NET</b>") == "C# <b>ו-.NET</b>"  # other text is left alone
+        assert reasoning.normalize_honest({"answer_he": "</answer_he>", "verdict": "fit", "best_cv_id": "cv1"},
+                                          CVS) is None
+        scored = reasoning.normalize_analysis(_raw([_req("Python")] + MET, top_gap_he="חסר Go.</top_gap_he>"), CVS)
+        assert scored["top_gap_he"] == "חסר Go."
+
+    def test_the_level_reminder_sits_next_to_the_question(self):
+        assert "ברמה נמוכה מהניסיון שלי לא פוסלת" in reasoning.HONEST_QUESTION
+        assert "בלי להתעכב על הרמה" in reasoning.HONEST_QUESTION  # so the answers don't dwell on it
+        assert "formally takes only people without experience" in reasoning.HONEST_SYSTEM
         assert reasoning.normalize_honest({"answer_he": "x", "verdict": "borderline", "best_cv_id": "cv9"},
                                           CVS)["best_cv_ref"] == "main"
         assert reasoning.normalize_honest({"answer_he": "", "verdict": "fit", "best_cv_id": "cv1"}, CVS) is None

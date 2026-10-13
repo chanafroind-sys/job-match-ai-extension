@@ -656,6 +656,15 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('each card shows the plain answer in full, escaped', plain && plain.textContent.includes('מתאימה') &&
      plain.textContent.includes('<b>C++</b>') && !plain.querySelector('p span b'));
   ok('with its tip for the CV', plain.querySelector('.dm-cvtip') && plain.querySelector('.dm-cvtip').textContent.includes('Node.js'));
+  const leakedDeck = [card(54, 75, 'AI Engineer', { tier: 'strong', analysis: { ...card(54, 75, 'x').analysis,
+    compare: { ...honest('borderline', 'חלקית. הפער קטן.</answer_he> <parameter name="verdict">borderline'),
+      cv_tip_he: 'Senior AI/Backend Engineer, שם הפער קטן בהרבה.</answer_he> <parameter name="verdict">borderline' } } })];
+  const leakCtx = await boot({ statuses: [{ ...SUB({ status: 'done', cards: 1 }), is_admin: true }], storage: { cvText: CV },
+    today: { run: { id: 55, status: 'done', candidates: 1 }, cards: leakedDeck, entitlement: 'subscription' } });
+  const leakBox = leakCtx.doc.querySelector('.dm-honest');
+  ok('tool markup that leaked into a stored answer is cut, and such a tip is dropped', leakBox &&
+     leakBox.textContent.includes('חלקית. הפער קטן.') && !leakBox.textContent.includes('parameter') &&
+     !leakBox.querySelector('.dm-cvtip'), leakBox && leakBox.textContent);
   plain.querySelector('[data-winner="other"]').click();
   await tick();
   const judgeReqs = () => ctx.log.requests.filter(r => r.path.endsWith('/judge')).map(r => `${r.path.split('/')[2]}:${r.body.winner}`);

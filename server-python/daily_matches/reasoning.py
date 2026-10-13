@@ -35,6 +35,7 @@ import asyncio
 import importlib
 import json
 import logging
+import re
 import weakref
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -648,7 +649,7 @@ def normalize_analysis(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
         "cap": cap,
         "to_confirm": [r["text"] for r in reqs if r["status"] == "unknown"],
         "years": {"required": max(0, parsed.years_required), "relevant": max(0, parsed.years_relevant)},
-        "top_gap_he": parsed.top_gap_he.strip()[:250],
+        "top_gap_he": until_markup(parsed.top_gap_he)[:250],
     }
 
 
@@ -669,7 +670,12 @@ HONEST_TOOL = "submit_verdict"
 HONEST_TIERS = {"strong": "strong", "fit": "strong", "borderline": "maybe", "no": "hidden"}
 HONEST_ANSWER_MAX = 1500
 HONEST_TIP_MAX = 300
-HONEST_QUESTION = "כמה המשרה הזו מתאימה לי, בכנות, והאם כדאי לשלוח אליה קורות חיים?"
+# The level reminder repeats the system rule in the candidate's own words, next
+# to the question: stated only before ~15K tokens of CVs, it lost to the
+# model's instinct to turn down an overqualified candidate (a junior training
+# track, 2026-10-12). Worded so the answers don't dwell on level.
+HONEST_QUESTION = ("כמה המשרה הזו מתאימה לי, בכנות, והאם כדאי לשלוח אליה קורות חיים? "
+                   "משרה ברמה נמוכה מהניסיון שלי לא פוסלת אותה מבחינתי: תשפוט לפי העבודה עצמה, בלי להתעכב על הרמה.")
 HONEST_SYSTEM = """\
 A candidate in Israel's tech market asks you about one job posting at a time: \
 how well it fits them, honestly, and whether to send their CV. Answer as a \
@@ -689,7 +695,9 @@ embedded C++, "expert in X") or the posting insists on it.
 of their work: Node.js mentioned once is Node.js they know. Their own answers \
 count the same.
 - A role below the candidate's level fits when the work fits. They want to \
-see such roles: never call one unsuitable for being junior to them.
+see such roles: never call one unsuitable for being junior to them. If a \
+junior track formally takes only people without experience, mention it as \
+something to check; the verdict still follows the work.
 - Say no when the work itself is different (another discipline, a domain \
 they never touched), or a hard requirement is clearly missing (a security \
 clearance, a specific degree, leading people they never led, far more years \
@@ -740,6 +748,19 @@ def honest_schema(aliases: list[str]) -> dict:
     }
 
 
+# A long Hebrew answer sometimes runs past its own field, and the rest of the
+# tool call ("</answer_he> <parameter name="verdict">borderline") lands inside
+# the string (2026-10-12). The text is cut there; a tip that holds markup was
+# written in the wrong field, so it is dropped.
+_LEAKED_MARKUP = re.compile(r"</?(?:answer_he|cv_tip_he|verdict|best_cv_id|top_gap_he|parameter|invoke)\b[^>]*>?",
+                            re.IGNORECASE)
+
+
+def until_markup(text: str) -> str:
+    found = _LEAKED_MARKUP.search(text or "")
+    return (text[:found.start()] if found else (text or "")).strip()
+
+
 class _RawVerdict(BaseModel):
     answer_he: str
     verdict: str
@@ -752,12 +773,14 @@ def normalize_honest(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
         parsed = _RawVerdict.model_validate(raw)
     except ValidationError:
         return None
-    answer = parsed.answer_he.strip()
+    answer = until_markup(parsed.answer_he)
     if parsed.verdict not in HONEST_TIERS or not answer:
         return None
     by_alias = {cv.alias: cv for cv in cvs}
     best = by_alias.get(parsed.best_cv_id, cvs[0])
     tip = parsed.cv_tip_he.strip() if parsed.verdict != "no" else ""
+    if _LEAKED_MARKUP.search(tip):
+        tip = ""
     return {"method": "honest", "verdict": parsed.verdict, "tier": HONEST_TIERS[parsed.verdict],
             "answer_he": answer[:HONEST_ANSWER_MAX], "best_cv_ref": best.ref, "cv_tip_he": tip[:HONEST_TIP_MAX]}
 

@@ -284,8 +284,14 @@
   const judgeHtml = (id, judged) => `<div class="judge" role="group" aria-label="מי צדק"><span>מי צדק?</span>${JUDGE.map(([k, t]) =>
     `<button type="button" class="judge-btn${judged === k ? ' is-on' : ''}" data-act="judge" data-id="${esc(id)}" data-winner="${k}" aria-pressed="${judged === k}">${t}</button>`).join('')}</div>`;
 
+  // Answers stored before the server cut leaked tool markup (reasoning.py
+  // until_markup) are cut the same way here; such a tip was misplaced text.
+  const LEAKED = /<\/?(?:answer_he|cv_tip_he|verdict|best_cv_id|top_gap_he|parameter|invoke)\b/i;
+  const untilMarkup = (t) => String(t || '').split(LEAKED)[0].trim();
+
   function altHtml(card, c) {
     if (!c) return '';
+    if (c.method === 'honest') c = { ...c, answer_he: untilMarkup(c.answer_he), cv_tip_he: LEAKED.test(c.cv_tip_he || '') ? '' : c.cv_tip_he };
     if (c.method !== 'honest') {
       return c.failed ? `<p class="dm-alt">🧪 ${esc(modelName(c.model))}: לא החזיר תשובה תקינה</p>`
         : `<p class="dm-alt">🧪 ${esc(modelName(c.model))}: <b>${esc(c.match_score)}</b>${c.top_gap_he ? ` · ${esc(c.top_gap_he)}` : ''}</p>`;
