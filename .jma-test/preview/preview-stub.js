@@ -142,6 +142,22 @@
         { kind: 'requirement', text: 'Angular', importance: 'must', status: 'partial', points: -8 }, { kind: 'years', required: 4, relevant: 2, points: -12 }],
       cap: null, to_confirm: [] },
   ];
+  // ?plain=1: the deck as the plain question builds it (production's method since 2026-10-13).
+  if (params.get('plain') === '1') {
+    const PLAIN = [['strong', 92, 'בכנות, זו משרה שנבנתה בשבילך: Python, Kafka ו-AWS הם בדיוק מה שעשית בשש השנים האחרונות. Kubernetes בהיקף כזה לא מופיע אצלך, אבל זה לא יעצור אותם מלזמן אותך. כדאי לשלוח.'],
+      ['fit', 76, 'מתאימה. ה-Spark וה-Airflow שלך עונים על הליבה, ו-Snowflake לומדים מהר. שווה לשלוח את גרסת ה-Data.'],
+      ['borderline', 58, 'גבולית. זו משרת Platform עם תורנויות; יש לך חפיפה בתשתיות ו-CI/CD, אבל On-call לא מופיע אצלך. שווה לנסות אם זה מעניין אותך.']];
+    DECK.forEach((c, i) => {
+      const [verdict, score, answer] = PLAIN[i];
+      c.match_score = score;
+      c.tier = verdict === 'borderline' ? 'maybe' : 'strong';
+      c.analysis = { method: 'honest', verdict, tier: c.tier, match_score: score, answer_he: answer, best_cv_ref: c.best_cv_id,
+        cv_tip_he: i === 2 ? '' : 'Kubernetes מופיע אצלך רק בקטנה; אם תפעלת קלאסטר, כדאי להוסיף שורה שמתארת את זה.',
+        cv_scores: [{ cv_id: c.best_cv_id, label: c.best_cv_id === 'main' ? 'Backend' : 'Data', score }] };
+    });
+    SKIPPED.forEach((sk, i) => Object.assign(sk, { score: [46, 41, 30, 18, 9][i], verdict: 'no', breakdown: null, requirements: [],
+      reason: { kind: 'verdict', verdict: 'no', text: 'לא הייתי שולח.' }, answer_he: 'לא הייתי שולח. העבודה כאן שונה ממה שעשית.' }));
+  }
   if (COMPARE) {
     SKIPPED[0].compare = { model: COMPARE.model, method: 'honest', verdict: 'fit', tier: 'strong', best_cv_ref: 'main', match_score: 78,
       answer_he: 'מתאימה. חמש שנים זו דרישה רכה כאן: מה שהם באמת צריכים הוא Python ו-Kafka, ויש לך את שניהם. שווה לשלוח.' };

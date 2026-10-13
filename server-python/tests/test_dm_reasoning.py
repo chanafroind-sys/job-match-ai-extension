@@ -206,7 +206,8 @@ class TestThePlainQuestion:
         out = reasoning.normalize_honest({"answer_he": "  מתאימה, שווה לשלוח.  ", "verdict": "fit", "score": 78,
                                           "best_cv_id": "cv2", "cv_tip_he": " להבליט את Spark. "}, CVS)
         assert out == {"method": "honest", "verdict": "fit", "tier": "strong", "match_score": 78,
-                       "answer_he": "מתאימה, שווה לשלוח.", "best_cv_ref": "v-data", "cv_tip_he": "להבליט את Spark."}
+                       "answer_he": "מתאימה, שווה לשלוח.", "best_cv_ref": "v-data", "cv_tip_he": "להבליט את Spark.",
+                       "cv_scores": [{"cv_id": "v-data", "label": "Data", "score": 78}]}
         no_fit = reasoning.normalize_honest({"answer_he": "לא.", "verdict": "no", "best_cv_id": "cv1",
                                              "cv_tip_he": "להוסיף Go"}, CVS)
         assert no_fit["cv_tip_he"] == ""  # no tip for a job not worth an application

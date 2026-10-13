@@ -51,11 +51,13 @@ def _no_rate_limit_waits(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _compare_only_when_asked(monkeypatch):
-    """Production compares admins' runs with the plain question by default;
-    a test turns that on itself (or sets DM_COMPARE_MODEL), so call counts
-    elsewhere stay one call per job."""
+def _scored_unless_asked(monkeypatch):
+    """Production judges with the plain question (config.MAIN_METHOD); most
+    pipeline tests were written against the scored method's cards, so they
+    keep it, and the plain question's tests set it themselves. A comparison
+    runs only where a test asks for one (or sets DM_COMPARE_MODEL)."""
     from daily_matches import config
+    monkeypatch.setattr(config, "MAIN_METHOD", "scored")
     monkeypatch.setattr(config, "COMPARE_METHOD", "model")
 
 

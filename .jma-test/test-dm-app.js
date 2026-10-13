@@ -692,6 +692,47 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
     today: { run: { id: 50, status: 'done', candidates: 3 }, cards: sideBySide, entitlement: 'subscription', skipped: leftHonest } });
   ok('nobody else sees any of it', !ctx.doc.querySelector('.dm-honest') && !ctx.doc.querySelector('.dm-cmp-sum'));
 
+  // ── a deck judged by the plain question (the default since 2026-10-13) ───────
+  const plainCard = (id, verdictWord, score, answer, extra = {}) => ({
+    id, rank: id, match_score: score, tier: { strong: 'strong', fit: 'strong', borderline: 'maybe' }[verdictWord],
+    vector_score: 0.6, best_cv_id: 'main', user_action: null,
+    analysis: { method: 'honest', verdict: verdictWord, tier: 'strong', match_score: score, answer_he: answer,
+      best_cv_ref: 'main', cv_tip_he: 'Node.js מופיע רק בקטנה; אם עבדת איתו, כדאי להוסיף שורה.',
+      cv_scores: [{ cv_id: 'main', label: 'Backend', score }] },
+    job: { title: `Job ${id}`, company: 'Acme', category: 'Backend', seniority: 'Mid', url: `https://jobs.lever.co/acme/${id}`,
+      apply_url: `https://jobs.lever.co/acme/${id}/apply`, ats: 'lever', is_new: true, excerpt: '' },
+    ...extra,
+  });
+  const plainDeck = [plainCard(61, 'strong', 91, 'בכנות, זו בדיוק העבודה שלך.'),
+    plainCard(62, 'borderline', 55, 'גבולית: Python במקום Java, אבל אותה עבודה.')];
+  const plainLeft = [
+    { id: 63, score: 44, title: 'SRE', company: 'Zeta', url: '', reason: { kind: 'verdict', verdict: 'no', text: 'לא הייתי שולח.' },
+      requirements: [], breakdown: null, cap: null, to_confirm: [], user_action: null, verdict: 'no',
+      answer_he: 'לא הייתי שולח. זו משרת SRE עם תורנויות.</answer_he>' },
+    { id: 64, score: 12, title: 'Chip Verification', company: 'Theta', url: '', reason: { kind: 'verdict', verdict: 'no', text: 'תחום אחר.' },
+      requirements: [], breakdown: null, cap: null, to_confirm: [], user_action: null, verdict: 'no', answer_he: 'תחום אחר.' },
+  ];
+  ctx = await boot({ statuses: [SUB({ status: 'done', cards: 2 })], storage: { cvText: CV, jma_dm_cv_library: { versions: [
+    { id: 'data', label: 'Data', text: CV, createdAt: 2 }] } },
+    today: { run: { id: 60, status: 'done', candidates: 4, analyzed_ok: 4 }, cards: plainDeck, entitlement: 'subscription', skipped: plainLeft } });
+  const first = ctx.doc.querySelectorAll('.dm-slide')[0];
+  ok('a plain-question card shows its word, its number and its answer', first.querySelector('.verdict-badge').textContent.includes('מתאימה מאוד') &&
+     first.querySelector('.ring-num').textContent === '91' && first.querySelector('.dm-ai').textContent.includes('בדיוק העבודה שלך'));
+  ok('with the tip for the CV, and no checklist', !!first.querySelector('.dm-cvtip') && !first.querySelector('.reqs') && !first.querySelector('[data-act="why"]'));
+  ok('a borderline job is in the deck as worth a look', ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.chip-maybe') &&
+     ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.verdict-badge').textContent.includes('גבולית'));
+  const otherVersion = first.querySelector('[data-act="cmp"]');
+  ok('another version can still be picked', otherVersion && otherVersion.textContent.includes('גרסה אחרת') &&
+     first.querySelectorAll('.dm-cv-opt').length === 2 && first.querySelectorAll('.dm-cv-opt .bar').length === 1);
+  ctx.doc.querySelector('[data-act="skipped"]').click();
+  await tick();
+  const plainRows = [...ctx.doc.querySelectorAll('.skip-row')];
+  ok('left-out jobs say why in the answer\'s own words, near ones first', plainRows.length === 2 &&
+     plainRows[0].textContent.includes('לא הייתי שולח.') && ctx.doc.querySelectorAll('.skip-h')[0].textContent.includes('קרובות לסף') &&
+     !ctx.doc.querySelector('.skip-groups'));
+  const full = plainRows[0].querySelector('.skip-ans');
+  ok('with the full answer a click away, leaked markup cut', full && full.textContent.includes('תורנויות') && !full.textContent.includes('answer_he'));
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

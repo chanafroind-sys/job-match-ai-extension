@@ -796,7 +796,9 @@ def normalize_honest(raw: dict, cvs: list[CvForPrompt]) -> dict | None:
     # no number at all gets the middle of the range.
     score = (low + high) // 2 if parsed.score is None else max(low, min(high, parsed.score))
     return {"method": "honest", "verdict": parsed.verdict, "tier": HONEST_TIERS[parsed.verdict], "match_score": score,
-            "answer_he": answer[:HONEST_ANSWER_MAX], "best_cv_ref": best.ref, "cv_tip_he": tip[:HONEST_TIP_MAX]}
+            "answer_he": answer[:HONEST_ANSWER_MAX], "best_cv_ref": best.ref, "cv_tip_he": tip[:HONEST_TIP_MAX],
+            # The card names the version from here, as it does for the scored method.
+            "cv_scores": [{"cv_id": best.ref, "label": best.label, "score": score}]}
 
 
 @dataclass(frozen=True)

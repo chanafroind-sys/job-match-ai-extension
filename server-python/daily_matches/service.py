@@ -170,7 +170,9 @@ def rank_results(candidates: list[retrieval.Candidate],
     failed is left out entirely, so a later run can try it again."""
     analyzed = [(c, analyses[c.job_id]) for c in candidates if analyses.get(c.job_id)]
     analyzed.sort(key=lambda t: (-t[1]["match_score"], -t[0].sim))
-    return [(c, a, tier_for(a["match_score"])) for c, a in analyzed]
+    # The plain question names its tier with its word; a scored analysis gets
+    # the tier of its score.
+    return [(c, a, a.get("tier") or tier_for(a["match_score"])) for c, a in analyzed]
 
 
 def job_snapshot(job: DailyJobPool) -> dict:
@@ -269,11 +271,22 @@ def merge_compare(analyses: dict[str, dict | None], other: dict[str, dict | None
         }
 
 
+def _first_sentence(text: str, limit: int = 160) -> str:
+    text = (text or "").strip()
+    for stop in (". ", "? ", "! ", ": "):
+        at = text.find(stop)
+        if 0 < at < limit:
+            return text[:at + 1]
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
 def main_reason(analysis: dict | None) -> dict | None:
     """Why a job came out where it did, in one item: the cap that held its
     score down, or else its biggest deduction. For the list of analyzed jobs
     that didn't make the deck."""
     a = analysis or {}
+    if a.get("method") == "honest":
+        return {"kind": "verdict", "verdict": a.get("verdict"), "text": _first_sentence(a.get("answer_he", ""))}
     cap = a.get("cap")
     if cap and cap.get("name"):
         return {"kind": "cap", "name": cap["name"], "value": cap.get("value")}
@@ -441,7 +454,7 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
                 analyses, usage = await reasoning.analyze_jobs(
                     prompt_cvs, prompt_jobs,
                     on_progress=lambda done, total: emit({"type": "progress", "done": done, "total": total}),
-                    facts=facts)
+                    facts=facts, method=config.MAIN_METHOD)
             except BaseException:
                 if compare is not None:
                     compare.cancel()

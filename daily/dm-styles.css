@@ -197,6 +197,9 @@ button { font-family: inherit; }
 .dm-alt { font-size: 12px; color: var(--text-secondary); background: var(--bg-hover); border: 1px dashed var(--border-hover); border-radius: 8px; padding: 6px 10px; line-height: 1.5; }
 .dm-honest { display: grid; gap: 6px; }
 .dm-honest p { margin: 0; font-size: 12.5px; color: var(--text-primary); line-height: 1.6; }
+.dm-cvtip { font-size: 12.5px; line-height: 1.55; color: #1E3A8A; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 10px; padding: 8px 10px; margin: 0; }
+.skip-ans summary { cursor: pointer; font-size: 12px; color: var(--accent-dark); }
+.skip-ans p { margin: 4px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); }
 .dm-honest .dm-cvtip { font-size: 12px; color: #1E3A8A; background: #EFF6FF; border-radius: 8px; padding: 6px 8px; }
 .vd { font-weight: 700; padding: 1px 8px; border-radius: 10px; }
 .vd-strong { background: #DCFCE7; color: #15803D; } .vd-fit { background: #E0F2FE; color: #0369A1; }

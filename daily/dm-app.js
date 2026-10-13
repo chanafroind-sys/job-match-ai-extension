@@ -6,9 +6,12 @@
 // string from the server or a job board is escaped before it reaches
 // innerHTML: job text is third-party content inside a privileged page.
 //
-// A deck holds only new jobs that scored 60 or more: strong ones (70+) first,
-// then "worth a look" (60-69). A day with none says so (quiet) instead of
-// showing weak matches.
+// A deck holds only the new jobs judged to fit: "fits well" and "fits" first,
+// then "borderline" (worth a look). Since 2026-10-13 each job is judged by the
+// plain question (server config.MAIN_METHOD): a recruiter's answer, a word and
+// a number within the word's range. Decks judged by the scored checklist still
+// render with their requirements and arithmetic. A day with none says so
+// (quiet) instead of showing weak matches.
 (function (root) {
   'use strict';
 
@@ -209,7 +212,7 @@
       <ol class="bd-steps">
         ${step('s1', 'מחפשים משרות חדשות בתחומים שלך', b.s1text || 'רק משרות שעוד לא ראית')}
         ${step('s2', total ? `ניתוח לעומק של ${total} משרות` : 'ניתוח לעומק של כל משרה', b.s2text || 'כל משרה בנפרד: דרישות, פערים ואיזו גרסה להגיש', grid)}
-        ${step('s3', 'מסננים לפי ציון', b.s3text || 'רק משרות עם ציון 60 ומעלה נכנסות לחפיסה')}
+        ${step('s3', 'מסננים לפי ציון', b.s3text || 'רק המשרות שמתאימות לך נכנסות לחפיסה')}
       </ol>
       <div class="bd-skel" aria-hidden="true"><span style="width:60%"></span><span style="width:40%"></span><span style="width:85%"></span><span style="width:70%"></span></div>
       <p class="dm-fine dm-centered">אפשר לסגור את החלונית. החפיסה תחכה כאן כשתחזור/י.<br>ריצה שנכשלת לא נספרת, ואפשר לנסות שוב.</p></div>`;
@@ -280,6 +283,8 @@
   // question anyone would ask a chat model: how well does this fit me, and
   // should I send my CV? Its answer is shown in full, with who was right.
   const VERDICT_HE = { strong: 'מתאימה מאוד', fit: 'מתאימה', borderline: 'גבולית', no: 'לא מתאימה' };
+  const VERDICT_BADGE = { strong: ['⭐ מתאימה מאוד', 'verdict-great'], fit: ['👍 מתאימה', 'verdict-good'],
+    borderline: ['👀 גבולית', 'verdict-ok'], no: ['❌ לא מתאימה', 'verdict-bad'] };
   const JUDGE = [['main', 'הנוכחית'], ['other', 'הישירה'], ['both', 'שתיהן'], ['neither', 'אף אחת']];
   const judgeHtml = (id, judged) => `<div class="judge" role="group" aria-label="מי צדק"><span>מי צדק?</span>${JUDGE.map(([k, t]) =>
     `<button type="button" class="judge-btn${judged === k ? ' is-on' : ''}" data-act="judge" data-id="${esc(id)}" data-winner="${k}" aria-pressed="${judged === k}">${t}</button>`).join('')}</div>`;
@@ -307,7 +312,8 @@
     const a = card.analysis;
     const job = card.job || {};
     const score = card.match_score;
-    const [vl, vc] = score == null ? ['ללא ניתוח', 'verdict-ok'] : verdict(score);
+    const [vl, vc] = score == null ? ['ללא ניתוח', 'verdict-ok']
+      : a && a.method === 'honest' && VERDICT_BADGE[a.verdict] ? VERDICT_BADGE[a.verdict] : verdict(score);
     const posted = postedLabel(job.published_at);
     const chips = [
       card.tier === 'maybe' && '<span class="chip chip-maybe">👀 שווה הצצה</span>',
@@ -325,14 +331,19 @@
       const selScore = (scores.find(s => s.cv_id === sel) || {}).score;
       const reqs = a.requirements || [];
       const hard = reqs.some(r => r.status === 'missing' && r.importance === 'must');
-      const compare = scores.length > 1 ? `<button type="button" class="link-btn" data-act="cmp" aria-expanded="false">השוואת גרסאות</button>` : '';
+      // The plain question names one version; the others can still be picked.
+      const opts = scores.length > 1 || a.method !== 'honest' || state.cvs.length < 2 ? scores
+        : scores.concat(state.cvs.filter(v => !scores.some(x => x.cv_id === v.id)).map(v => ({ cv_id: v.id, label: v.label, score: null })));
+      const compare = opts.length > 1 ? `<button type="button" class="link-btn" data-act="cmp" aria-expanded="false">${scores.length > 1 ? 'השוואת גרסאות' : 'גרסה אחרת'}</button>` : '';
       const dl = `<button type="button" class="cv-dl" data-act="dl-cv" title="הורדת הגרסה הזו"${hasCvFile(sel) ? '' : ' hidden'}>⬇️ הורדה</button>`;
       const alt = isAdmin() ? altHtml(card, a.compare) : '';
       body = `${alt}
         <div class="dm-cv"><div class="dm-cv-row"><span class="dm-cv-ico" aria-hidden="true">📄</span><div class="dm-cv-main"><div class="dm-cv-k">${sel === card.best_cv_id ? 'מומלץ להגיש עם' : 'נבחר להגשה'}</div><div class="dm-cv-v"><strong>${esc(cvLabel(card, sel))}</strong>${selScore != null ? ` · התאמה ${selScore}` : ''}</div></div>${dl}${compare}</div>
           ${a.cv_choice_reason_he ? `<p class="dm-cv-reason">${esc(a.cv_choice_reason_he)}</p>` : ''}
-          <div class="dm-cv-cmp" hidden>${scores.map(s => `<label class="dm-cv-opt"><input type="radio" name="cv-${card.id}" value="${esc(s.cv_id)}"${s.cv_id === sel ? ' checked' : ''}><span>${esc(s.label)}${s.cv_id === card.best_cv_id ? '<em>מומלץ</em>' : ''}</span><span class="bar"><i style="width:${Math.max(0, Math.min(100, s.score))}%"></i></span><b>${s.score}</b></label>`).join('')}</div></div>
+          <div class="dm-cv-cmp" hidden>${opts.map(s => `<label class="dm-cv-opt"><input type="radio" name="cv-${card.id}" value="${esc(s.cv_id)}"${s.cv_id === sel ? ' checked' : ''}><span>${esc(s.label)}${s.cv_id === card.best_cv_id ? '<em>מומלץ</em>' : ''}</span>${s.score == null ? '' : `<span class="bar"><i style="width:${Math.max(0, Math.min(100, s.score))}%"></i></span><b>${s.score}</b>`}</label>`).join('')}</div></div>
         ${a.fit_summary_he ? `<section><h3 class="dm-sec-h">🤖 ניתוח ההתאמה</h3><p class="dm-ai">${esc(a.fit_summary_he)}</p></section>` : ''}
+        ${a.method === 'honest' ? `<section><h3 class="dm-sec-h">🤖 ניתוח ההתאמה</h3><p class="dm-ai" dir="auto">${esc(untilMarkup(a.answer_he))}</p></section>
+          ${a.cv_tip_he && !LEAKED.test(a.cv_tip_he) ? `<p class="dm-cvtip">✏️ <b>טיפ לקורות החיים:</b> <span dir="auto">${esc(a.cv_tip_he)}</span></p>` : ''}` : ''}
         ${reqs.length ? `<section><div class="dm-sec-row"><h3 class="dm-sec-h">דרישות התפקיד</h3><span class="req-sum">${reqSummary(reqs)}</span></div>${reqsHtml(reqs)}</section>` : ''}
         ${askHtml(a.to_confirm)}
         ${a.top_gap_he ?`<div class="dm-gap${hard ? ' is-hard' : ''}"><b>${hard ? '⚠️' : '💡'} הפער המרכזי:</b> ${esc(a.top_gap_he)}</div>` : ''}
@@ -514,7 +525,7 @@
     const run = state.run || {};
     const analyzed = run.candidates || 0;
     const head = analyzed
-      ? ['היום אין התאמות חזקות', `בדקנו לעומק ${fmtInt(analyzed)} משרות חדשות בתחומים שלך, ואף אחת לא הגיעה לציון 60. עדיף לא להציג אותן מאשר לשלוח אותך להגיש למשרות שלא באמת מתאימות.`]
+      ? ['היום אין התאמות חזקות', `בדקנו לעומק ${fmtInt(analyzed)} משרות חדשות בתחומים שלך, ואף אחת לא נמצאה מתאימה מספיק. עדיף לא להציג אותן מאשר לשלוח אותך להגיש למשרות שלא באמת מתאימות.`]
       : ['אין משרות חדשות בתחומים שלך', 'מאז החפיסה הקודמת לא נכנסו למאגר משרות חדשות בתחומים שבחרת.'];
     return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
       <div class="dm-card-plain"><div class="dm-big" aria-hidden="true">🌤️</div><h2 class="dm-h2">${head[0]}</h2><p class="dm-muted">${head[1]}</p>
@@ -529,7 +540,8 @@
   // Why an analyzed job stayed out of the deck, in one line, and the group it
   // counts under in the summary on top of the list.
   function skipReason(r) {
-    if (!r) return { html: 'ציון נמוך מ-60', group: 'אחר' };
+    if (!r) return { html: 'ציון נמוך', group: 'אחר' };
+    if (r.kind === 'verdict') return { html: esc(r.text || ''), group: VERDICT_HE[r.verdict] || 'לא מתאימה' };
     if (r.kind === 'cap') return { html: `תקרה: ${esc(CAP_HE[r.name] || r.name)}`, group: CAP_HE[r.name] || r.name };
     if (r.kind === 'years') return { html: `נדרשות ${esc(r.required)} שנות ניסיון, בקורות החיים ${esc(r.relevant)}`, group: 'שנות ניסיון' };
     const must = r.importance === 'must';
@@ -538,13 +550,15 @@
   }
 
   const NEAR_MISS = 50; // left out, but close to the deck's 60: worth a look
+  // The plain question's "no" spans 0-49, so its near misses are 40 and up.
+  const isNear = (s) => (s.score || 0) >= (s.verdict ? 40 : NEAR_MISS);
   const fitsLabel = (on) => (on ? '✓ מתאימה לי · נשמרה' : '👍 מתאימה לי');
 
   function skippedView() {
     const list = (state.skipped || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
     const groups = {};
     list.forEach(s => { const g = skipReason(s.reason).group; groups[g] = (groups[g] || 0) + 1; });
-    const chips = Object.entries(groups).sort((a, b) => b[1] - a[1])
+    const chips = Object.keys(groups).length < 2 ? '' : Object.entries(groups).sort((a, b) => b[1] - a[1])
       .map(([g, n]) => `<span class="chip">${esc(g)} · ${n}</span>`).join('');
     const row = (s) => {
       const fits = s.user_action === 'fits';
@@ -553,6 +567,7 @@
         <span class="skip-why">${skipReason(s.reason).html}</span>
         ${(s.to_confirm || []).length ? `<span class="skip-ask">❓ לאשר: ${s.to_confirm.map(t => `<bdi dir="auto">${esc(t)}</bdi>`).join(', ')}</span>` : ''}
         ${whyHtml({ ...s, match_score: s.score }, true)}
+        ${s.answer_he ? `<details class="skip-ans"><summary>התשובה המלאה</summary><p dir="auto">${esc(untilMarkup(s.answer_he))}</p></details>` : ''}
         ${isAdmin() && s.compare ? altHtml({ id: s.id }, s.compare) : ''}
         <div class="skip-acts"><button type="button" class="skip-fit${fits ? ' is-on' : ''}" data-act="fits" data-id="${esc(s.id)}" aria-pressed="${fits}">${fitsLabel(fits)}</button></div>
         <p class="dm-fine skip-thanks"${fits ? '' : ' hidden'}>נשמרה עם המשרות השמורות, וזה עוזר לנו לשפר את הניתוח. אם נפסלה על משהו שיש לך ולא כתוב בקורות החיים, אפשר להוסיף אותו ב<button type="button" class="link-btn" data-act="facts">🎓 מה שלא כתוב בקו״ח</button>.</p></div>
@@ -562,31 +577,31 @@
     // put in the deck, where the two methods disagree most usefully.
     const honestIn = (s) => isAdmin() && s.compare && s.compare.method === 'honest' && ['strong', 'maybe'].includes(s.compare.tier);
     const theirs = list.filter(honestIn).sort((a, b) => (b.compare.match_score || 0) - (a.compare.match_score || 0));
-    const near = list.filter(s => !honestIn(s) && (s.score || 0) >= NEAR_MISS);
-    const rest = list.filter(s => !honestIn(s) && (s.score || 0) < NEAR_MISS);
+    const near = list.filter(s => !honestIn(s) && isNear(s));
+    const rest = list.filter(s => !honestIn(s) && !isNear(s));
     const part = (title, rows) => (rows.length ? `<h2 class="dm-h2 skip-h">${title} <span class="dm-fine">(${rows.length})</span></h2>${rows.map(row).join('')}` : '');
     return `${topBar('🔎 נבדקו ולא נכנסו')}<div class="dm-body">
-      <p class="dm-muted">המשרות האלה נותחו לעומק וקיבלו ציון מתחת ל-60, ולכן לא נכנסו לחפיסה. כדאי להציץ בעיקר בקרובות לסף: לכל משרה רואים את הסיבה העיקרית, ובלחיצה על 🧮 את כל החישוב.</p>
+      <p class="dm-muted">המשרות האלה נותחו לעומק ולא נמצאו מתאימות מספיק, ולכן לא נכנסו לחפיסה. כדאי להציץ בעיקר בקרובות לסף: לכל משרה רואים את הסיבה העיקרית, ובלחיצה את הניתוח המלא.</p>
       <p class="dm-tip">💡 משרה נפסלה על משהו שיש לך ולא כתוב בקורות החיים (תואר, רישיון, טכנולוגיה ששימשה אותך מעט)? אפשר להוסיף אותו ב<button type="button" class="link-btn" data-act="facts">🎓 מה שלא כתוב בקו״ח</button>, והוא ייחשב מהחפיסה הבאה.</p>
       ${chips ? `<div class="dm-chips skip-groups">${chips}</div>` : ''}
-      ${list.length ? part('🧪 השאלה הישירה הייתה מכניסה לחפיסה', theirs) + part('קרובות לסף · 50-59', near)
+      ${list.length ? part('🧪 השאלה הישירה הייתה מכניסה לחפיסה', theirs) + part('קרובות לסף', near)
         + part(near.length || theirs.length ? 'השאר' : 'כל המשרות', rest) : '<p class="dm-muted">אין משרות כאלה בחפיסה הזו.</p>'}${back()}</div>`;
   }
 
   // After the deck, or on a day with none: jobs that nearly made it are
   // offered for a look, since the person may know what the CV doesn't say.
   function nearNudge() {
-    const near = (state.skipped || []).filter(s => (s.score || 0) >= NEAR_MISS).length;
+    const near = (state.skipped || []).filter(isNear).length;
     if (!near) return skippedLink();
     return `<div class="dm-card-plain"><h2 class="dm-h2">🔎 עוד ${near === 1 ? 'משרה אחת כמעט נכנסה' : `${near} משרות כמעט נכנסו`}</h2>
-      <p class="dm-muted">ציון 50-59, קצת מתחת לסף. שווה להציץ: אולי משהו שם מתאים לך ופשוט לא כתוב בקורות החיים.</p>
+      <p class="dm-muted">קצת מתחת לסף. שווה להציץ: אולי משהו שם מתאים לך ופשוט לא כתוב בקורות החיים.</p>
       <button type="button" class="btn btn-secondary" data-act="skipped">🔎 להציץ במשרות שלא נכנסו</button></div>`;
   }
 
   function skippedLink() {
     const all = state.skipped || [];
     if (!all.length) return '';
-    const near = all.filter(s => (s.score || 0) >= NEAR_MISS).length;
+    const near = all.filter(isNear).length;
     return `<button type="button" class="link-btn dm-skipped" data-act="skipped">🔎 עוד ${all.length} נבדקו ולא נכנסו${near ? `, ${near} מהן קרובות לסף` : ''}</button>`;
   }
 
@@ -836,7 +851,7 @@
         } else if (ev.type === 'progress') {
           Object.assign(b, { done: ev.done, total: ev.total, s2text: `הושלמו ${ev.done} מתוך ${ev.total} ניתוחים` });
         } else if (ev.type === 'done') {
-          const s3text = ev.count ? `✓ ${ev.count} משרות בחפיסה` : 'אין היום משרות עם ציון 60 ומעלה';
+          const s3text = ev.count ? `✓ ${ev.count} משרות בחפיסה` : 'אין היום משרות שמתאימות לך';
           Object.assign(b, { s2: 'done', s3: 'done', s3text, title: 'החפיסה מוכנה' });
         }
         if (['done', 'already', 'error'].includes(ev.type)) terminal = ev;

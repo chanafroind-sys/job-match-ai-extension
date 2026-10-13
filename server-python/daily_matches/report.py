@@ -23,6 +23,8 @@ def _reason_key(analysis: dict | None) -> str:
         return f"cap:{r['name']}"
     if r["kind"] == "years":
         return "years"
+    if r["kind"] == "verdict":
+        return f"verdict:{r.get('verdict')}"
     return f"{r.get('importance')}_{r.get('status')}"  # must_missing, must_partial, nice_missing...
 
 
@@ -60,6 +62,9 @@ async def build_report(session, now=None, days: int = 3) -> dict:
             "marked_fits": dict(Counter(_reason_key(r.analysis) for r in rows if r.user_action == "fits")
                                 .most_common()),
             "with_unknown_credentials": sum(1 for r in rows if (r.analysis or {}).get("to_confirm")),
+            "method": next(((r.analysis or {}).get("method") or "scored" for r in rows), None),
+            "verdicts": dict(Counter((r.analysis or {}).get("verdict") for r in rows
+                                     if (r.analysis or {}).get("verdict")).most_common()),
             # Admins' runs: the side-by-side comparison, and who they marked right.
             "compare": compare_summary(list(rows), run),
             "tokens": usage,

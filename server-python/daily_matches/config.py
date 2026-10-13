@@ -63,21 +63,26 @@ WARMUP_DELAY_S = 20.0
 # main one on each card. Empty: off. For deciding whether a pricier model is
 # worth it, on real decks.
 COMPARE_MODEL = (os.getenv("DM_COMPARE_MODEL", "") or "").strip()
-# What admins' runs set the deck against, side by side on every card and in
-# the left-out list:
-#   honest (default): the same model, asked plainly how well the job fits and
-#     whether to send a CV, with no rubric and no checklist (reasoning.HONEST).
-#     The owner's question (2026-10-12): would the plain answer she'd get from
-#     any chat judge fit better than the scored checklist?
-#   model: DM_COMPARE_MODEL, with the same scored method.
-#   off: no comparison.
-COMPARE_METHOD = (os.getenv("DM_COMPARE_METHOD", "honest") or "").strip().lower()
+# How every job is judged (reasoning.METHODS):
+#   honest (default since 2026-10-13): the plain question, how well does this
+#     job fit me and should I send my CV, answered like a recruiter, with a word,
+#     a number within the word's range, the version to send and a tip. Side by
+#     side on her own decks the owner found it right 7 times out of 8, and the
+#     scored checklist right in none: the checklist wanted the CV to mirror the
+#     posting.
+#   scored: the rubric and checklist, the score computed in code.
+MAIN_METHOD = (os.getenv("DM_METHOD", "honest") or "honest").strip().lower()
+# What admins' runs set the deck against, side by side on every card:
+#   off (default): nothing, so nothing is paid twice.
+#   honest / scored: that method too, with the same model.
+#   model: DM_COMPARE_MODEL, with the scored method.
+COMPARE_METHOD = (os.getenv("DM_COMPARE_METHOD", "off") or "").strip().lower()
 
 
 def compare_setup() -> tuple[str, str] | None:
     """(method, model) of the admins' comparison, or None."""
-    if COMPARE_METHOD == "honest":
-        return "honest", LLM_MODEL
+    if COMPARE_METHOD in ("honest", "scored") and COMPARE_METHOD != MAIN_METHOD:
+        return COMPARE_METHOD, LLM_MODEL
     if COMPARE_METHOD == "model" and COMPARE_MODEL:
         return "scored", COMPARE_MODEL
     return None

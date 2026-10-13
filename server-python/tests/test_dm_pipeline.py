@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 import main as main_module
 import daily_matches.models  # noqa: F401  (registers dm_* tables before conftest's create_all)
 from app.models.job_pool import DailyJobPool
-from daily_matches import config, cv_text, embeddings, pool_embedding, reasoning, service, store
+from daily_matches import config, cv_text, embeddings, pool_embedding, reasoning, retrieval, service, store
 from daily_matches.entitlement import Access, resolve_access
 from daily_matches.models import DmCvEmbedding, DmJobEmbedding, DmRun, DmRunResult, DmTrial
 from tests.dm_helpers import BACKEND_CV, DATA_CV, FakeClaude, FakeEmbedder, seed_jobs, standard_pool
@@ -464,6 +464,36 @@ class TestCompareWithAnotherClaude:
         summary = service.compare_summary(rows, (await db.execute(select(DmRun))).scalar_one())
         assert summary["main_model"] == "claude-haiku-5-5" and summary["cost_other_usd"] == pytest.approx(0.0125, abs=1e-4)
         assert summary["cost_main_usd"] == pytest.approx(5 * (1000 * 0.10 + 300 * 0.50) / 1e6, abs=1e-4)
+
+class TestThePlainQuestionBuildsTheDeck:
+    """Production's method since 2026-10-13 (config.MAIN_METHOD)."""
+
+    async def test_the_deck_is_built_from_the_words(self, db, env):
+        env["monkeypatch"].setattr(config, "MAIN_METHOD", "honest")
+        env["monkeypatch"].setattr(config, "COMPARE_METHOD", "off")
+        await _seed_and_embed(db)
+        events = await _collect(_cvs(BACKEND_CV), SUBSCRIBER)
+        assert events[-1]["type"] == "done" and events[-1]["analyzed"] == 5
+        calls = env["claude"].calls
+        assert len(calls) == 5 and {c["tools"][0]["name"] for c in calls} == {"submit_verdict"}  # nothing paid twice
+        rows = (await db.execute(select(DmRunResult).order_by(DmRunResult.rank))).scalars().all()
+        assert all(r.tier == reasoning.HONEST_TIERS[r.analysis["verdict"]] for r in rows)
+        assert [r.match_score for r in rows] == sorted((r.match_score for r in rows), reverse=True)
+        assert all(r.best_cv_ref == "cv-0" and r.analysis["cv_scores"][0]["label"] == "Backend" for r in rows)
+        assert events[-1]["count"] == sum(r.tier in ("strong", "maybe") for r in rows)
+
+    async def test_a_borderline_job_is_worth_a_look_even_below_60(self, db, env):
+        env["monkeypatch"].setattr(config, "MAIN_METHOD", "honest")
+        analysis = reasoning.normalize_honest({"answer_he": "גבולית.", "verdict": "borderline", "score": 52,
+                                               "best_cv_id": "cv1"}, [reasoning.CvForPrompt("cv1", "main", "B", "x")])
+        cand = retrieval.Candidate(job_id="j1", best_cv="cv1", sim=0.5)
+        assert service.rank_results([cand], {"j1": analysis})[0][2] == "maybe"  # the word, not the 60 line
+
+    def test_a_left_out_job_says_why_in_the_answers_own_words(self):
+        reason = service.main_reason({"method": "honest", "verdict": "no",
+                                      "answer_he": "לא הייתי שולח. זו משרת SRE עם תורנויות, והניסיון שלך הוא פיתוח."})
+        assert reason == {"kind": "verdict", "verdict": "no", "text": "לא הייתי שולח."}
+
 
 class TestThePlainQuestionSideBySide:
     ADMIN = Access("subscription", subject="lic:admin", is_admin=True)

@@ -251,6 +251,8 @@ async def today(request: Request, latest: bool = False,
             "breakdown": (r.analysis or {}).get("breakdown"),
             "cap": (r.analysis or {}).get("cap"),
             "to_confirm": (r.analysis or {}).get("to_confirm") or [],
+            "verdict": (r.analysis or {}).get("verdict"),
+            "answer_he": (r.analysis or {}).get("answer_he"),
             "user_action": r.user_action,
             # Admins: the comparison's verdict too, where it would have shown the job.
             **({"compare": (r.analysis or {}).get("compare")} if access.is_admin and (r.analysis or {}).get("compare") else {}),
