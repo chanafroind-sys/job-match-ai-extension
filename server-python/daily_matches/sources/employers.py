@@ -8,8 +8,10 @@ fetcher the registry uses. registry.seed_boards adds them once; from then on
 they are read daily like any discovered board, and one that stops answering
 is skipped after registry.MAX_FAILURES days.
 
-Not here, because no reader exists for their systems yet: Microsoft, Google,
-Amazon, Apple and Meta (their own sites), Amdocs and Qualcomm (Eightfold),
+Amazon and Microsoft run their own systems, read by bigtech.py.
+
+Not here, because no reader exists for their systems yet: Google, Apple and
+Meta (their own sites), Amdocs and Qualcomm (Eightfold),
 Check Point, Wix, monday.com and Elbit (own or unidentified), Booking
 (iCIMS), Synopsys (Avature). Dell's Workday board refused the query (422).
 """
@@ -17,6 +19,8 @@ Check Point, Wix, monday.com and Elbit (own or unidentified), Booking
 # (ats, fetch params, company). Israeli tech positions on 2026-10-13 in comments;
 # boards at 0 that day are Israeli R&D sites that hire, read daily all the same.
 SEED_BOARDS: tuple[tuple[str, dict, str], ...] = (
+    ("amazon", {"slug": "israel", "country": "ISR"}, "Amazon"),  # 98 (161 in Israel, the rest not tech)
+    ("microsoft", {"slug": "israel", "location": "Israel"}, "Microsoft"),  # 12 (25 in Israel)
     ("workday", {"host": "paloaltonetworks.wd5.myworkdayjobs.com", "site": "panwexternalcareers"},
      "Palo Alto Networks"),  # 87, CyberArk's roles included
     ("greenhouse", {"board": "aidocmedical"}, "Aidoc"),  # 13

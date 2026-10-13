@@ -23,13 +23,13 @@ from app.services import job_aggregator as agg
 from app.services.israel_job_sources import COMPANIES
 from daily_matches import config
 from daily_matches.models import DmSource
-from daily_matches.sources import comeet, employers
+from daily_matches.sources import bigtech, comeet, employers
 
 logger = logging.getLogger(__name__)
 
-FETCHABLE = ("greenhouse", "lever", "ashby", "smartrecruiters", "workday", "comeet")
+FETCHABLE = ("greenhouse", "lever", "ashby", "smartrecruiters", "workday", "comeet", "amazon", "microsoft")
 # Adapters of Daily Matches' own, next to V1's (agg.FETCHERS, left untouched).
-OWN_FETCHERS = {"comeet": comeet.fetch_comeet}
+OWN_FETCHERS = {"comeet": comeet.fetch_comeet, "amazon": bigtech.fetch_amazon, "microsoft": bigtech.fetch_microsoft}
 MAX_FAILURES = 5  # consecutive failed fetches before a board is skipped
 FETCH_CONCURRENCY = 8
 

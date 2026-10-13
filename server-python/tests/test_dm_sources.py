@@ -13,7 +13,7 @@ import daily_matches.models  # noqa: F401  (registers dm_* tables before conftes
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
 from daily_matches.models import DmSource
-from daily_matches.sources import aggregators, collect_extra, comeet, employers, linkedin, probe, registry
+from daily_matches.sources import aggregators, bigtech, collect_extra, comeet, employers, linkedin, probe, registry
 from daily_matches.sources.dedupe import drop_copies, job_key
 
 
@@ -463,6 +463,60 @@ class TestEmployers:
         keys = [(ats, registry._slug_of(ats, params)) for ats, params, _ in REAL_EMPLOYERS]
         assert len(keys) == len(set(keys)) and not set(keys) & known
         assert all(ats in registry.FETCHABLE for ats, _ in keys)
+
+
+class TestBigTech:
+    async def test_amazon_pages_through_israel_and_keeps_tech_with_its_qualifications(self, monkeypatch):
+        monkeypatch.setattr(bigtech, "AMAZON_PAGE", 2)
+        jobs = [{"country_code": "ISR", "title": "Software Development Engineer", "job_path": "/en/jobs/1/sde",
+                 "company_name": "Amazon Development Center (Israel)", "posted_date": "October  7, 2026", "id_icims": "1",
+                 "description": "Build services.", "basic_qualifications": "- 3+ years of Java<br/>",
+                 "preferred_qualifications": "- AWS"},
+                {"country_code": "ISR", "title": "Warehouse Associate", "job_path": "/en/jobs/2/wa", "id_icims": "2"},
+                {"country_code": "USA", "title": "Software Development Engineer", "job_path": "/en/jobs/3/x", "id_icims": "3"}]
+        offsets = []
+
+        def handler(request):
+            offset = int(request.url.params["offset"])
+            offsets.append(offset)
+            return httpx.Response(200, json={"hits": 3, "jobs": jobs[offset:offset + 2]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            recs = await bigtech.fetch_amazon(client, "Amazon", {"country": "ISR"})
+        assert offsets == [0, 2] and [r["title"] for r in recs] == ["Software Development Engineer"]
+        rec = recs[0]
+        assert rec["url"] == "https://www.amazon.jobs/en/jobs/1/sde" and rec["company"] == "Amazon Development Center (Israel)"
+        assert "3+ years of Java" in rec["description"] and rec["published_at"].date() == date(2026, 10, 7)
+
+    async def test_microsoft_is_paced_waits_out_a_429_and_reads_details_only_for_tech(self, monkeypatch):
+        waits = []
+
+        async def sleep(seconds):
+            waits.append(seconds)
+        monkeypatch.setattr(bigtech, "_sleep", sleep)
+        positions = [{"id": 11, "displayJobId": "200", "name": "Software Engineer II", "postedTs": 1791700000,
+                      "standardizedLocations": ["Herzliya, Tel Aviv District, IL"]},
+                     {"id": 12, "name": "Account Executive", "standardizedLocations": ["Tel Aviv-Yafo, Tel Aviv District, IL"]},
+                     {"id": 13, "name": "Software Engineer", "standardizedLocations": ["Redmond, WA, US"]}]
+        calls = {"search": 0, "details": []}
+
+        def handler(request):
+            if request.url.path.endswith("/search"):
+                calls["search"] += 1
+                if calls["search"] == 1:
+                    return httpx.Response(429)
+                return httpx.Response(200, json={"data": {"positions": positions, "count": 3}})
+            calls["details"].append(request.url.params["position_id"])
+            return httpx.Response(200, json={"data": {"jobDescription": "<p>Build Fabric in C#.</p>",
+                                                      "publicUrl": "https://apply.careers.microsoft.com/careers/job/11"}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            recs = await bigtech.fetch_microsoft(client, "Microsoft", {"location": "Israel"})
+        assert [r["title"] for r in recs] == ["Software Engineer II"] and calls["details"] == ["11"]
+        assert recs[0]["url"].endswith("/careers/job/11") and "Fabric" in recs[0]["description"]
+        assert bigtech.MS_RATE_WAIT_S in waits and waits.count(bigtech.MS_PAUSE_S) == 3  # 2 searches + 1 details
+
+    def test_they_are_registry_boards(self):
+        assert {"amazon", "microsoft"} <= set(registry.FETCHABLE) <= set(registry.OWN_FETCHERS) | set(agg.FETCHERS)
+        assert {ats for ats, _, _ in REAL_EMPLOYERS} >= {"amazon", "microsoft"}
 
 
 class TestCollectExtra:
