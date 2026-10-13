@@ -13,8 +13,22 @@ import daily_matches.models  # noqa: F401  (registers dm_* tables before conftes
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
 from daily_matches.models import DmSource
-from daily_matches.sources import aggregators, collect_extra, linkedin, probe, registry
+from daily_matches.sources import aggregators, collect_extra, comeet, linkedin, probe, registry
 from daily_matches.sources.dedupe import drop_copies, job_key
+
+
+REAL_SEEDS = comeet.SEED_BOARDS  # before _no_live_comeet empties it
+
+
+@pytest.fixture(autouse=True)
+def _no_live_comeet(monkeypatch):
+    """No test reads Comeet for real: no seed boards, and a board answers
+    like a missing one unless a test fakes it (_fake_fetchers)."""
+    monkeypatch.setattr(comeet, "SEED_BOARDS", ())
+
+    async def missing(client, company, params):
+        raise httpx.HTTPStatusError("404", request=httpx.Request("GET", "https://x"), response=httpx.Response(404))
+    monkeypatch.setitem(registry.OWN_FETCHERS, "comeet", missing)
 
 
 class _Frame:
@@ -64,6 +78,7 @@ class TestBoardFromUrl:
          ("workday", "acme.wd5.myworkdayjobs.com/external", {"host": "acme.wd5.myworkdayjobs.com", "site": "External"})),
         ("https://www.comeet.com/jobs/papaya/B2.00B/backend-developer/9A.1F3",
          ("comeet", "papaya/b2.00b", {"slug": "papaya", "uid": "B2.00B"})),
+        ("https://comeet.co/jobs/global-e/62.002?coref=", ("comeet", "global-e/62.002", {"slug": "global-e", "uid": "62.002"})),
         ("https://www.linkedin.com/jobs/view/123", None),
         ("https://www.acme.com/careers/backend?gh_jid=9", None),  # a board name is needed to read it
         ("", None),
@@ -297,7 +312,7 @@ def _fake_fetchers(monkeypatch, boards: dict):
 
     def make(ats):
         async def fetch(client, company, params):
-            slug = params.get("board") or params.get("site")
+            slug = params.get("board") or params.get("site") or params.get("slug")
             calls.append((ats, slug))
             if (ats, slug) not in boards:
                 raise httpx.HTTPStatusError("404", request=httpx.Request("GET", "https://x"),
@@ -308,6 +323,7 @@ def _fake_fetchers(monkeypatch, boards: dict):
         return fetch
     for ats in ("greenhouse", "lever", "ashby"):
         monkeypatch.setitem(agg.FETCHERS, ats, make(ats))
+    monkeypatch.setitem(registry.OWN_FETCHERS, "comeet", make("comeet"))
     return calls
 
 
@@ -351,6 +367,71 @@ class TestProbe:
         await probe.probe_companies(db, [_rec("Gamma", "Backend Developer")])
         await db.commit()
         assert calls and (await db.execute(select(func.count()).select_from(DmSource))).scalar() == 1  # replaced
+
+
+COMEET_PAGE = """<html><script>
+COMPANY_DATA = {"name": "Upwind Security", "company_uid": "49.004", "token": "94440DC0944094401BCC12882510", "slug": "upwind"};
+COMPANY_POSITIONS_DATA = [];
+</script></html>"""
+
+
+def _position(uid, name, country="IL", city="Tel Aviv"):
+    return {"uid": uid, "name": name, "time_updated": "2026-10-12T06:45:26Z",
+            "location": {"name": city, "country": country, "city": city},
+            "url_comeet_hosted_page": f"https://www.comeet.com/jobs/upwind/49.004/x/{uid}",
+            "details": [{"name": "Description", "value": "<p>We build cloud security with Python and Go.</p>"},
+                        {"name": "Requirements", "value": "<ul><li>3+ years of backend development</li></ul>"}]}
+
+
+class TestComeet:
+    def _transport(self, positions, seen, page=COMEET_PAGE):
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            if request.url.host == "www.comeet.com":
+                return httpx.Response(200, text=page)
+            assert request.url.params["token"] == "94440DC0944094401BCC12882510"
+            assert request.url.params["details"] == "true"
+            return httpx.Response(200, json=positions)
+        return httpx.MockTransport(handler)
+
+    async def test_a_board_is_read_with_the_token_its_page_carries(self):
+        seen = []
+        positions = [_position("5C.375", "Backend Engineer"), _position("B0.D6A", "Backend Engineer", "BE", "Benelux"),
+                     _position("11.111", "Account Executive")]
+        async with httpx.AsyncClient(transport=self._transport(positions, seen)) as client:
+            recs = await comeet.fetch_comeet(client, "upwind", {"slug": "upwind", "uid": "49.004"})
+        assert seen[0] == "https://www.comeet.com/jobs/upwind/49.004" and "/company/49.004/positions" in seen[1]
+        assert [r["title"] for r in recs] == ["Backend Engineer"]  # Israel only, tech only
+        rec = recs[0]
+        assert rec["company"] == "Upwind Security" and rec["url"].endswith("/5C.375") and rec["external_job_id"] == "5C.375"
+        assert "Description" in rec["description"] and "3+ years of backend development" in rec["description"]
+        assert rec["published_at"].isoformat().startswith("2026-10-12T06:45")
+
+    async def test_a_page_without_a_token_is_a_failed_board(self):
+        async with httpx.AsyncClient(transport=self._transport([], [], page="<html>no data</html>")) as client:
+            with pytest.raises(ValueError):
+                await comeet.fetch_comeet(client, "x", {"slug": "x", "uid": "1A.001"})
+
+    async def test_the_verified_boards_seed_the_registry_once(self, db):
+        seeds = (("vastdata", "43.001", "VAST Data"), ("cognyte", "F2.009", "Cognyte"))
+        assert await registry.seed_boards(db, seeds) == 2
+        await db.commit()
+        assert await registry.seed_boards(db, seeds) == 0  # already there
+        rows = (await db.execute(select(DmSource))).scalars().all()
+        assert {(r.ats, r.slug, r.found_via) for r in rows} == {("comeet", "vastdata/43.001", "seed"),
+                                                                 ("comeet", "cognyte/f2.009", "seed")}
+
+    async def test_one_company_under_two_slugs_is_read_once(self, db):
+        await registry.seed_boards(db, (("cognyte", "F2.009", "Cognyte"),))
+        await db.commit()
+        added = await registry.record_boards(db, [{"url": "https://www.comeet.com/jobs/verint/F2.009/x/1A.111",
+                                                   "company": "Verint"}], "linkedin")
+        assert added == []
+
+    def test_the_seed_list_is_clean(self):
+        uids = [uid.lower() for _, uid, _ in REAL_SEEDS]
+        assert len(REAL_SEEDS) >= 40 and len(uids) == len(set(uids))
+        assert all(registry.board_from_url(f"https://www.comeet.com/jobs/{slug}/{uid}") for slug, uid, _ in REAL_SEEDS)
 
 
 class TestCollectExtra:
@@ -400,7 +481,8 @@ class TestCollectExtra:
         assert fetched.count("oldco") == 1 and "deadco" not in fetched  # unhealthy boards are skipped
         assert report["registry"] == {"boards": 1, "ok": 0, "failed": 1, "jobs": 0}
         assert report["new_boards"]["discovered"] == {"comeet": 1, "greenhouse": 1}
-        assert report["new_boards"]["ok"] == 1  # newco read on the day it was found
+        # Both are read on the day they're found: newco's board answers, papaya's (faked) doesn't.
+        assert report["new_boards"]["ok"] == 1 and report["new_boards"]["failed"] == 1
         # Acme's LinkedIn copy is dropped. NewCo's links to the very page its own
         # board returned, so the two are one row, stored once.
         assert report["copies_dropped"] == 1 and report["stored"] == 2
@@ -410,5 +492,5 @@ class TestCollectExtra:
                         "https://www.comeet.com/jobs/papaya/B2.00B/fe/9A.1F3"]
         sources = {s.slug: s for s in (await db.execute(select(DmSource))).scalars()}
         assert sources["oldco"].failures == 1 and sources["newco"].last_count == 1
-        assert sources["papaya/b2.00b"].ats == "comeet" and sources["papaya/b2.00b"].last_fetched_at is None
+        assert sources["papaya/b2.00b"].ats == "comeet" and sources["papaya/b2.00b"].failures == 1
         json.dumps(report, default=str)  # the pipeline prints it

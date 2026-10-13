@@ -7,8 +7,9 @@ the same way V1's hand-made list (app/services/israel_job_sources.py) is. A
 board found once keeps being read even if the aggregators stop working, and
 its jobs come with full descriptions and an application form auto-fill can use.
 
-Comeet boards are recorded too, but not fetched: there is no Comeet adapter
-yet, and per COMPANY_RADAR.md none is written before a real board is probed.
+Comeet, which many Israeli companies post on, is read by its own adapter
+(comeet.py, probed live on 2026-10-13); its verified boards seed the registry
+(seed_boards), since a Comeet board can't be guessed from a company's name.
 """
 import asyncio
 import logging
@@ -22,10 +23,13 @@ from app.services import job_aggregator as agg
 from app.services.israel_job_sources import COMPANIES
 from daily_matches import config
 from daily_matches.models import DmSource
+from daily_matches.sources import comeet
 
 logger = logging.getLogger(__name__)
 
-FETCHABLE = ("greenhouse", "lever", "ashby", "smartrecruiters", "workday")
+FETCHABLE = ("greenhouse", "lever", "ashby", "smartrecruiters", "workday", "comeet")
+# Adapters of Daily Matches' own, next to V1's (agg.FETCHERS, left untouched).
+OWN_FETCHERS = {"comeet": comeet.fetch_comeet}
 MAX_FAILURES = 5  # consecutive failed fetches before a board is skipped
 FETCH_CONCURRENCY = 8
 
@@ -73,17 +77,25 @@ def board_from_url(url: str | None) -> tuple[str, str, dict] | None:
         if rest and _SLUG.match(rest[0]) and rest[0] != "job":
             return "workday", f"{host}/{rest[0]}".lower(), {"host": host, "site": rest[0]}
         return None
-    if host.endswith("comeet.com") and len(parts) >= 3 and parts[0] == "jobs":
+    if (host.endswith("comeet.com") or host.endswith("comeet.co")) and len(parts) >= 3 and parts[0] == "jobs":
         slug, uid = parts[1], parts[2]
         if _SLUG.match(slug) and re.fullmatch(r"[0-9A-Za-z]{1,4}\.[0-9A-Za-z]{2,6}", uid):
             return "comeet", f"{slug}/{uid}".lower(), {"slug": slug, "uid": uid}
     return None
 
 
+def _comeet_uid(params: dict | None) -> str:
+    """A Comeet company is its uid: one company may be linked under two slugs
+    (cognyte/F2.009 and verint/F2.009), and must be read once."""
+    return str((params or {}).get("uid") or "").lower()
+
+
 async def record_boards(session, records: list[dict], found_via: str) -> list[DmSource]:
     """Adds the boards behind these aggregator records to dm_sources. Returns
     the new rows. Caller commits."""
-    seen = {(s.ats, s.slug) for s in (await session.execute(select(DmSource.ats, DmSource.slug))).all()}
+    existing = (await session.execute(select(DmSource.ats, DmSource.slug, DmSource.params))).all()
+    seen = {(s.ats, s.slug) for s in existing}
+    uids = {_comeet_uid(s.params) for s in existing if s.ats == "comeet"}
     added: list[DmSource] = []
     for rec in records:
         for url in (rec.get("apply_url"), rec.get("url")):
@@ -91,14 +103,34 @@ async def record_boards(session, records: list[dict], found_via: str) -> list[Dm
             if not found:
                 continue
             ats, slug, params = found
-            if (ats, slug) in seen or (ats, slug) in _KNOWN:
+            if (ats, slug) in seen or (ats, slug) in _KNOWN or (ats == "comeet" and _comeet_uid(params) in uids):
                 break
             seen.add((ats, slug))
+            if ats == "comeet":
+                uids.add(_comeet_uid(params))
             row = DmSource(ats=ats, slug=slug, company=(rec.get("company") or slug)[:255], params=params,
                            found_via=found_via, first_seen_at=config.utcnow(), failures=0)
             session.add(row)
             added.append(row)
             break
+    return added
+
+
+async def seed_boards(session, seeds=None) -> int:
+    """Adds the verified Comeet boards (comeet.SEED_BOARDS) the registry
+    doesn't hold yet. Returns how many were added. Caller commits."""
+    seeds = comeet.SEED_BOARDS if seeds is None else seeds
+    existing = (await session.execute(select(DmSource.params).where(DmSource.ats == "comeet"))).scalars().all()
+    uids = {_comeet_uid(p) for p in existing}
+    added = 0
+    for slug, uid, company in seeds:
+        if uid.lower() in uids:
+            continue
+        uids.add(uid.lower())
+        session.add(DmSource(ats="comeet", slug=f"{slug}/{uid}".lower(), company=company[:255],
+                             params={"slug": slug, "uid": uid}, found_via="seed",
+                             first_seen_at=config.utcnow(), failures=0))
+        added += 1
     return added
 
 
@@ -130,7 +162,8 @@ async def fetch_boards(session, rows: list[DmSource] | None = None) -> tuple[lis
         async def one(row: DmSource):
             async with sem:
                 try:
-                    found = await agg.FETCHERS[row.ats](client, row.company, dict(row.params))
+                    fetch = OWN_FETCHERS.get(row.ats) or agg.FETCHERS[row.ats]
+                    found = await fetch(client, row.company, dict(row.params))
                     results[row.id or id(row)] = (found, None)
                 except Exception as exc:  # noqa: BLE001 — one board never sinks the rest
                     results[row.id or id(row)] = (None, f"{type(exc).__name__}: {exc}"[:200])

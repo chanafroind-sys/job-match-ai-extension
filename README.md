@@ -151,7 +151,7 @@ Every row below is implemented and traced to concrete code in this repository (f
 | 45 | FAB hover-to-reveal reason bullets | `content.js` `_showFabReasons`, `mouseenter`/`mouseleave` handlers |
 | 46 | **Daily Matches** — once-a-day AI job deck in Chrome's side panel | `daily/dm-app.js`, `server-python/daily_matches/`, `/api/daily-matches/*` |
 | 47 | 06:00 daily job pipeline (collect + embed, DST-proof, self-verifying) | `.github/workflows/daily-pipeline.yml`, `daily_matches/daily_pipeline.py` |
-| 48 | Extra job sources: LinkedIn + Indeed IL, JSearch, self-growing board registry | `daily_matches/sources/` (`aggregators.py`, `registry.py`, `dedupe.py`) |
+| 48 | Extra job sources: LinkedIn + Indeed IL, JSearch, self-growing board registry, Comeet | `daily_matches/sources/` (`aggregators.py`, `registry.py`, `comeet.py`, `dedupe.py`) |
 | 49 | Semantic retrieval with pgvector (JSON fallback) | `daily_matches/store.py`, `embeddings.py` (Voyage `voyage-4`) |
 | 50 | Deterministic, explainable match scoring | `daily_matches/reasoning.py` `score_of`, card "🧮" breakdown |
 | 51 | Fresh-only, never-twice decks with strong / maybe / hidden tiers | `service.py` `job_filters`, `rank_results`; `dm_run_results.tier` |
@@ -283,6 +283,7 @@ flowchart TB
 |---|---|---|---|
 | **Company boards (V1 list)** | Public ATS JSON APIs | $0 | Full descriptions, official data, apply forms auto-fill can use |
 | **Discovered boards** — `dm_sources` | Same APIs, for every board found behind an aggregator's apply link, or guessed from the company's name and **trusted only if it lists the very same job in Israel** | $0 | The registry **grows by itself**: a company found once on LinkedIn is read directly from its own board forever after |
+| **Comeet boards** — `comeet.py` | Comeet is the applicant-tracking system many Israeli tech companies post on. A board's own page (`comeet.com/jobs/{slug}/{uid}`) carries its public careers-API token, and the API returns every position with its description and requirements. A board can't be guessed from a name, so the registry starts from **50 verified Israeli boards** (read live on 2026-10-13: 40 with open positions, 323 Israeli tech jobs between them) and adds any Comeet board it meets in a job link; one company under two slugs is read once | $0 | Israeli companies whose jobs the Greenhouse/Lever/Ashby probe never finds |
 | **LinkedIn** | Its public search, one query per field (Backend, DevOps, Data…), paced and paged until each runs dry; full descriptions fetched only for new, technical listings | $0 | The widest single view of the market |
 | **Indeed Israel** | [JobSpy](https://github.com/speedyapply/JobSpy), one search per field, installed only in the workflow | $0 | Listings that never reach LinkedIn |
 | **JSearch** (RapidAPI) | Google for Jobs, `date_posted=today`, free 200-request plan | $0 | A second aggregator, budgeted to ~180 requests/month |

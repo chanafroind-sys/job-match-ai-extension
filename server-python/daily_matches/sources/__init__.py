@@ -3,7 +3,9 @@
 V1's sync reads a fixed list of ~60 company boards. This adds:
   registry     company boards discovered from aggregators' apply links, or
                guessed from the company's name and verified (probe.py), read
-               through their public ATS APIs (registry.py)
+               through their public ATS APIs (registry.py); Comeet's, which
+               many Israeli companies use, start from a verified list
+               (comeet.py)
   linkedin     jobs posted in Israel in the last day, from LinkedIn's public
                search, one query per field (linkedin.py)
   jsearch      Google for Jobs through RapidAPI, when DM_JSEARCH_KEY is set
@@ -46,6 +48,7 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedi
     source's failure; the report says what happened to each."""
     report: dict = {}
     known = await _known_keys(session)
+    report["seeded"] = await registry.seed_boards(session)
     await session.commit()  # no connection held through the network work below
 
     board_records, report["registry"] = await registry.fetch_boards(session)
