@@ -397,7 +397,7 @@ class TestLinkedInApify:
                                                                     sleep=_no_sleep)
         assert fake.auth == {"Bearer tok"}  # the token travels in a header, never in a logged URL
         assert fake.runs[0]["body"]["skipJobId"] == ["9"] and fake.runs[1]["body"]["skipJobId"] == ["9", "1", "2"]
-        assert fake.runs[0]["body"]["location"] == "Israel" and fake.runs[0]["body"]["datePosted"] == "r93600"
+        assert fake.runs[0]["body"]["location"] == "Israel" and "datePosted" not in fake.runs[0]["body"] and fake.runs[0]["body"]["urlParam"] == [{"key": "f_TPR", "value": "r93600"}]
         assert report["cards"] == 3 and report["jobs"] == 2 and report["not_tech_or_short"] == 1
         assert sorted(r["external_job_id"] for r in records) == ["1", "2"]
         assert records[0]["url"].startswith("https://www.linkedin.com/jobs/view/")
@@ -425,7 +425,7 @@ class TestLinkedInApify:
         assert records == [] and "weekend" in report["skipped"] and fake.runs == []
         sunday = datetime(2026, 10, 18, 3, 30, tzinfo=timezone.utc)
         await linkedin_apify.fetch_linkedin_apify([], now=sunday, transport=fake.transport, sleep=_no_sleep)
-        assert fake.runs[0]["body"]["datePosted"] == f"r{74 * 3600}"
+        assert fake.runs[0]["body"]["urlParam"] == [{"key": "f_TPR", "value": f"r{74 * 3600}"}]
 
     async def test_a_spent_credit_is_reported_and_fails_the_run(self, monkeypatch):
         monkeypatch.setenv("DM_APIFY_TOKEN", "tok")

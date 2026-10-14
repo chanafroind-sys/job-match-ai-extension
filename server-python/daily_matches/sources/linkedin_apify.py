@@ -102,8 +102,10 @@ async def _api(client, method: str, path: str, **kwargs) -> dict:
 
 async def _run(client, query: str, hours: int, limit: int, skip: list[str], sleep) -> list[dict]:
     """One Actor run, to its end; its jobs."""
-    body = {"keywords": query, "location": "Israel", "datePosted": f"r{hours * 3600}", "limit": limit,
-            "skipJobId": skip}
+    # datePosted takes only a day, a week or a month (refused on 2026-10-14);
+    # LinkedIn's own f_TPR, passed through urlParam, takes any window.
+    body = {"keywords": query, "location": "Israel", "limit": limit, "skipJobId": skip,
+            "urlParam": [{"key": "f_TPR", "value": f"r{hours * 3600}"}]}
     charge_cap = round(limit * PRICE_PER_1K / 1000 * 1.1 + 0.005, 3)  # Apify stops the run past this
     run = (await _api(client, "POST", f"/acts/{ACTOR}/runs", json=body,
                       params={"maxTotalChargeUsd": charge_cap, "timeout": RUN_TIMEOUT_S}))["data"]
