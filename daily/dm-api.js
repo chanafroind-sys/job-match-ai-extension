@@ -39,7 +39,11 @@
   function _detail(data, status) {
     const d = data && data.detail;
     if (typeof d === 'string' && d) return d;
-    if (Array.isArray(d)) return 'הבקשה לא תקינה. רענן/י את התוסף ונסה/י שוב.';
+    // A refused field is named, so a report of this error says what to fix.
+    if (Array.isArray(d)) {
+      const where = d.map(e => (e && Array.isArray(e.loc) ? e.loc.filter(x => x !== 'body').join('.') : '')).filter(Boolean);
+      return `לא הצלחנו לשלוח את הבקשה: השרת דחה את ${where.join(', ') || 'הנתונים'}. רענן/י את התוסף ונסה/י שוב. [jma:DM_BAD_REQUEST]`;
+    }
     return `HTTP ${status}`;
   }
 

@@ -181,7 +181,7 @@
     const hasFile = await _storeFile(FILE_PREFIX + id, file, { read });
     const lib = await _load();
     lib.versions.push({
-      id, label: (label || '').trim().slice(0, 60) || file.name.replace(/\.[^.]+$/, ''),
+      id, label: ((label || '').trim() || file.name.replace(/\.[^.]+$/, '')).slice(0, 60),
       fileName: file.name, text: read.text, addedAt: Date.now(), hasFile, focus: cleanFocus(focus),
     });
     await _save(lib);

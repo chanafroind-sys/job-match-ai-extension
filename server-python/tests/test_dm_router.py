@@ -118,6 +118,14 @@ async def test_focus_and_level_reach_the_pipeline(client):
     assert (await client.post("/api/daily-matches/run", headers=SUB, json=bad_level)).status_code == 422
 
 
+async def test_a_version_named_after_a_long_file_name_still_builds(client):
+    body = {"cvs": [{"id": "main", "label": "Backend", "text": BACKEND_CV},
+                    {"id": "v1", "label": "קורות חיים מעודכנים אוקטובר 2026 גרסה לתפקידי דאטה ובינה מלאכותית סופי",
+                     "text": BACKEND_CV}], "primaryCvId": "main"}
+    resp = await client.post("/api/daily-matches/run", headers=SUB, json=body)
+    assert resp.status_code == 200 and _events(resp)[-1]["type"] == "done"
+
+
 async def test_cards_belong_to_their_owner(client):
     events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=_run_body()))
     deck = (await client.get("/api/daily-matches/today", headers=SUB)).json()

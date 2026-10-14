@@ -13,7 +13,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -36,6 +36,13 @@ class CvIn(BaseModel):
     id: str = Field(..., min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
     label: str = Field("", max_length=60)
     text: str = Field(..., min_length=1, max_length=_MAX_BLOB)
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _short_label(cls, v):
+        # A version named after a long file name was refused here, and the deck
+        # couldn't be built at all (2026-10-14). A label is only shown: cut it.
+        return v[:60] if isinstance(v, str) else v
     # Job categories this version targets; unknown names are ignored, none means all.
     focus: list[str] = Field(default_factory=list, max_length=len(config.CATEGORIES))
 
