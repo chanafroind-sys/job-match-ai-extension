@@ -129,6 +129,17 @@ class DmSource(Base):
     failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # consecutive
 
 
+class DmPipelineDay(Base):
+    """What one day's collection brought, per source, for the health report
+    (daily_pipeline.py writes it, report.py reads it). Aggregates only."""
+
+    __tablename__ = "dm_pipeline_days"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)  # Israel date
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    summary: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class DmTrial(Base):
     """One free run per install and per CV, ever. A row is reserved when a trial
     run starts and becomes consumed only if the run delivers cards; a failed

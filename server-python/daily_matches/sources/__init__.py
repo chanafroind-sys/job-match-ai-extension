@@ -21,6 +21,7 @@ reported and the rest still land.
 """
 import asyncio
 import logging
+from collections import Counter
 
 from sqlalchemy import select
 
@@ -77,6 +78,11 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedi
     probed_rows, probed_records, report["probe"] = await probe.probe_companies(session, linkedin + jsearch + indeed)
     await session.commit()
 
+    for via, recs in (("linkedin", linkedin), ("jsearch", jsearch), ("indeed", indeed)):
+        for rec in recs:
+            rec["_via"] = via  # board records carry their ATS already (registry, probe)
+
+    in_pool = set(known.values())
     batch, dropped = [], 0
     for recs in (board_records, new_board_records, probed_records, linkedin, jsearch, indeed):  # best copy first
         kept, n = drop_copies(recs, known)
@@ -90,5 +96,8 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedi
             unique.append(rec)
     report["stored"] = await agg.upsert_jobs(session, _strip(unique))
     report["copies_dropped"] = dropped
+    # Jobs the pool didn't hold before, by where they came from.
+    report["new_by_source"] = dict(Counter(r.get("_via", "other") for r in unique if r["id"] not in in_pool)
+                                   .most_common())
     logger.warning("[DM] extra sources: %s", report)
     return report

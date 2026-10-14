@@ -193,8 +193,9 @@ async def fetch_boards(session, rows: list[DmSource] | None = None) -> tuple[lis
         row.last_fetched_at = now
         if error is None:
             row.failures, row.last_count = 0, len(found)
-            if row.ats == "greenhouse":
-                for rec in found:
+            for rec in found:
+                rec["_via"] = row.ats  # the source the report counts it under
+                if row.ats == "greenhouse":
                     _hosted_greenhouse_url(rec, row.slug)
             records.extend(found)
             report["ok"] += 1

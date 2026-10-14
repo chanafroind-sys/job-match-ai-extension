@@ -24,6 +24,7 @@ from sqlalchemy import func, select, text
 from app.models.job_pool import DailyJobPool
 from app.services.job_aggregator import run_daily_aggregation
 from daily_matches import config, store
+from daily_matches.models import DmPipelineDay
 from daily_matches.pool_embedding import embed_pool, purge_retention
 from daily_matches.sources import collect_extra
 
@@ -56,6 +57,43 @@ async def active_count(session, now: datetime, category: str | None = None) -> i
     return int((await session.execute(query)).scalar() or 0)
 
 
+async def _pool_ids(session) -> set[str]:
+    return set((await session.execute(select(DailyJobPool.id))).scalars())
+
+
+def day_summary(report: dict) -> dict:
+    """The aggregates of a day's collection the health report shows: new jobs
+    per source (V1's list of company boards counted as one), and how the
+    sources that can fail or grow did."""
+    extra = report.get("extra") or {}
+    li = extra.get("linkedin") or {}
+    new = {"v1_boards": (report.get("sync") or {}).get("new", 0), **(extra.get("new_by_source") or {})}
+    return {
+        "new_by_source": dict(sorted(new.items(), key=lambda kv: -kv[1])),
+        "new_total": sum(new.values()),
+        "linkedin": {k: li[k] for k in ("cards", "jobs", "blocked", "cooldowns") if k in li},
+        "registry": {k: (extra.get("registry") or {}).get(k) for k in ("boards", "failed", "jobs")},
+        "new_boards": (extra.get("new_boards") or {}).get("discovered") or {},
+        "probe": {k: (extra.get("probe") or {}).get(k) for k in ("companies", "verified", "found_by")},
+        "extra_error": extra.get("error"),
+    }
+
+
+async def save_day(session, day, summary: dict, now: datetime) -> None:
+    """Keeps the day's summary (a forced rerun replaces it). A database the
+    migration hasn't reached yet only loses the summary, never the run."""
+    try:
+        row = await session.get(DmPipelineDay, day)
+        if row is None:
+            session.add(DmPipelineDay(day=day, finished_at=now, summary=summary))
+        else:
+            row.finished_at, row.summary = now, summary
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        await session.rollback()
+        logger.warning("[pipeline] day summary not saved: %s", exc)
+
+
 async def run_pipeline(session, *, now: datetime | None = None, force: bool = False) -> dict:
     now = now or config.utcnow()
     local = config.to_israel(now)
@@ -68,6 +106,7 @@ async def run_pipeline(session, *, now: datetime | None = None, force: bool = Fa
 
     todays_run_from = config.il_day_start_utc(now) + timedelta(hours=RUN_HOUR_IL)
     last_sync = config.as_utc((await session.execute(select(func.max(DailyJobPool.scraped_at)))).scalar())
+    before = await _pool_ids(session)  # to count what today's sync adds
     # Collecting takes about a minute of network calls; don't hold a connection
     # through it (Neon closes idle ones).
     await session.commit()
@@ -76,12 +115,15 @@ async def run_pipeline(session, *, now: datetime | None = None, force: bool = Fa
         report["sync"] = {k: sync.get(k) for k in ("fetched", "upserted", "purged_stale", "duration_sec", "errors")}
         if not sync.get("fetched"):
             raise PipelineError("the sync fetched 0 jobs from every source")
+        report["sync"]["new"] = len((await _pool_ids(session)) - before)
+        await session.commit()
         try:
             report["extra"] = await collect_extra(session)
         except Exception as exc:  # noqa: BLE001 — extra sources never cost the day's V1 jobs
             logger.exception("[pipeline] extra sources crashed")
             await session.rollback()
             report["extra"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+        await save_day(session, local.date(), day_summary(report), now)
     else:
         report["sync"] = {"skipped": f"already ran today at {config.to_israel(last_sync):%H:%M} Israel time"}
 

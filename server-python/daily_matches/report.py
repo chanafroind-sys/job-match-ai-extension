@@ -11,7 +11,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from daily_matches import config, store
-from daily_matches.models import DmRun, DmRunResult
+from daily_matches.models import DmPipelineDay, DmRun, DmRunResult
 from daily_matches.service import compare_summary, main_reason
 
 
@@ -76,4 +76,18 @@ async def build_report(session, now=None, days: int = 3) -> dict:
     counts = await store.pool_counts(session, now - config.ACTIVE_WINDOW, now=now)
     return {"utc": now.strftime("%Y-%m-%d %H:%M"), "model": config.LLM_MODEL, "max_analyzed": config.MAX_ANALYZED,
             "max_analyzed_first": config.MAX_ANALYZED_FIRST,
-            "pool": counts, "runs": out_runs}
+            "pool": counts, "collection": await _collection(session, now, days), "runs": out_runs}
+
+
+async def _collection(session, now, days: int) -> list[dict] | str:
+    """Each day's collection (daily_pipeline.day_summary), newest first: new
+    jobs per source, and LinkedIn's state."""
+    first = config.to_israel(now).date() - timedelta(days=days)
+    try:
+        rows = (await session.execute(select(DmPipelineDay).where(DmPipelineDay.day > first)
+                                      .order_by(DmPipelineDay.day.desc()))).scalars().all()
+    except Exception as exc:  # noqa: BLE001 — a database the migration hasn't reached yet
+        await session.rollback()
+        return f"unavailable: {type(exc).__name__}"
+    return [{"day": r.day.isoformat(), "finished_il": config.to_israel(config.as_utc(r.finished_at)).strftime("%H:%M"),
+             **r.summary} for r in rows]

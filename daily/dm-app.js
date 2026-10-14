@@ -11,7 +11,8 @@
 // plain question (server config.MAIN_METHOD): a recruiter's answer, a word and
 // a number within the word's range. Decks judged by the scored checklist still
 // render with their requirements and arithmetic. A day with none says so
-// (quiet) instead of showing weak matches.
+// (quiet) instead of showing weak matches. The borderline cards have a reel of
+// their own ("worth a look"), opened from a slide at the end of the main reel.
 (function (root) {
   'use strict';
 
@@ -23,13 +24,23 @@
   const reduced = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
   const state = {
-    view: 'loading', status: null, cards: [], idx: 0, run: null, readOnly: false,
+    view: 'loading', status: null, allCards: [], cards: [], reel: 'main', idx: 0, run: null, readOnly: false,
     cvs: [], cvSel: {}, build: null, applying: null, error: null, prevView: null,
     pendingApply: false, saved: [], busy: false, notice: '', level: null, newFocus: [],
   };
   const LEVELS = [['junior', 'ג׳וניור', '0-2 שנים'], ['mid', 'מיד', '2-5 שנים'], ['senior', 'סניור', '5+ שנים'],
     ['lead', 'ליד / ניהול', '']];
   const MAX_ANALYZED = 150; // server-python/daily_matches/config.py MAX_ANALYZED (250 on a first deck)
+
+  // The two reels: state.cards is the one on screen, state.allCards the day's deck.
+  const isMaybe = (c) => c.tier === 'maybe';
+  const maybeCards = () => state.allCards.filter(isMaybe);
+  const hasMoreSlide = () => state.reel === 'main' && maybeCards().length > 0;
+  const firstOpenIn = (cards) => cards.findIndex(c => !ACTED.has(c.user_action));
+  function setReel(reel) {
+    state.reel = reel;
+    state.cards = state.allCards.filter(c => (reel === 'maybe') === isMaybe(c));
+  }
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, ch => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -368,8 +379,8 @@
   }
 
   function deckSummary() {
-    const strong = state.cards.filter(c => c.tier !== 'maybe').length;
-    const maybe = state.cards.length - strong;
+    const maybe = maybeCards().length;
+    const strong = state.allCards.length - maybe;
     const parts = [`${strong} התאמות חזקות`];
     if (maybe) parts.push(`${maybe} שווה הצצה`);
     const run = state.run || {};
@@ -427,16 +438,33 @@
     if (fresh) fresh.open = open;
   }
 
+  // The last slide of the main reel: the way into the "worth a look" reel.
+  function moreSlide() {
+    const maybe = maybeCards();
+    const open = maybe.filter(c => !ACTED.has(c.user_action)).length;
+    const lead = state.cards.length ? 'סיימת את ההתאמות החזקות של היום.' : 'היום אין התאמות חזקות חדשות.';
+    return `<div class="dm-slide dm-more-slide" role="group" aria-label="שווה הצצה"><div class="dm-card dm-more">
+      <div class="dm-more-icon" aria-hidden="true">👀</div>
+      <p class="dm-more-lead">${lead}</p>
+      <p class="dm-more-text">${maybe.length === 1 ? 'עוד <b>משרה גבולית אחת</b>: לא מתאימה לגמרי, אבל אולי שווה הצצה.'
+        : `עוד <b>${maybe.length}</b> משרות גבוליות: לא מתאימות לגמרי, אבל אולי שוות הצצה.`}${open < maybe.length ? ` (${open} עוד לא נראו)` : ''}</p>
+      <button type="button" class="btn btn-primary" data-act="maybe-reel">👀 לגלגלת "שווה הצצה"</button>
+      <button type="button" class="link-btn" data-act="end-deck">סיום להיום</button>
+    </div></div>`;
+  }
+
   function deck() {
     const n = state.cards.length;
+    const maybe = state.reel === 'maybe';
+    const title = maybe ? '👀 שווה הצצה' : `✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}`;
     return `<div class="dm" tabindex="-1">
-      <header class="dm-top"><div><h1 class="dm-title">✨ ההתאמות שלך${state.readOnly ? ' (הניסיון החינמי)' : ' להיום'}</h1><div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div>${skippedLink()}</div>
+      <header class="dm-top"><div><h1 class="dm-title">${title}</h1>${maybe ? '<button type="button" class="link-btn" data-act="main-reel">→ חזרה להתאמות החזקות</button>' : ''}<div class="dm-date">${esc(deckSummary())}${isAdmin() && !state.readOnly ? ' · <button type="button" class="link-btn dm-admin" data-act="rebuild">🔁 בנייה מחדש</button>' : ''}</div>${skippedLink()}</div>
         <div class="dm-nav"><button type="button" class="icon-btn" data-act="profile" aria-label="פרטי הגשה" title="פרטי הגשה">📝</button><button type="button" class="icon-btn" data-act="library" aria-label="גרסאות קורות החיים" title="גרסאות קורות החיים">📄</button><button type="button" class="icon-btn" data-act="prev" aria-label="המשרה הקודמת">→</button><span class="dm-count" id="dmCount" dir="ltr" aria-live="polite"></span><button type="button" class="icon-btn" data-act="next" aria-label="המשרה הבאה">←</button></div></header>
       ${compareBox()}
       <div class="dm-progress" aria-hidden="true">${state.cards.map(() => '<span class="dm-seg"></span>').join('')}</div>
-      <div class="dm-track" id="dmTrack" role="region" aria-roledescription="קרוסלה" aria-label="משרות שהותאמו לך">${state.cards.map((c, i) => cardHtml(c, i, n)).join('')}</div>
+      <div class="dm-track" id="dmTrack" role="region" aria-roledescription="קרוסלה" aria-label="${maybe ? 'משרות ששווה להציץ בהן' : 'משרות שהותאמו לך'}">${state.cards.map((c, i) => cardHtml(c, i, n)).join('')}${hasMoreSlide() ? moreSlide() : ''}</div>
       <div class="dm-toast" id="dmToast" role="status"></div>
-      <div class="dm-actions"><button type="button" class="apply-btn" data-act="apply"><span class="apply-main">🚀 הגשת מועמדות</span><span class="apply-sub" id="applySub"></span></button>
+      <div class="dm-actions" id="dmActions"><button type="button" class="apply-btn" data-act="apply"><span class="apply-main">🚀 הגשת מועמדות</span><span class="apply-sub" id="applySub"></span></button>
         <button type="button" class="round-btn" data-act="save" aria-label="שמירה (S)" title="שמירה (S)">🔖</button>
         <button type="button" class="round-btn" data-act="skip" aria-label="דילוג (X)" title="דילוג (X)">✕</button></div>
     </div>`;
@@ -507,13 +535,19 @@
   }
 
   function end() {
-    const count = k => state.cards.filter(c => c.user_action === k).length;
-    const saved = state.cards.filter(c => c.user_action === 'saved');
+    const count = k => state.allCards.filter(c => c.user_action === k).length;
+    const saved = state.allCards.filter(c => c.user_action === 'saved');
+    const maybe = maybeCards();
+    const reelBtn = state.reel === 'main' && maybe.length
+      ? `<button type="button" class="btn btn-primary" data-act="maybe-reel">👀 ${maybe.length === 1 ? 'עוד משרה אחת ששווה הצצה' : `עוד ${maybe.length} משרות ששווה הצצה`}</button>`
+      : state.reel === 'maybe' && maybe.length < state.allCards.length
+        ? '<button type="button" class="link-btn" data-act="main-reel">חזרה להתאמות החזקות</button>' : '';
     return `${topBar('🎉 סיימת את החפיסה של היום')}<div class="dm-body en">
       <div class="en-stats"><div class="en-stat"><b>${count('applied')}</b><span>הוגשו</span></div><div class="en-stat"><b>${count('saved')}</b><span>נשמרו</span></div><div class="en-stat"><b>${count('skipped')}</b><span>דולגו</span></div></div>
       <p class="en-next">${state.readOnly ? 'זו הייתה החפיסה החינמית. מנויים מקבלים חפיסה חדשה בכל יום.' : 'החפיסה הבאה תהיה זמינה מחר, מחצות (שעון ישראל).'}</p>
       <div class="dm-card-plain"><h2 class="dm-h2">🔖 נשמרו היום</h2>${saved.length ? saved.map(c => `<div class="en-row"><bdi dir="ltr">${esc(c.job.title)}</bdi><span>${c.match_score == null ? '' : c.match_score}</span></div>`).join('') : '<p class="dm-muted">עוד לא שמרת משרות.</p>'}
         <button type="button" class="link-btn" data-act="saved">כל המשרות השמורות</button></div>
+      ${reelBtn}
       ${nearNudge()}
       ${back('restart-deck', 'חזרה לחפיסה')}
       ${state.readOnly ? '<button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי</button>' : ''}</div>`;
@@ -735,7 +769,8 @@
   }
 
   function goTo(i, smooth = true) {
-    if (i >= state.cards.length) { setView('end'); return; }
+    const last = state.cards.length - (hasMoreSlide() ? 0 : 1);
+    if (i > last) { setView('end'); return; }
     i = Math.max(0, i);
     const track = document.getElementById('dmTrack');
     const slide = track && track.querySelectorAll('.dm-slide')[i];
@@ -750,7 +785,9 @@
   function updateDeckChrome() {
     const card = state.cards[state.idx];
     const count = document.getElementById('dmCount');
-    if (count) count.textContent = `${state.idx + 1} / ${state.cards.length}`;
+    if (count) count.textContent = card ? `${state.idx + 1} / ${state.cards.length}` : '👀';
+    const actions = document.getElementById('dmActions');
+    if (actions) actions.hidden = !card;
     document.querySelectorAll('.dm-seg').forEach((seg, i) => {
       const a = state.cards[i] && state.cards[i].user_action;
       seg.className = 'dm-seg' + (i === state.idx ? ' is-current' : ACTED.has(a) ? ` is-${a}` : '');
@@ -878,15 +915,19 @@
     state.run = data.run;
     state.compare = data.compare || null;
     state.skipped = data.skipped || [];
-    state.cards = data.cards || [];
+    state.allCards = data.cards || [];
     state.readOnly = data.entitlement === 'locked';
-    if (!state.cards.length) {
+    setReel('main');
+    if (!state.allCards.length) {
       if (latest) return setView('paywall');
       return setView(data.run && data.run.status === 'done' ? 'quiet' : 'ready');
     }
-    const firstOpen = state.cards.findIndex(c => !ACTED.has(c.user_action));
-    if (firstOpen === -1) return setView('end');
-    state.idx = firstOpen;
+    // The main reel's first unseen card; when it's done, its last slide (the
+    // way into "worth a look") while that reel still has unseen cards.
+    const firstOpen = firstOpenIn(state.cards);
+    if (firstOpen !== -1) state.idx = firstOpen;
+    else if (firstOpenIn(maybeCards()) !== -1) state.idx = state.cards.length;
+    else return setView('end');
     setView('deck');
   }
 
@@ -980,7 +1021,7 @@
   function goBack() {
     const to = state.prevView || 'ready';
     state.prevView = null;
-    if (to === 'deck' && state.cards.length) return setView('deck');
+    if (to === 'deck' && state.allCards.length) return setView('deck');
     if (['end', 'skipped', 'confirm'].includes(to)) return setView(to);
     return refresh();
   }
@@ -1062,7 +1103,19 @@
         return setTimeout(() => { if (state.view === 'deck') goTo(state.idx + 1); }, reduced() ? 150 : 700);
       }
       case 'back-deck': return setView('deck');
-      case 'restart-deck': state.idx = 0; return setView('deck');
+      case 'restart-deck': setReel('main'); state.idx = 0; return setView('deck');
+      case 'end-deck': return setView('end');
+      case 'maybe-reel': {
+        setReel('maybe');
+        state.idx = Math.max(0, firstOpenIn(state.cards));
+        return setView('deck');
+      }
+      case 'main-reel': {
+        setReel('main');
+        const open = firstOpenIn(state.cards);
+        state.idx = open === -1 ? state.cards.length : open;
+        return setView('deck');
+      }
       case 'download': {
         const ok = await DM.apply.downloadCv(state.applying.cvId).catch(() => false);
         btn.textContent = ok ? '✓ הקובץ ירד לתיקיית ההורדות' : 'ההורדה נכשלה';
@@ -1124,7 +1177,7 @@
       case 'judge': {
         // Admins: who was right on this job, the current method or the plain question.
         const id = btn.dataset.id;
-        const c = ((state.cards.find(x => String(x.id) === id) || {}).analysis || {}).compare
+        const c = ((state.allCards.find(x => String(x.id) === id) || {}).analysis || {}).compare
           || ((state.skipped || []).find(x => String(x.id) === id) || {}).compare;
         if (!c) return undefined;
         const winner = c.judged === btn.dataset.winner ? 'clear' : btn.dataset.winner;

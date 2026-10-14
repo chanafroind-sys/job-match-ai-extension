@@ -14,8 +14,14 @@ are read through the company's own API from then on, with full descriptions
 and an application form auto-fill can use, and dedupe drops the LinkedIn
 copies in favor of them.
 
+When the name doesn't spell a board, two more places are looked at
+(careers_site.py): the company's own careers page (its Comeet board, or any
+other ATS it links to) and Workday's hosts. Their boards are verified the
+same way.
+
 Companies that didn't verify are remembered (ats "probe_miss") and not tried
-again for PROBE_RETRY_AFTER, so a day's probing stays small.
+again for PROBE_RETRY_AFTER, so a day's probing stays small. A miss from an
+older probe (PROBE_VERSION) is tried again with the newer one.
 """
 import asyncio
 import logging
@@ -29,11 +35,13 @@ from app.services import job_aggregator as agg
 from app.services.israel_job_sources import COMPANIES
 from daily_matches import config
 from daily_matches.models import DmSource
+from daily_matches.sources import careers_site, registry
 from daily_matches.sources.dedupe import job_key
 
 logger = logging.getLogger(__name__)
 
 PROBE_ATS = ("greenhouse", "lever", "ashby")
+PROBE_VERSION = 2  # 2: careers pages and Workday too (2026-10-13)
 MISS = "probe_miss"
 MAX_COMPANIES_PER_DAY = 80
 PROBE_RETRY_AFTER = timedelta(days=30)
@@ -60,10 +68,11 @@ def _params(ats: str, slug: str) -> dict:
     return {"greenhouse": {"board": slug}, "lever": {"site": slug}, "ashby": {"board": slug}}[ats]
 
 
-async def _try(client, sem, ats: str, slug: str, company: str) -> list[dict] | None:
+async def _try(client, sem, ats: str, params: dict, company: str) -> list[dict] | None:
     async with sem:
         try:
-            return [r for r in await agg.FETCHERS[ats](client, company, _params(ats, slug)) if r]
+            fetch = registry.OWN_FETCHERS.get(ats) or agg.FETCHERS[ats]
+            return [r for r in await fetch(client, company, dict(params)) if r]
         except Exception:  # noqa: BLE001 — a 404 is the usual answer: no such board
             return None
 
@@ -71,20 +80,25 @@ async def _try(client, sem, ats: str, slug: str, company: str) -> list[dict] | N
 async def probe_companies(session, records: list[dict], client=None) -> tuple[list[DmSource], list[dict], dict]:
     """For the aggregator records' companies: verified boards (new dm_sources
     rows, caller commits), the jobs those boards returned, and a report."""
-    report = {"companies": 0, "verified": 0, "missed": 0, "skipped_known": 0}
+    report = {"companies": 0, "verified": 0, "missed": 0, "skipped_known": 0,
+              "found_by": {"name": 0, "careers_page": 0, "workday": 0}}
     titles: dict[str, set[str]] = {}
     names: dict[str, str] = {}
+    sites: dict[str, str] = {}
     for rec in records:
         ck = company_key(rec.get("company"))
         if ck:
             titles.setdefault(ck, set()).add(job_key(rec.get("company"), rec.get("title")))
             names.setdefault(ck, rec.get("company") or "")
+            if rec.get("_site") and ck not in sites:
+                sites[ck] = rec["_site"]
 
-    rows = (await session.execute(select(DmSource.ats, DmSource.company, DmSource.first_seen_at))).all()
+    rows = (await session.execute(select(DmSource.ats, DmSource.company, DmSource.first_seen_at,
+                                         DmSource.params))).all()
     retry_from = config.utcnow() - PROBE_RETRY_AFTER
     known = {company_key(c["name"]) for c in COMPANIES}
-    for ats, company, seen_at in rows:
-        if ats != MISS or config.as_utc(seen_at) >= retry_from:
+    for ats, company, seen_at, params in rows:
+        if ats != MISS or (config.as_utc(seen_at) >= retry_from and (params or {}).get("v") == PROBE_VERSION):
             known.add(company_key(company))
     todo = [ck for ck in titles if ck not in known and slug_candidates(names[ck])]
     report["skipped_known"] = len(titles) - len(todo)
@@ -100,13 +114,24 @@ async def probe_companies(session, records: list[dict], client=None) -> tuple[li
 
     async def one(ck: str):
         company = names[ck]
-        for slug in slug_candidates(company):
+        candidates = slug_candidates(company)
+
+        async def proven(ats, params):
+            found = await _try(client, sem, ats, params, company)
+            # The proof: the board lists one of this company's jobs, by title, in Israel.
+            return found if found and any(job_key(company, r["title"]) in titles[ck] for r in found) else None
+
+        for slug in candidates:
             for ats in PROBE_ATS:
-                found = await _try(client, sem, ats, slug, company)
-                # The proof: the board lists one of this company's jobs, by title, in Israel.
-                if found and any(job_key(company, r["title"]) in titles[ck] for r in found):
-                    return ck, ats, slug, found
-        return ck, None, None, None
+                if found := await proven(ats, _params(ats, slug)):
+                    return ck, ats, slug, _params(ats, slug), found, "name"
+        # Boards a name doesn't spell: the careers page's, then Workday's.
+        for via, finder in (("careers_page", lambda: careers_site.site_boards(client, sem, sites.get(ck), candidates)),
+                            ("workday", lambda: careers_site.workday_boards(client, sem, candidates))):
+            for ats, slug, params in await finder():
+                if ats in registry.FETCHABLE and (found := await proven(ats, params)):
+                    return ck, ats, slug, params, found, via
+        return ck, None, None, None, None, None
 
     try:
         results = await asyncio.gather(*(one(ck) for ck in todo))
@@ -120,21 +145,25 @@ async def probe_companies(session, records: list[dict], client=None) -> tuple[li
     for row in old:
         await session.delete(row)
     await session.flush()
-    taken = {(a, s) for a, s in (await session.execute(select(DmSource.ats, DmSource.slug))).all()}
+    taken = {(a, s) for a, s in (await session.execute(select(DmSource.ats, DmSource.slug))).all()} | registry._KNOWN
 
     verified, board_records = [], []
     now = config.utcnow()
-    for ck, ats, slug, found in results:
+    comeet_uids = {registry._comeet_uid(p) for a, _, _, p in rows if a == "comeet"}
+    for ck, ats, slug, params, found, via in results:
         company = names[ck][:255]
-        if ats and (ats, slug) not in taken:
+        if ats and (ats, slug) not in taken and not (ats == "comeet" and registry._comeet_uid(params) in comeet_uids):
             taken.add((ats, slug))
-            row = DmSource(ats=ats, slug=slug, company=company, params=_params(ats, slug), found_via="probe",
+            if ats == "comeet":
+                comeet_uids.add(registry._comeet_uid(params))
+            row = DmSource(ats=ats, slug=slug, company=company, params=params, found_via="probe",
                            first_seen_at=now, last_fetched_at=now, last_count=len(found), failures=0)
             verified.append(row)
-            board_records.extend(found)
+            board_records.extend({**r, "_via": ats} for r in found)
             report["verified"] += 1
+            report["found_by"][via] += 1
         elif not ats:
-            row = DmSource(ats=MISS, slug=ck[:160], company=company, params={}, found_via="probe",
+            row = DmSource(ats=MISS, slug=ck[:160], company=company, params={"v": PROBE_VERSION}, found_via="probe",
                            first_seen_at=now, failures=0)
             report["missed"] += 1
         else:

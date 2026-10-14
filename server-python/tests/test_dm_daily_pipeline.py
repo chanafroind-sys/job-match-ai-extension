@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -65,6 +66,29 @@ async def test_runs_at_six_in_summer_then_only_once(db, world):
     assert second["embed"]["to_embed"] == 0  # nothing re-sent to Voyage
     assert len(world["syncs"]) == 1
     assert world["extras"] == [SUMMER_0605] and first["extra"] == {"stored": 0}  # extra sources: with the sync only
+
+
+async def test_the_day_is_summed_up_per_source_for_the_report(db, world, monkeypatch):
+    from daily_matches.models import DmPipelineDay
+    from daily_matches.report import build_report
+
+    async def extra(session):
+        return {"stored": 5, "new_by_source": {"comeet": 4, "linkedin": 1},
+                "linkedin": {"cards": 30, "jobs": 9, "blocked": "search", "searches": []},
+                "registry": {"boards": 105, "ok": 104, "failed": 1, "jobs": 691},
+                "new_boards": {"discovered": {"comeet": 1}},
+                "probe": {"companies": 3, "verified": 1, "missed": 2, "found_by": {"workday": 1}}}
+    monkeypatch.setattr(daily_pipeline, "collect_extra", extra)
+    await _run(db, world, SUMMER_0605)
+    await _run(db, world, SUMMER_0705)  # a later firing that skips the sync keeps the morning's summary
+    day = (await db.execute(select(DmPipelineDay))).scalar_one()
+    assert day.day.isoformat() == "2026-07-01"
+    assert day.summary["new_by_source"] == {"comeet": 4, "v1_boards": 3, "linkedin": 1} and day.summary["new_total"] == 8
+    assert day.summary["linkedin"] == {"cards": 30, "jobs": 9, "blocked": "search"}
+    assert day.summary["probe"]["found_by"] == {"workday": 1} and day.summary["new_boards"] == {"comeet": 1}
+    report = await build_report(db, now=SUMMER_0705, days=3)
+    assert report["collection"][0]["day"] == "2026-07-01" and report["collection"][0]["new_total"] == 8
+    assert report["collection"][0]["finished_il"] == "06:05"
 
 
 async def test_a_crash_in_the_extra_sources_keeps_the_day(db, world, monkeypatch):

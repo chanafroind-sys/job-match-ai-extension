@@ -446,9 +446,29 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
     today: { run: { id: 3, status: 'done', candidates: 23, fresh: 31 }, cards: tiered, entitlement: 'subscription' } });
   ok('the header sums up the deck', ctx.doc.querySelector('.dm-date').textContent.includes('1 התאמות חזקות') &&
      ctx.doc.querySelector('.dm-date').textContent.includes('1 שווה הצצה') && ctx.doc.querySelector('.dm-date').textContent.includes('23'));
-  ok('a maybe card says so', ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.chip-maybe') &&
-     !ctx.doc.querySelectorAll('.dm-slide')[0].querySelector('.chip-maybe'));
-  ok('an admin card shows the second model\'s verdict', ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.dm-alt').textContent.includes('Sonnet 5.5'));
+  ok('the main reel holds the strong card, then the way to "worth a look"', ctx.doc.querySelectorAll('.dm-slide').length === 2 &&
+     !ctx.doc.querySelectorAll('.dm-slide')[0].querySelector('.chip-maybe') &&
+     ctx.doc.querySelectorAll('.dm-slide')[1].classList.contains('dm-more-slide') &&
+     ctx.doc.querySelector('.dm-more-text').textContent.includes('משרה גבולית אחת'));
+  ctx.doc.querySelector('[data-act="next"]').click();
+  await tick();
+  ok('on that slide there is nothing to apply to', ctx.app.state.view === 'deck' && ctx.doc.getElementById('dmActions').hidden);
+  ctx.doc.querySelector('[data-act="maybe-reel"]').click();
+  await tick();
+  ok('"worth a look" is a reel of its own', ctx.app.state.reel === 'maybe' && ctx.doc.querySelectorAll('.dm-slide').length === 1 &&
+     ctx.doc.querySelector('.dm-title').textContent.includes('שווה הצצה') && !!ctx.doc.querySelector('.dm-slide .chip-maybe') &&
+     !ctx.doc.getElementById('dmActions').hidden);
+  ok('an admin card shows the second model\'s verdict', ctx.doc.querySelector('.dm-slide .dm-alt').textContent.includes('Sonnet 5.5'));
+  ctx.doc.querySelector('[data-act="next"]').click();
+  await tick();
+  ok('its end leads back to the strong matches', ctx.app.state.view === 'end' && !!ctx.doc.querySelector('[data-act="main-reel"]'));
+  ctx.doc.querySelector('[data-act="main-reel"]').click();
+  await tick();
+  ok('which opens on their first unseen card', ctx.app.state.reel === 'main' && ctx.app.state.view === 'deck');
+  const onlyMaybe = await boot({ statuses: [SUB({ status: 'done', cards: 1 })], storage: { cvText: CV },
+    today: { run: { id: 5, status: 'done', candidates: 9 }, cards: [tiered[1]], entitlement: 'subscription' } });
+  ok('a day with only borderline jobs says so, and offers them', onlyMaybe.app.state.view === 'deck' &&
+     onlyMaybe.doc.querySelectorAll('.dm-slide').length === 1 && onlyMaybe.doc.querySelector('.dm-more-lead').textContent.includes('אין התאמות חזקות'));
   ctx.window.URL.createObjectURL = () => 'blob:cv';
   ctx.window.URL.revokeObjectURL = () => {};
   const dlBtn = ctx.doc.querySelectorAll('.dm-slide')[0].querySelector('[data-act="dl-cv"]');
@@ -486,7 +506,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   // ── the model comparison, for admins ──────────────────────────────────────────
   const vsDeepSeek = [card(1, 84, 'Backend Engineer', { tier: 'strong', analysis: { ...card(1, 84, 'x').analysis,
     compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', match_score: 79, top_gap_he: 'חסר Go.' } } }),
-  card(2, 64, 'Platform Engineer', { tier: 'maybe', analysis: { ...card(2, 64, 'x').analysis,
+  card(2, 64, 'Platform Engineer', { tier: 'strong', analysis: { ...card(2, 64, 'x').analysis,
     compare: { model: 'openrouter:deepseek/deepseek-v4.1-flash', failed: true } } })];
   ctx = await boot({ statuses: [{ ...SUB({ status: 'done', cards: 2 }), is_admin: true }], storage: { cvText: CV },
     today: { run: { id: 4, status: 'done', candidates: 40 }, cards: vsDeepSeek, entitlement: 'subscription',
@@ -500,7 +520,7 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
      ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.dm-alt').textContent.includes('לא החזיר'));
 
   // ── the score's arithmetic, shown on the card ─────────────────────────────────
-  const explained = card(11, 61, 'Backend Engineer', { tier: 'maybe', analysis: { ...card(11, 61, 'x').analysis,
+  const explained = card(11, 61, 'Backend Engineer', { tier: 'strong', analysis: { ...card(11, 61, 'x').analysis,
     breakdown: [{ kind: 'requirement', text: 'Java <b>Spring</b>', importance: 'must', status: 'missing', points: -35 },
       { kind: 'years', required: 5, relevant: 3, points: -12 },
       { kind: 'offsets', names: ['relevant_projects'], points: 3 }],
@@ -719,8 +739,8 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('a plain-question card shows its word, its number and its answer', first.querySelector('.verdict-badge').textContent.includes('מתאימה מאוד') &&
      first.querySelector('.ring-num').textContent === '91' && first.querySelector('.dm-ai').textContent.includes('בדיוק העבודה שלך'));
   ok('with the tip for the CV, and no checklist', !!first.querySelector('.dm-cvtip') && !first.querySelector('.reqs') && !first.querySelector('[data-act="why"]'));
-  ok('a borderline job is in the deck as worth a look', ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.chip-maybe') &&
-     ctx.doc.querySelectorAll('.dm-slide')[1].querySelector('.verdict-badge').textContent.includes('גבולית'));
+  ok('a borderline job waits in "worth a look", after the main reel', ctx.doc.querySelectorAll('.dm-slide')[1].classList.contains('dm-more-slide') &&
+     ctx.app.state.allCards[1].tier === 'maybe' && !ctx.app.state.cards.includes(ctx.app.state.allCards[1]));
   const otherVersion = first.querySelector('[data-act="cmp"]');
   ok('another version can still be picked', otherVersion && otherVersion.textContent.includes('גרסה אחרת') &&
      first.querySelectorAll('.dm-cv-opt').length === 2 && first.querySelectorAll('.dm-cv-opt .bar').length === 1);

@@ -109,7 +109,7 @@ def hebrew_hints(title: str) -> str:
 MIN_DESCRIPTION = 300  # chars; LinkedIn sometimes serves a job page without its text
 
 
-def _record(company, title, url, direct, description, posted, external_id) -> dict | None:
+def _record(company, title, url, direct, description, posted, external_id, site=None) -> dict | None:
     """Every search here is already limited to Israel, so there is no location
     check. A listing whose description didn't come through is dropped: with
     only a title there is nothing to match against."""
@@ -123,6 +123,8 @@ def _record(company, title, url, direct, description, posted, external_id) -> di
     if rec:
         rec["title"] = (title or "").strip()[:255]
         rec["_links"] = [u for u in (direct, url) if u]
+        if site and site.startswith("http"):
+            rec["_site"] = site  # the company's website: where probe.py looks for its careers page
     return rec
 
 
@@ -141,6 +143,7 @@ def _jobspy_record(row: dict) -> dict | None:
         company=_text(row.get("company")), title=_text(row.get("title")), url=_text(row.get("job_url")),
         direct=_text(row.get("job_url_direct")), description=_text(row.get("description")),
         posted=_as_utc(row.get("date_posted")), external_id=_text(row.get("id")) or None,
+        site=_text(row.get("company_url_direct")),
     )
 
 
@@ -182,7 +185,7 @@ def _jsearch_record(item: dict) -> dict | None:
         url=apply or _text(item.get("job_google_link")), direct=apply,
         description=_text(item.get("job_description")),
         posted=agg.parse_datetime(item.get("job_posted_at_datetime_utc")),
-        external_id=_text(item.get("job_id")) or None,
+        external_id=_text(item.get("job_id")) or None, site=_text(item.get("employer_website")),
     )
 
 

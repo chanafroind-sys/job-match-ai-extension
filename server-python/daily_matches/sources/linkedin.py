@@ -9,9 +9,10 @@ Two phases, so each LinkedIn request counts:
      that could be a tech role (the same classifier as the pool, plus Hebrew
      hints). That's where the description and, sometimes, the company's own
      apply link come from.
-Requests are paced. LinkedIn answers too many requests with HTTP 429: the
-collector waits and tries again, and after repeated refusals stops and keeps
-what it has. The report says, per query, how many cards it found, so a cap
+Requests are paced, and the searches go a page of every field at a time.
+LinkedIn answers too many requests with HTTP 429: the collector waits and
+tries again; after repeated refusals it cools off for minutes and goes on
+(MAX_COOLDOWNS times), then stops and keeps what it has. The report says, per query, how many cards it found, so a cap
 on coverage shows up in the run log instead of passing silently.
 """
 import asyncio
@@ -59,6 +60,8 @@ DETAIL_PAUSE = (1.0, 2.2)  # slower since the wider searches: the detail phase w
 DETAIL_CONCURRENCY = 2
 BLOCK_PAUSE = 45  # after a 429
 MAX_BLOCKS = 3  # 429s in a row before a phase gives up
+COOLDOWN = _int("DM_LINKEDIN_COOLDOWN", 240)  # seconds of quiet after a blocked search, before going on
+MAX_COOLDOWNS = _int("DM_LINKEDIN_COOLDOWNS", 2)
 
 _CARD_ID = re.compile(r'data-entity-urn="urn:li:jobPosting:(\d+)"')
 _FIELDS = {
@@ -146,29 +149,44 @@ async def fetch_linkedin(known_ids: set[str] | frozenset = frozenset(), *, trans
     pause = lambda span: sleep(random.uniform(*span))  # noqa: E731
 
     async with httpx.AsyncClient(headers=HEADERS, transport=transport, timeout=30, follow_redirects=True) as client:
-        # Phase 1: search.
+        # Phase 1: search, a page of every field at a time (the newest jobs come
+        # first), so a block midway costs every field its oldest pages rather
+        # than leaving the last fields with nothing (2026-10-13: blocked on the
+        # first field's fourth page). A block is cooled off and searching goes on.
+        pages = {q: WIDE_PAGES if q in WIDE_SEARCHES else MAX_PAGES for q in SEARCHES}
+        found = {q: 0 for q in SEARCHES}
+        dry: set[str] = set()
+        report["cooldowns"] = 0
         try:
-            for query in SEARCHES:
-                found = 0
-                pages = WIDE_PAGES if query in WIDE_SEARCHES else MAX_PAGES
-                for page in range(pages):
+            for page in range(max(pages.values(), default=0)):
+                for query in SEARCHES:
+                    if query in dry or page >= pages[query]:
+                        continue
                     params = {"keywords": query, "location": "Israel", "f_TPR": f"r{HOURS * 3600}",
                               "start": page * 10}
-                    body = await _get(client, SEARCH_URL, params, state, sleep)
+                    while True:
+                        try:
+                            body = await _get(client, SEARCH_URL, params, state, sleep)
+                            break
+                        except _Blocked:
+                            if report["cooldowns"] >= MAX_COOLDOWNS:
+                                raise
+                            report["cooldowns"] += 1
+                            await sleep(COOLDOWN)
                     page_cards = parse_cards(body or "")
                     for card in page_cards:
                         cards.setdefault(card["id"], card)
-                    found += len(page_cards)
+                    found[query] += len(page_cards)
                     if len(page_cards) < 10:
-                        break  # the query ran dry
+                        dry.add(query)  # the query ran dry
                     await pause(PAGE_PAUSE)
-                # capped: the query still had more when its pages ran out (a missed share).
-                report["searches"].append({"query": query, "cards": found, "capped": found >= pages * 10})
-                await pause(PAGE_PAUSE)
         except _Blocked:
             report["blocked"] = "search"
         except Exception as exc:  # noqa: BLE001 — keep what the searches found so far
             report["blocked"] = f"search: {type(exc).__name__}: {exc}"[:200]
+        # capped: the query still had more when its pages ran out (a missed share).
+        report["searches"] = [{"query": q, "cards": found[q], "capped": q not in dry and found[q] >= pages[q] * 10}
+                              for q in SEARCHES]
         report["cards"] = len(cards)
 
         # Phase 2: details, only where they're worth a request.

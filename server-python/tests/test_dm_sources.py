@@ -1,6 +1,7 @@
 """Daily Matches' extra job sources: board discovery, deduplication, the
 JobSpy and JSearch adapters, and the orchestration that stores them. No
 network: JobSpy, JSearch and the ATS fetchers are all faked."""
+import asyncio
 import json
 import math
 from datetime import date, datetime, timezone
@@ -13,20 +14,28 @@ import daily_matches.models  # noqa: F401  (registers dm_* tables before conftes
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
 from daily_matches.models import DmSource
-from daily_matches.sources import aggregators, bigtech, collect_extra, comeet, employers, linkedin, probe, registry
+from daily_matches.sources import (aggregators, bigtech, careers_site, collect_extra, comeet, employers, linkedin,
+                                   probe, registry)
 from daily_matches.sources.dedupe import drop_copies, job_key
 
 
 REAL_SEEDS = comeet.SEED_BOARDS  # before _no_live_comeet empties it
 REAL_EMPLOYERS = employers.SEED_BOARDS
+REAL_SITE_BOARDS, REAL_WORKDAY_BOARDS = careers_site.site_boards, careers_site.workday_boards
 
 
 @pytest.fixture(autouse=True)
 def _no_live_comeet(monkeypatch):
     """No test reads Comeet for real: no seed boards, and a board answers
-    like a missing one unless a test fakes it (_fake_fetchers)."""
+    like a missing one unless a test fakes it (_fake_fetchers). Nor careers
+    pages or Workday hosts: the probe finds none there unless a test says so."""
     monkeypatch.setattr(comeet, "SEED_BOARDS", ())
     monkeypatch.setattr(employers, "SEED_BOARDS", ())
+
+    async def nothing(*_):
+        return []
+    monkeypatch.setattr(careers_site, "site_boards", nothing)
+    monkeypatch.setattr(careers_site, "workday_boards", nothing)
 
     async def missing(client, company, params):
         raise httpx.HTTPStatusError("404", request=httpx.Request("GET", "https://x"), response=httpx.Response(404))
@@ -265,7 +274,36 @@ class TestLinkedIn:
     async def test_persistent_blocking_keeps_what_it_has(self):
         fake = FakeLinkedIn([_lj("1", "Backend Developer", "Alpha")], blocks=10 ** 6)
         records, report = await linkedin.fetch_linkedin(transport=fake.transport, sleep=_no_sleep)
-        assert records == [] and report["blocked"] == "search"
+        assert records == [] and report["blocked"] == "search" and report["cooldowns"] == linkedin.MAX_COOLDOWNS
+
+    async def test_every_field_gets_its_first_page_before_any_its_second(self, monkeypatch):
+        monkeypatch.setattr(linkedin, "SEARCHES", ["backend", "frontend", "devops"])
+        monkeypatch.setattr(linkedin, "WIDE_SEARCHES", ())
+        monkeypatch.setattr(linkedin, "MAX_PAGES", 3)
+        fake = FakeLinkedIn([_lj(str(i), f"Backend Developer {i}", "Alpha") for i in range(30)])
+        await linkedin.fetch_linkedin(transport=fake.transport, sleep=_no_sleep)
+        assert [(p["keywords"], p["start"]) for p in fake.searches] == [
+            ("backend", "0"), ("frontend", "0"), ("devops", "0"), ("backend", "10"), ("backend", "20")]
+
+    async def test_a_blocked_search_cools_off_and_goes_on(self, monkeypatch):
+        monkeypatch.setattr(linkedin, "SEARCHES", ["backend", "frontend"])
+        monkeypatch.setattr(linkedin, "WIDE_SEARCHES", ())
+        fake = FakeLinkedIn([_lj(str(i), f"Backend Developer {i}", "Alpha") for i in range(15)])
+        real = fake.__call__
+        refused = {"left": linkedin.MAX_BLOCKS}
+
+        def handler(request):  # LinkedIn refuses the second page until the cool-off
+            if request.url.params.get("start") == "10" and refused["left"]:
+                refused["left"] -= 1
+                return httpx.Response(429)
+            return real(request)
+        pauses = []
+
+        async def sleep(seconds):
+            pauses.append(seconds)
+        records, report = await linkedin.fetch_linkedin(transport=httpx.MockTransport(handler), sleep=sleep)
+        assert pauses.count(linkedin.COOLDOWN) == 1 and report["cooldowns"] == 1 and report["blocked"] is None
+        assert report["cards"] == 15 and len(records) == 15
 
 
 class TestHebrewTitles:
@@ -334,7 +372,7 @@ def _fake_fetchers(monkeypatch, boards: dict):
                                      description=LONG_DESCRIPTION, published_at=datetime.now(timezone.utc),
                                      external_id=str(i)) for i, t in enumerate(boards[(ats, slug)])]
         return fetch
-    for ats in ("greenhouse", "lever", "ashby"):
+    for ats in ("greenhouse", "lever", "ashby", "workday"):
         monkeypatch.setitem(agg.FETCHERS, ats, make(ats))
     monkeypatch.setitem(registry.OWN_FETCHERS, "comeet", make("comeet"))
     return calls
@@ -361,7 +399,8 @@ class TestProbe:
         await db.commit()
         assert [(r.ats, r.slug) for r in rows] == [("greenhouse", "newco")]
         assert {r["title"] for r in records} == {"Backend Engineer", "Data Engineer"}  # the whole board
-        assert report == {"companies": 2, "verified": 1, "missed": 1, "skipped_known": 0}
+        assert report == {"companies": 2, "verified": 1, "missed": 1, "skipped_known": 0,
+                          "found_by": {"name": 1, "careers_page": 0, "workday": 0}}
         stored = {(s.ats, s.slug) for s in (await db.execute(select(DmSource))).scalars()}
         assert ("probe_miss", "acme") in stored and ("lever", "acme") not in stored
         assert ("lever", "acme") in calls  # it was found, and rejected
@@ -380,6 +419,114 @@ class TestProbe:
         await probe.probe_companies(db, [_rec("Gamma", "Backend Developer")])
         await db.commit()
         assert calls and (await db.execute(select(func.count()).select_from(DmSource))).scalar() == 1  # replaced
+
+    async def test_a_miss_from_the_older_probe_is_tried_again(self, db, monkeypatch):
+        calls = _fake_fetchers(monkeypatch, {})
+        db.add(DmSource(ats="probe_miss", slug="gamma", company="Gamma", params={}, found_via="probe",
+                        first_seen_at=datetime.now(timezone.utc), failures=0))
+        await db.commit()
+        _, _, report = await probe.probe_companies(db, [_rec("Gamma", "Backend Developer")])
+        await db.commit()
+        assert report["companies"] == 1 and calls
+        miss = (await db.execute(select(DmSource).where(DmSource.ats == "probe_miss"))).scalar_one()
+        assert miss.params == {"v": probe.PROBE_VERSION}
+
+    async def test_boards_a_name_does_not_spell_are_verified_the_same_way(self, db, monkeypatch):
+        _fake_fetchers(monkeypatch, {
+            ("comeet", "papaya"): ["Backend Engineer"],
+            ("workday", "External"): ["Data Engineer"],
+            ("workday", "Careers"): ["Chip Designer"],  # someone else's "gammaco" tenant
+        })
+        seen_sites = {}
+
+        async def site_boards(client, sem, site, names):
+            seen_sites[names[0]] = site
+            if names[0] == "papaya":
+                return [("comeet", "papaya/b2.00b", {"slug": "papaya", "uid": "B2.00B"})]
+            return []
+
+        async def workday_boards(client, sem, names):
+            host = f"{names[0]}.wd5.myworkdayjobs.com"
+            return [("workday", f"{host}/{s}".lower(), {"host": host, "site": s})
+                    for s in {"intelligo": ["External"], "gammaco": ["Careers"]}.get(names[0], [])]
+        monkeypatch.setattr(careers_site, "site_boards", site_boards)
+        monkeypatch.setattr(careers_site, "workday_boards", workday_boards)
+        papaya = {**_rec("Papaya", "Backend Engineer"), "_site": "https://papaya.example"}
+        rows, records, report = await probe.probe_companies(db, [papaya, _rec("Intelligo", "Data Engineer"),
+                                                                 _rec("GammaCo", "Backend Developer")])
+        await db.commit()
+        assert seen_sites["papaya"] == "https://papaya.example"  # the listing's own website
+        assert sorted((r.ats, r.slug) for r in rows) == [
+            ("comeet", "papaya/b2.00b"), ("workday", "intelligo.wd5.myworkdayjobs.com/external")]
+        assert report["found_by"] == {"name": 0, "careers_page": 1, "workday": 1} and report["missed"] == 1
+        assert {r["title"] for r in records} == {"Backend Engineer", "Data Engineer"}
+
+
+class TestCareersSite:
+    def test_workday_sites_from_robots(self):
+        assert careers_site.workday_sites(
+            "Sitemap: https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/siteMap.xml\n\nUser-agent: *\n"
+            "Allow: /NVIDIAExternalCareerSite/\nDisallow: /NVIDIAExternalCareerSiteResearch/\n"
+            "Disallow: /refreshFacet/\n") == ["NVIDIAExternalCareerSite", "NVIDIAExternalCareerSiteResearch"]
+        # Palo Alto's main board is a Disallowed one; its hidden gateway isn't a board.
+        assert careers_site.workday_sites("User-agent: *\nDisallow: /panwexternalcareers/\n"
+                                          "Disallow: /hidden-private-pawn-temp-gateway-147258369/\n"
+                                          "Disallow: /refreshFacet/\n") == ["panwexternalcareers"]
+
+    async def test_a_workday_tenant_is_found_in_its_data_center(self):
+        asked = []
+
+        def handler(request):
+            asked.append(request.url.host)
+            if request.url.host == "intel.wd1.myworkdayjobs.com":
+                return httpx.Response(200, text="Sitemap: https://intel.wd1.myworkdayjobs.com/External/siteMap.xml\n"
+                                                "User-agent: *\nAllow: /External/\nDisallow: /refreshFacet/")
+            return httpx.Response(422, json={"errorCode": "HTTP_422"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            found = await REAL_WORKDAY_BOARDS(client, asyncio.Semaphore(2), ["intel", "intel-corp", "nosuch"])
+        assert found == [("workday", "intel.wd1.myworkdayjobs.com/external",
+                          {"host": "intel.wd1.myworkdayjobs.com", "site": "External"})]
+        assert "intel.wd3.myworkdayjobs.com" not in asked  # found in wd1, no more asking
+        assert not any(h.startswith("intel-corp.") for h in asked)  # not a tenant name
+        assert sum(h.startswith("nosuch.") for h in asked) == len(careers_site.WORKDAY_DCS)
+
+    def test_boards_a_careers_page_links_to(self):
+        html = ('<a href="https://www.comeet.com/jobs/cyera/17.008/careers/8B.37F">x</a>'
+                '<iframe src="https://boards.greenhouse.io/embed/job_board?for=deltaai"></iframe>'
+                '<script>var u = "https:\\/\\/jobs.lever.co\\/acme\\/123";</script>'
+                '<a href="https://www.comeet.com/jobs/cyera/17.008/careers/AA.371">y</a>')
+        assert [b[:2] for b in careers_site.boards_in_html(html)] == [
+            ("comeet", "cyera/17.008"), ("greenhouse", "deltaai"), ("lever", "acme")]
+
+    async def test_comeet_widget_leads_to_its_board(self):
+        html = ('<div class="comeet-outer-wrapper"></div><script>COMEET.init({\\"token\\":\\"9103660519012202D5\\",'
+                '\\"company-uid\\":\\"19.000\\", \\"positions\\": [\\"73.407\\"]});</script>')
+        token, uids = careers_site.comeet_widget(html)
+        assert token == "9103660519012202D5" and uids[:2] == ["19.000", "73.407"]
+        assert careers_site.comeet_widget("<p>token: 9103660519012202D5</p>") == (None, [])  # not Comeet's
+        # The WordPress plugin names the company's uid, after a page of its positions' uids.
+        plugin = ' '.join(f'"{i:02d}.123"' for i in range(20)) + (
+            '<script id="comeet_script-js-extra">var comeetvar = {"comeet_token":"94440DC0944094401BCC12882510",'
+            '"comeet_uid":"49.004"};</script>')
+        assert careers_site.comeet_widget(plugin)[1][0] == "49.004"
+
+        def handler(request):
+            if request.url.path.endswith("/company/19.000/positions") and request.url.params["token"] == token:
+                return httpx.Response(200, json=[{"uid": "73.407", "url_comeet_hosted_page":
+                                                  "https://www.comeet.com/jobs/zenity/19.000/backend/73.407"}])
+            if "/careers-api/" in request.url.path:
+                return httpx.Response(400, json={"message": "Account uid or token are not valid"})
+            return httpx.Response(200, text=html) if request.url.path == "/careers" else httpx.Response(404)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            found = await REAL_SITE_BOARDS(client, asyncio.Semaphore(2), "https://www.zenity.io/about", ["zenity"])
+        assert found == [("comeet", "zenity/19.000", {"slug": "zenity", "uid": "19.000"})]
+
+    def test_which_pages_are_read(self):
+        assert careers_site.careers_pages("http://Papaya.example/en", ["papaya"]) == [
+            "https://papaya.example/careers", "https://papaya.example"]
+        assert careers_site.careers_pages(None, ["check-point", "checkpoint"]) == [
+            f"https://www.checkpoint.{tld}/careers" for tld in careers_site.GUESSED_TLDS]
+        assert careers_site.careers_pages("", ["חברה"]) == []
 
 
 COMEET_PAGE = """<html><script>
