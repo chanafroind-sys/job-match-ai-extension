@@ -71,12 +71,34 @@ def day_summary(report: dict) -> dict:
     return {
         "new_by_source": dict(sorted(new.items(), key=lambda kv: -kv[1])),
         "new_total": sum(new.values()),
-        "linkedin": {k: li[k] for k in ("cards", "jobs", "blocked", "cooldowns") if k in li},
+        "linkedin": {k: li[k] for k in ("cards", "jobs", "blocked", "cooldowns", "via_proxy", "mb", "markup_suspect",
+                                        "via_apify", "skipped", "cost_usd", "budget_capped", "credit")
+                     if k in li},
         "registry": {k: (extra.get("registry") or {}).get(k) for k in ("boards", "failed", "jobs")},
         "new_boards": (extra.get("new_boards") or {}).get("discovered") or {},
         "probe": {k: (extra.get("probe") or {}).get(k) for k in ("companies", "verified", "found_by")},
         "extra_error": extra.get("error"),
     }
+
+
+def linkedin_alert(report: dict) -> str | None:
+    """Why LinkedIn failed today, when it shouldn't have: through the proxy
+    it brought no job card at all, or its pages stopped parsing. Without a
+    proxy LinkedIn refuses our servers, so a day without it is expected."""
+    li = ((report.get("extra") or {}).get("linkedin")) or {}
+    if li.get("via_apify"):
+        if li.get("blocked"):
+            return (f"LinkedIn through Apify failed ({li['blocked']}). If it mentions usage or a limit, "
+                    "this month's Apify credit is spent: console.apify.com/billing")
+        if not li.get("skipped") and not (li.get("credit") or {}).get("today_jobs"):
+            return "this month's Apify credit is spent; LinkedIn resumes when Apify's billing cycle restarts"
+        return None
+    if li.get("markup_suspect"):
+        return (f"LinkedIn's {li['markup_suspect']} pages no longer parse: its markup changed, or it served "
+                "a sign-in page instead (daily_matches/sources/linkedin.py parse_cards / parse_detail)")
+    if li.get("via_proxy") and not li.get("cards"):
+        return f"LinkedIn returned no job through the proxy (blocked: {li.get('blocked')}); check the proxy's balance"
+    return None
 
 
 async def save_day(session, day, summary: dict, now: datetime) -> None:

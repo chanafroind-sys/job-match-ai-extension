@@ -91,6 +91,16 @@ async def test_the_day_is_summed_up_per_source_for_the_report(db, world, monkeyp
     assert report["collection"][0]["finished_il"] == "06:05"
 
 
+def test_linkedin_failing_through_the_proxy_fails_the_run():
+    from daily_matches.daily_pipeline import linkedin_alert
+    report = lambda li: {"extra": {"linkedin": li}}  # noqa: E731
+    assert linkedin_alert(report({"cards": 0, "blocked": "search", "via_proxy": False})) is None  # expected
+    assert linkedin_alert(report({"cards": 480, "jobs": 210, "via_proxy": True})) is None
+    assert "balance" in linkedin_alert(report({"cards": 0, "blocked": "search", "via_proxy": True}))
+    assert "markup" in linkedin_alert(report({"cards": 0, "markup_suspect": "search", "via_proxy": False}))
+    assert linkedin_alert({"extra": {"error": "boom"}}) is None
+
+
 async def test_a_crash_in_the_extra_sources_keeps_the_day(db, world, monkeypatch):
     async def broken(session):
         raise RuntimeError("linkedin changed its markup")

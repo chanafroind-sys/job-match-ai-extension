@@ -25,6 +25,7 @@ from daily_matches import config  # noqa: E402
 from daily_matches.daily_pipeline import (  # noqa: E402
     PipelineError,
     active_count,
+    linkedin_alert,
     run_pipeline,
     verify_web_reads_same_db,
 )
@@ -61,6 +62,11 @@ async def main(argv: list[str]) -> int:
     finally:
         await engine.dispose()
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    # The day's jobs are stored; a failed run is how GitHub emails the owner.
+    alert = linkedin_alert(report)
+    if alert:
+        print(f"[pipeline] LINKEDIN: {alert}", file=sys.stderr)
+        return 1
     return 0
 
 

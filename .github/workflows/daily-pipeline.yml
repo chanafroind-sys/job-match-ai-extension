@@ -80,4 +80,7 @@ jobs:
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           # Under its own name: V1's sync would spend the free quota if it saw RAPIDAPI_KEY.
           DM_JSEARCH_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          DM_LINKEDIN_PROXY_LOGIN: ${{ secrets.LINKEDIN_PROXY_LOGIN }}
+          DM_LINKEDIN_PROXY_PASSWORD: ${{ secrets.LINKEDIN_PROXY_PASSWORD }}
+          DM_APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
         run: python scripts/run_daily_pipeline.py ${{ inputs.force && '--force' || '' }}

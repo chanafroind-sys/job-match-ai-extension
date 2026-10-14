@@ -276,6 +276,41 @@ class TestLinkedIn:
         records, report = await linkedin.fetch_linkedin(transport=fake.transport, sleep=_no_sleep)
         assert records == [] and report["blocked"] == "search" and report["cooldowns"] == linkedin.MAX_COOLDOWNS
 
+    def test_the_proxy_comes_from_its_login_and_password(self, monkeypatch):
+        for k in ("DM_LINKEDIN_PROXY", "DM_LINKEDIN_PROXY_LOGIN", "DM_LINKEDIN_PROXY_PASSWORD", "DM_LINKEDIN_PROXY_HOST"):
+            monkeypatch.delenv(k, raising=False)
+        assert linkedin.proxy_url() is None
+        monkeypatch.setenv("DM_LINKEDIN_PROXY_LOGIN", "abc123")
+        assert linkedin.proxy_url() is None  # no password: no proxy
+        monkeypatch.setenv("DM_LINKEDIN_PROXY_PASSWORD", " p@ss:w/rd ")
+        assert linkedin.proxy_url() == "http://abc123:p%40ss%3Aw%2Frd@gw.dataimpulse.com:823"
+        monkeypatch.setenv("DM_LINKEDIN_PROXY_HOST", "proxy.example:9000")
+        assert linkedin.proxy_url().endswith("@proxy.example:9000")
+        monkeypatch.setenv("DM_LINKEDIN_PROXY", "http://u:v@other:1")
+        assert linkedin.proxy_url() == "http://u:v@other:1"
+        assert linkedin._scrub("ProxyError for http://u:v@other:1") == "ProxyError for ***"
+
+    async def test_through_the_proxy_a_refusal_is_retried_at_once(self, monkeypatch):
+        monkeypatch.setenv("DM_LINKEDIN_PROXY_LOGIN", "abc123")
+        monkeypatch.setenv("DM_LINKEDIN_PROXY_PASSWORD", "secret")
+        pauses = []
+
+        async def sleep(seconds):
+            pauses.append(seconds)
+        fake = FakeLinkedIn([_lj("1", "Backend Developer", "Alpha")], blocks=4)  # more than MAX_BLOCKS
+        records, report = await linkedin.fetch_linkedin(transport=fake.transport, sleep=sleep)
+        assert report["via_proxy"] and report["blocked"] is None and len(records) == 1
+        assert pauses.count(linkedin.PROXY_BLOCK_PAUSE) == 4 and linkedin.BLOCK_PAUSE not in pauses
+        assert report["mb"] >= 0 and report["markup_suspect"] is None
+
+    async def test_a_page_that_no_longer_parses_is_flagged(self, monkeypatch):
+        monkeypatch.setattr(linkedin, "SEARCHES", ["backend"])
+
+        def handler(request):  # a full page, in a markup the parser doesn't know
+            return httpx.Response(200, text="<li class='job-card-v2'>" + "x" * 5000 + "</li>")
+        records, report = await linkedin.fetch_linkedin(transport=httpx.MockTransport(handler), sleep=_no_sleep)
+        assert records == [] and report["markup_suspect"] == "search" and report["blocked"] is None
+
     async def test_every_field_gets_its_first_page_before_any_its_second(self, monkeypatch):
         monkeypatch.setattr(linkedin, "SEARCHES", ["backend", "frontend", "devops"])
         monkeypatch.setattr(linkedin, "WIDE_SEARCHES", ())
@@ -304,6 +339,106 @@ class TestLinkedIn:
         records, report = await linkedin.fetch_linkedin(transport=httpx.MockTransport(handler), sleep=sleep)
         assert pauses.count(linkedin.COOLDOWN) == 1 and report["cooldowns"] == 1 and report["blocked"] is None
         assert report["cards"] == 15 and len(records) == 15
+
+
+class FakeApify:
+    """Apify's API: the account's limits, Actor runs, their datasets."""
+
+    def __init__(self, jobs: dict, used=1.0, cap=5.0, cycle_end="2026-11-10T00:00:00.000Z", start_status=201):
+        self.jobs, self.used, self.cap, self.cycle_end, self.start_status = jobs, used, cap, cycle_end, start_status
+        self.runs, self.auth = [], set()
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.auth.add(request.headers.get("Authorization"))
+        path = request.url.path
+        if path == "/v2/users/me/limits":
+            return httpx.Response(200, json={"data": {
+                "monthlyUsageCycle": {"startAt": "2026-10-10T00:00:00.000Z", "endAt": self.cycle_end},
+                "limits": {"maxMonthlyUsageUsd": self.cap}, "current": {"monthlyUsageUsd": self.used}}})
+        if path.endswith("/runs") and request.method == "POST":
+            if self.start_status >= 400:
+                return httpx.Response(self.start_status, json={"error": {
+                    "type": "not-enough-usage-to-run-paid-actor", "message": "monthly usage limit"}})
+            body = json.loads(request.content)
+            self.runs.append({"body": body, "params": dict(request.url.params)})
+            n = len(self.runs)
+            return httpx.Response(201, json={"data": {"id": f"r{n}", "status": "RUNNING", "defaultDatasetId": f"d{n}"}})
+        if path.startswith("/v2/actor-runs/"):
+            n = path.rsplit("r", 1)[-1]
+            return httpx.Response(200, json={"data": {"id": f"r{n}", "status": "SUCCEEDED", "defaultDatasetId": f"d{n}"}})
+        if path.startswith("/v2/datasets/"):
+            run = self.runs[int(path.split("/")[3][1:]) - 1]
+            skip = set(run["body"]["skipJobId"])
+            items = [j for j in self.jobs.get(run["body"]["keywords"], []) if j["id"] not in skip]
+            return httpx.Response(200, json=items[:run["body"]["limit"]])
+        return httpx.Response(404)
+
+    @property
+    def transport(self):
+        return httpx.MockTransport(self)
+
+
+def _aj(job_id, title, company="Alpha", description=LONG_DESCRIPTION):
+    return {"id": job_id, "title": title, "companyName": company, "description": description,
+            "postedDate": "2026-10-14T08:00:00.000Z", "url": f"https://www.linkedin.com/jobs/view/{job_id}"}
+
+
+TUESDAY_IL = datetime(2026, 10, 13, 3, 30, tzinfo=timezone.utc)  # 06:30 in Israel
+
+
+class TestLinkedInApify:
+    async def test_each_job_is_paid_once_and_the_pool_is_never_paid_for_again(self, monkeypatch):
+        monkeypatch.setenv("DM_APIFY_TOKEN", "tok")
+        from daily_matches.sources import linkedin_apify
+        q1, q2 = linkedin_apify.SEARCHES[0], linkedin_apify.SEARCHES[1]
+        fake = FakeApify({q1: [_aj("1", "Backend Developer"), _aj("2", "Data Engineer"), _aj("9", "Backend Engineer")],
+                          q2: [_aj("2", "Data Engineer"), _aj("3", "Account Executive")]})
+        records, report = await linkedin_apify.fetch_linkedin_apify(["9"], now=TUESDAY_IL, transport=fake.transport,
+                                                                    sleep=_no_sleep)
+        assert fake.auth == {"Bearer tok"}  # the token travels in a header, never in a logged URL
+        assert fake.runs[0]["body"]["skipJobId"] == ["9"] and fake.runs[1]["body"]["skipJobId"] == ["9", "1", "2"]
+        assert fake.runs[0]["body"]["location"] == "Israel" and fake.runs[0]["body"]["datePosted"] == "r93600"
+        assert report["cards"] == 3 and report["jobs"] == 2 and report["not_tech_or_short"] == 1
+        assert sorted(r["external_job_id"] for r in records) == ["1", "2"]
+        assert records[0]["url"].startswith("https://www.linkedin.com/jobs/view/")
+        assert report["cost_usd"] == round(3 * linkedin_apify.PRICE_PER_1K / 1000, 3)
+
+    async def test_the_months_credit_is_spread_over_its_working_days(self, monkeypatch):
+        monkeypatch.setenv("DM_APIFY_TOKEN", "tok")
+        from daily_matches.sources import linkedin_apify
+        fake = FakeApify({}, used=1.0, cap=5.0, cycle_end="2026-10-27T00:00:00.000Z")
+        _, report = await linkedin_apify.fetch_linkedin_apify([], now=TUESDAY_IL, transport=fake.transport,
+                                                              sleep=_no_sleep)
+        credit = report["credit"]
+        # 13–27 October (Israel): 15 days, of which 4 are Fridays or Saturdays.
+        assert credit["working_days_left"] == 11 and credit["left_usd"] == 4.0
+        assert credit["today_jobs"] == int(4.0 / 11 / linkedin_apify.PRICE_PER_1K * 1000)
+        cap = float(fake.runs[0]["params"]["maxTotalChargeUsd"])
+        assert cap <= credit["today_usd"] * 1.2  # Apify itself stops a run that would overspend
+
+    async def test_friday_is_skipped_and_sunday_reaches_back(self, monkeypatch):
+        monkeypatch.setenv("DM_APIFY_TOKEN", "tok")
+        from daily_matches.sources import linkedin_apify
+        fake = FakeApify({})
+        friday = datetime(2026, 10, 16, 3, 30, tzinfo=timezone.utc)
+        records, report = await linkedin_apify.fetch_linkedin_apify([], now=friday, transport=fake.transport)
+        assert records == [] and "weekend" in report["skipped"] and fake.runs == []
+        sunday = datetime(2026, 10, 18, 3, 30, tzinfo=timezone.utc)
+        await linkedin_apify.fetch_linkedin_apify([], now=sunday, transport=fake.transport, sleep=_no_sleep)
+        assert fake.runs[0]["body"]["datePosted"] == f"r{74 * 3600}"
+
+    async def test_a_spent_credit_is_reported_and_fails_the_run(self, monkeypatch):
+        monkeypatch.setenv("DM_APIFY_TOKEN", "tok")
+        from daily_matches.daily_pipeline import linkedin_alert
+        from daily_matches.sources import linkedin_apify
+        fake = FakeApify({}, start_status=402)
+        records, report = await linkedin_apify.fetch_linkedin_apify([], now=TUESDAY_IL, transport=fake.transport,
+                                                                    sleep=_no_sleep)
+        assert records == [] and "not-enough-usage" in report["blocked"]
+        assert "billing" in linkedin_alert({"extra": {"linkedin": report}})
+        _, spent = await linkedin_apify.fetch_linkedin_apify([], now=TUESDAY_IL, sleep=_no_sleep,
+                                                             transport=FakeApify({}, used=5.0).transport)
+        assert spent["credit"]["today_jobs"] == 0 and "spent" in linkedin_alert({"extra": {"linkedin": spent}})
 
 
 class TestHebrewTitles:
@@ -667,6 +802,24 @@ class TestBigTech:
 
 
 class TestCollectExtra:
+    async def test_with_an_apify_token_linkedin_comes_through_apify(self, db, monkeypatch):
+        from daily_matches import config
+        from daily_matches.sources import linkedin_apify
+        _fake_fetchers(monkeypatch, {})
+        monkeypatch.setenv("DM_JSEARCH_KEY", "")
+        monkeypatch.setenv("DM_APIFY_TOKEN", "tok")
+        monkeypatch.setattr(config, "utcnow", lambda: TUESDAY_IL)
+        now = datetime.now(timezone.utc)
+        db.add(DailyJobPool(id="li-old", external_job_id="555", title="Backend Developer", company="Beta",
+                            category="Backend", seniority="Unknown", url="https://www.linkedin.com/jobs/view/555",
+                            description="x", published_at=now, scraped_at=TUESDAY_IL))
+        await db.commit()
+        apify = FakeApify({linkedin_apify.SEARCHES[0]: [_aj("556", "Backend Developer", "Gamma")]})
+        report = await collect_extra(db, scrape=FakeScrape(), apify_transport=apify.transport, sleep=_no_sleep)
+        assert report["linkedin"]["via_apify"] and report["linkedin"]["jobs"] == 1
+        assert apify.runs[0]["body"]["skipJobId"] == ["555"]  # what the pool holds isn't paid for again
+        assert report["new_by_source"] == {"linkedin": 1}
+
     async def test_a_verified_board_replaces_the_linkedin_copy(self, db, monkeypatch):
         _fake_fetchers(monkeypatch, {("ashby", "deltaai"): ["ML Engineer"]})
         monkeypatch.setenv("DM_JSEARCH_KEY", "")

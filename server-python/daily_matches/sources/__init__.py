@@ -22,12 +22,14 @@ reported and the rest still land.
 import asyncio
 import logging
 from collections import Counter
+from datetime import timedelta
 
 from sqlalchemy import select
 
 from app.models.job_pool import DailyJobPool
 from app.services import job_aggregator as agg
-from daily_matches.sources import aggregators, linkedin as linkedin_source, probe, registry
+from daily_matches import config
+from daily_matches.sources import aggregators, linkedin as linkedin_source, linkedin_apify, probe, registry
 from daily_matches.sources.dedupe import drop_copies, job_key
 
 logger = logging.getLogger(__name__)
@@ -44,8 +46,16 @@ def _strip(records: list[dict]) -> list[dict]:
     return [{k: v for k, v in r.items() if not k.startswith("_")} for r in records]
 
 
+async def _linkedin_ids(session) -> list[str]:
+    """LinkedIn job ids the pool holds from the last days: Apify isn't paid for them again."""
+    since = config.utcnow() - timedelta(days=5)
+    rows = await session.execute(select(DailyJobPool.external_job_id).where(
+        DailyJobPool.url.like("https://www.linkedin.com/jobs/view/%"), DailyJobPool.scraped_at >= since))
+    return [r for (r,) in rows if r]
+
+
 async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedin_transport=None,
-                        sleep=asyncio.sleep) -> dict:
+                        apify_transport=None, sleep=asyncio.sleep) -> dict:
     """Fetches every extra source and upserts what's new. Never raises for a
     source's failure; the report says what happened to each."""
     report: dict = {}
@@ -56,8 +66,14 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedi
     board_records, report["registry"] = await registry.fetch_boards(session)
     await session.commit()  # board health (failures, last_count)
 
+    if linkedin_apify.token():  # LinkedIn refuses our servers; Apify reads it for us
+        fetch_li = linkedin_apify.fetch_linkedin_apify(await _linkedin_ids(session), transport=apify_transport,
+                                                       sleep=sleep)
+    else:
+        fetch_li = linkedin_source.fetch_linkedin(set(known.values()), transport=linkedin_transport, sleep=sleep)
+    await session.commit()
     (linkedin, report["linkedin"]), (jsearch, report["jsearch"]), (indeed, report["indeed"]) = await asyncio.gather(
-        linkedin_source.fetch_linkedin(set(known.values()), transport=linkedin_transport, sleep=sleep),
+        fetch_li,
         aggregators.fetch_jsearch(transport=jsearch_transport),
         aggregators.fetch_jobspy("indeed", aggregators.INDEED_SEARCHES, scrape=scrape, sleep=sleep),
     )

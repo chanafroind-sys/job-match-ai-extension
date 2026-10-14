@@ -12,15 +12,27 @@ Two phases, so each LinkedIn request counts:
 Requests are paced, and the searches go a page of every field at a time.
 LinkedIn answers too many requests with HTTP 429: the collector waits and
 tries again; after repeated refusals it cools off for minutes and goes on
-(MAX_COOLDOWNS times), then stops and keeps what it has. The report says, per query, how many cards it found, so a cap
+(MAX_COOLDOWNS times), then stops and keeps what it has.
+
+LinkedIn refuses cloud servers (GitHub's, Render's) and, after a few
+requests, a home connection too (2026-10-14). With a rotating residential
+proxy (proxy_url: DM_LINKEDIN_PROXY_LOGIN / _PASSWORD, DataImpulse by
+default), every request leaves from another home connection; a refused one
+is simply tried again, through another.
+
+The report flags a page LinkedIn served that no longer parses
+(markup_suspect), so a change to LinkedIn's markup fails the day's run
+(daily_pipeline.linkedin_alert) instead of passing as a quiet day. The report says, per query, how many cards it found, so a cap
 on coverage shows up in the run log instead of passing silently.
 """
 import asyncio
 import html as html_lib
 import logging
+import os
 import random
 import re
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import httpx
 
@@ -60,6 +72,10 @@ DETAIL_PAUSE = (1.0, 2.2)  # slower since the wider searches: the detail phase w
 DETAIL_CONCURRENCY = 2
 BLOCK_PAUSE = 45  # after a 429
 MAX_BLOCKS = 3  # 429s in a row before a phase gives up
+# Through a rotating proxy, the next request already leaves from another home.
+PROXY_BLOCK_PAUSE = 2
+PROXY_MAX_BLOCKS = 6
+DEFAULT_PROXY_HOST = "gw.dataimpulse.com:823"  # DataImpulse's rotating residential gateway
 COOLDOWN = _int("DM_LINKEDIN_COOLDOWN", 240)  # seconds of quiet after a blocked search, before going on
 MAX_COOLDOWNS = _int("DM_LINKEDIN_COOLDOWNS", 2)
 
@@ -119,6 +135,30 @@ def _looks_technical(title: str) -> bool:
     return agg.classify_category(f"{title} ({hints})" if hints else title, "") is not None
 
 
+def proxy_url() -> str | None:
+    """The residential proxy, from the environment: a whole URL
+    (DM_LINKEDIN_PROXY), or the login and password a provider's dashboard
+    shows (DM_LINKEDIN_PROXY_LOGIN, DM_LINKEDIN_PROXY_PASSWORD, and
+    DM_LINKEDIN_PROXY_HOST when it isn't DataImpulse's)."""
+    whole = os.environ.get("DM_LINKEDIN_PROXY", "").strip()
+    if whole:
+        return whole
+    login = os.environ.get("DM_LINKEDIN_PROXY_LOGIN", "").strip()
+    password = os.environ.get("DM_LINKEDIN_PROXY_PASSWORD", "").strip()
+    if not (login and password):
+        return None
+    host = os.environ.get("DM_LINKEDIN_PROXY_HOST", "").strip() or DEFAULT_PROXY_HOST
+    return f"http://{quote(login, safe='')}:{quote(password, safe='')}@{host}"
+
+
+def _scrub(text: str) -> str:
+    """An error message as it may be logged: the run log is public."""
+    for secret in (os.environ.get(k, "") for k in ("DM_LINKEDIN_PROXY", "DM_LINKEDIN_PROXY_PASSWORD")):
+        if secret.strip():
+            text = text.replace(secret.strip(), "***")
+    return text
+
+
 class _Blocked(Exception):
     pass
 
@@ -126,11 +166,12 @@ class _Blocked(Exception):
 async def _get(client, url: str, params: dict | None, state: dict, sleep) -> str | None:
     """One request; waits out a 429 and retries. None for a missing job;
     _Blocked after MAX_BLOCKS refusals in a row."""
-    for _ in range(MAX_BLOCKS):
+    for _ in range(state["max_blocks"]):
         resp = await client.get(url, params=params)
+        state["bytes"] += len(resp.content)
         if resp.status_code == 429:
             state["blocks"] += 1
-            await sleep(BLOCK_PAUSE)
+            await sleep(state["block_pause"])
             continue
         state["blocks"] = 0
         if resp.status_code in (404, 410):
@@ -145,10 +186,15 @@ async def fetch_linkedin(known_ids: set[str] | frozenset = frozenset(), *, trans
     report: dict = {"searches": [], "cards": 0, "already_in_pool": 0, "not_tech": 0,
                     "details_ok": 0, "details_failed": 0, "no_description": 0, "blocked": None, "jobs": 0}
     cards: dict[str, dict] = {}
-    state = {"blocks": 0}
+    proxy = proxy_url() if transport is None else None  # a test's transport would be bypassed by a proxy
+    report["via_proxy"] = bool(proxy) or (transport is not None and bool(proxy_url()))
+    state = {"blocks": 0, "bytes": 0, "unparsed_pages": 0,
+             "block_pause": PROXY_BLOCK_PAUSE if report["via_proxy"] else BLOCK_PAUSE,
+             "max_blocks": PROXY_MAX_BLOCKS if report["via_proxy"] else MAX_BLOCKS}
     pause = lambda span: sleep(random.uniform(*span))  # noqa: E731
 
-    async with httpx.AsyncClient(headers=HEADERS, transport=transport, timeout=30, follow_redirects=True) as client:
+    async with httpx.AsyncClient(headers=HEADERS, transport=transport, proxy=proxy, timeout=30,
+                                 follow_redirects=True) as client:
         # Phase 1: search, a page of every field at a time (the newest jobs come
         # first), so a block midway costs every field its oldest pages rather
         # than leaving the last fields with nothing (2026-10-13: blocked on the
@@ -174,6 +220,8 @@ async def fetch_linkedin(known_ids: set[str] | frozenset = frozenset(), *, trans
                             report["cooldowns"] += 1
                             await sleep(COOLDOWN)
                     page_cards = parse_cards(body or "")
+                    if not page_cards and len(body or "") > 2000:
+                        state["unparsed_pages"] += 1  # a full page, and no card found in it
                     for card in page_cards:
                         cards.setdefault(card["id"], card)
                     found[query] += len(page_cards)
@@ -183,7 +231,7 @@ async def fetch_linkedin(known_ids: set[str] | frozenset = frozenset(), *, trans
         except _Blocked:
             report["blocked"] = "search"
         except Exception as exc:  # noqa: BLE001 — keep what the searches found so far
-            report["blocked"] = f"search: {type(exc).__name__}: {exc}"[:200]
+            report["blocked"] = _scrub(f"search: {type(exc).__name__}: {exc}")[:200]
         # capped: the query still had more when its pages ran out (a missed share).
         report["searches"] = [{"query": q, "cards": found[q], "capped": q not in dry and found[q] >= pages[q] * 10}
                               for q in SEARCHES]
@@ -240,5 +288,11 @@ async def fetch_linkedin(known_ids: set[str] | frozenset = frozenset(), *, trans
 
         await asyncio.gather(*(detail(c, u) for c, u in todo))
     report["jobs"] = len(records)
+    report["mb"] = round(state["bytes"] / 1e6, 1)  # uncompressed: the proxy bills less
+    # LinkedIn changed its markup: full pages with no cards, or job pages with no description.
+    report["markup_suspect"] = (
+        "search" if state["unparsed_pages"] and not cards
+        else "details" if report["details_ok"] >= 10 and report["no_description"] > report["details_ok"] / 2
+        else None)
     logger.warning("[DM] linkedin: %s", {k: v for k, v in report.items() if k != "searches"})
     return list(records.values()), report
