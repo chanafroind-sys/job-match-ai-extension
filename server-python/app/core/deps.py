@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +45,7 @@ async def _backfill_email(db: AsyncSession, user: User, license_key: str) -> Non
 
 
 async def get_current_user(
+    request: Request,
     x_license_key: Optional[str] = Header(None),
     x_anthropic_key: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
@@ -54,7 +55,10 @@ async def get_current_user(
     # Identity is whichever key paid for the request: the Gumroad license itself,
     # or "byok:<hash>" for a caller on their own Claude key. Either way it hashes
     # to a stable users row, so BYOK users keep their semantic map and history.
-    license_key = await require_auth(x_license_key, x_anthropic_key)
+    # /api/v2/* runs AI; the community routes only need to know who's asking,
+    # which a subscription key answers without a Claude key.
+    license_key = await require_auth(x_license_key, x_anthropic_key,
+                                     ai=request.url.path.startswith("/api/v2/"))
     key_hash = _hash_license_key(license_key)
 
     result = await db.execute(select(User).where(User.license_key_hash == key_hash))

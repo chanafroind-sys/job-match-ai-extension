@@ -205,3 +205,33 @@ async def test_payment_for_an_unknown_checkout_is_ignored(client):
     async with client.factory() as db:
         await service.apply_event(db, "mock", Event(kind="paid", provider_ref="x", checkout_id="f" * 32))
         assert (await db.execute(select(BillingSubscription))).scalars().all() == []
+
+
+class TestWhatTheSubscriptionCovers:
+    """Daily Matches and the features without AI; the other AI features run
+    on the subscriber's own Claude key, never the server's."""
+
+    async def test_ai_without_an_own_key_asks_for_one(self, client):
+        _, key = await _buy(client)
+        with pytest.raises(HTTPException) as exc:
+            await main_module.require_auth(key, None)
+        assert exc.value.status_code == 401 and "[jma:AI_NO_KEY]" in exc.value.detail
+        assert main_module._request_client.get() is None
+
+    async def test_community_routes_know_the_subscriber_without_a_claude_key(self, client):
+        _, key = await _buy(client)
+        assert await main_module.require_auth(key, None, ai=False) == key
+
+    async def test_with_an_own_key_ai_runs_on_it_and_the_subscriber_stays_the_identity(self, client):
+        _, key = await _buy(client)
+        token = main_module._request_client.set(None)
+        try:
+            assert await main_module.require_auth(key, "sk-ant-test-0000") == key
+            assert main_module.using_own_key()
+        finally:
+            main_module._request_client.reset(token)
+
+    async def test_admin_keys_still_run_on_the_server(self, client, monkeypatch):
+        monkeypatch.setattr(main_module, "STATIC_PREMIUM_KEYS", {"ADMIN-KEY"})
+        assert await main_module.require_auth("ADMIN-KEY", None) == "ADMIN-KEY"
+        assert not main_module.using_own_key()

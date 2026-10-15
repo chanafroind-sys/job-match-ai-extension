@@ -126,7 +126,9 @@
     }
     var text = (STATUS_TEXT[s.status] || STATUS_TEXT.expired)(s);
     el.hidden = false;
-    el.innerHTML = esc(text) + (s.email ? '<br><span style="color:var(--text-dim)">' + esc(s.email) + '</span>' : '') +
+    el.innerHTML = esc(text) +
+      '<br><span style="color:var(--text-muted)">כלול במנוי: ההתאמות היומיות · מאגר המגייסים · נקודות והפניות</span>' +
+      (s.email ? '<br><span style="color:var(--text-dim)">' + esc(s.email) + '</span>' : '') +
       (s.status === 'active' || s.status === 'past_due'
         ? '<br><a href="#" id="jmaCancelSub" class="key-option-link" style="color:var(--text-dim)">ביטול המנוי</a>' : '');
     var cancel = document.getElementById('jmaCancelSub');

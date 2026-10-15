@@ -79,8 +79,8 @@
    * so a locally-detected miss and a server-detected one travel the same path.
    */
   function noKeyError() {
-    return 'כדי להשתמש ביכולות ה-AI צריך מפתח אחד משניים: מפתח מנוי, ' +
-           'או מפתח Claude API אישי. אפשר להזין אותו בהגדרות ⚙️. [jma:' + CODES.NO_KEY + ']';
+    return 'כדי להשתמש ביכולות ה-AI צריך מפתח Claude API אישי. ' +
+           'אפשר להזין אותו בהגדרות ⚙️. [jma:' + CODES.NO_KEY + ']';
   }
 
   /** The error for a community feature reached without a subscription. */

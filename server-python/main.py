@@ -614,9 +614,27 @@ def _header_str(value) -> str:
 
 def _auth_error() -> HTTPException:
     return HTTPException(status_code=401, detail=_coded(
-        "כדי להשתמש ביכולות ה-AI צריך מפתח אחד משניים: מפתח מנוי מ-Gumroad, "
-        "או מפתח Claude API אישי. אפשר להזין אותו בהגדרות ⚙️.",
+        "כדי להשתמש ביכולות ה-AI צריך מפתח Claude API אישי. אפשר להזין אותו בהגדרות ⚙️.",
         ERR_NO_KEY))
+
+
+def _subscription_ai_error() -> HTTPException:
+    """A subscriber reached an AI feature the subscription doesn't cover."""
+    return HTTPException(status_code=401, detail=_coded(
+        "יכולות ה-AI בתוסף עובדות עם מפתח Claude API אישי, בנוסף למנוי. "
+        "אפשר להזין אותו בהגדרות ⚙️.",
+        ERR_NO_KEY))
+
+
+def _bind_own_key(own: str) -> None:
+    """Run this request's AI calls on the caller's own Claude key."""
+    if not own.startswith(ANTHROPIC_KEY_PREFIX):
+        raise HTTPException(status_code=401, detail=_coded(
+            "מפתח ה-Claude API לא נראה תקין — מפתח אמיתי מתחיל ב-sk-ant- ומועתק "
+            "במלואו מ-console.anthropic.com/settings/keys.",
+            ERR_KEY_INVALID))
+    _request_client.set(_byok_client(own))
+    print(f"[JMA:auth] BYOK mode key=sk-ant-****{own[-4:]}")
 
 
 def ai_error(exc: Exception) -> HTTPException:
@@ -681,7 +699,7 @@ def ai_error(exc: Exception) -> HTTPException:
 
 async def require_auth(license_key: Optional[str],
                        anthropic_key: Optional[str] = None,
-                       *, allow_server_key: bool = False) -> str:
+                       *, allow_server_key: bool = False, ai: bool = True) -> str:
     """Authorize an AI request and bind the client that will pay for it.
 
     Order is fixed by product decision: a Gumroad subscription wins, and only
@@ -702,6 +720,24 @@ async def require_auth(license_key: Optional[str],
     lic = _header_str(license_key)
     own = _header_str(anthropic_key)
 
+    # A subscription bought through billing/ covers Daily Matches and the
+    # features without AI (recruiters, points, referrals) — never the server's
+    # Claude key on the other AI features, which run on the caller's own key.
+    # The subscriber stays the identity either way. ai=False is for callers
+    # that only need to know who is asking (community routes).
+    from billing import service as billing_service
+    if lic and billing_service.is_own_key(lic):
+        if not ai and not own:
+            return await require_license(lic)
+        if not own:
+            raise _subscription_ai_error()
+        try:
+            identity = await require_license(lic)
+        except HTTPException:
+            identity = None
+        _bind_own_key(own)
+        return identity or f"byok:{hashlib.sha256(own.encode()).hexdigest()[:16]}"
+
     if lic:
         try:
             return await require_license(lic)
@@ -711,13 +747,7 @@ async def require_auth(license_key: Optional[str],
             print("[JMA:auth] license rejected, falling back to caller's own Claude key")
 
     if own:
-        if not own.startswith(ANTHROPIC_KEY_PREFIX):
-            raise HTTPException(status_code=401, detail=_coded(
-                "מפתח ה-Claude API לא נראה תקין — מפתח אמיתי מתחיל ב-sk-ant- ומועתק "
-                "במלואו מ-console.anthropic.com/settings/keys.",
-                ERR_KEY_INVALID))
-        _request_client.set(_byok_client(own))
-        print(f"[JMA:auth] BYOK mode key=sk-ant-****{own[-4:]}")
+        _bind_own_key(own)
         return f"byok:{hashlib.sha256(own.encode()).hexdigest()[:16]}"
 
     if allow_server_key:
