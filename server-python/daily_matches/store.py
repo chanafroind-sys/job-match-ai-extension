@@ -37,6 +37,7 @@ class JobFilter:
     published_since: datetime  # fresh: posted within config.FRESH_WINDOW
     categories: list[str] = field(default_factory=list)  # empty: every category
     excluded_seniority: list[str] = field(default_factory=list)
+    only_seniority: list[str] = field(default_factory=list)  # counting what a level left out
 
 
 async def vector_mode(session: AsyncSession) -> str:
@@ -193,6 +194,8 @@ def _orm_conditions(f: JobFilter) -> list:
         conds.append(DailyJobPool.category.in_(f.categories))
     if f.excluded_seniority:
         conds.append(DailyJobPool.seniority.not_in(f.excluded_seniority))
+    if f.only_seniority:
+        conds.append(DailyJobPool.seniority.in_(f.only_seniority))
     return conds
 
 
@@ -202,6 +205,15 @@ async def count_fresh(session: AsyncSession, f: JobFilter) -> int:
              .join(DmJobEmbedding, DmJobEmbedding.job_id == DailyJobPool.id)
              .where(DmJobEmbedding.model == config.EMBED_TAG, *_orm_conditions(f)))
     return int((await session.execute(query)).scalar() or 0)
+
+
+async def count_fresh_by_category(session: AsyncSession, f: JobFilter) -> dict[str, int]:
+    """count_fresh per category."""
+    query = (select(DailyJobPool.category, func.count()).select_from(DailyJobPool)
+             .join(DmJobEmbedding, DmJobEmbedding.job_id == DailyJobPool.id)
+             .where(DmJobEmbedding.model == config.EMBED_TAG, *_orm_conditions(f))
+             .group_by(DailyJobPool.category))
+    return {c: int(n) for c, n in (await session.execute(query)).all()}
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

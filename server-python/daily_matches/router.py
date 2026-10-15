@@ -49,6 +49,7 @@ class CvIn(BaseModel):
 
 class PrefsIn(BaseModel):
     level: Optional[Literal["junior", "mid", "senior", "lead"]] = None
+    days_back: Optional[int] = Field(None, ge=1, le=config.MAX_DAYS_BACK)
 
 
 class FactsIn(BaseModel):
@@ -212,6 +213,7 @@ async def run(body: RunIn, request: Request,
 
     cvs = [service.CvInput(id=c.id, label=c.label, text=c.text, focus=c.focus) for c in body.cvs]
     prefs = service.Prefs(level=body.prefs.level if body.prefs else None,
+                          days_back=body.prefs.days_back if body.prefs else None,
                           facts=body.facts.model_dump() if body.facts else None)
     return StreamingResponse(service.stream_run(cvs, body.primaryCvId, access, prefs),
                              media_type="text/event-stream", headers=service.SSE_HEADERS)

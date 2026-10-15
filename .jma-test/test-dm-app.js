@@ -190,10 +190,14 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('a finished build opens the deck', ctx.app.state.view === 'deck');
 
   const wide = events.map(e => (e.type === 'candidates'
-    ? { type: 'candidates', pool: 1601, embedded: 1601, fresh: 23, candidates: 3, fresh_all: 323, companies: 246 } : e));
+    ? { type: 'candidates', pool: 1601, embedded: 1601, fresh: 23, candidates: 3, fresh_all: 323, companies: 246,
+        other_fields: { 'Backend': 74, 'AI / ML': 49 }, excluded_by_level: 31 } : e));
   ctx = await boot({ statuses: [SUB(null)], runEvents: wide, storage: { cvText: CV, licenseKey: 'LIC' } });
   ctx.doc.querySelector('[data-act="build"]').click();
   await tick(200);
+  ok('what the choices left aside is kept with the run', ctx.storage.jma_dm_last_scope &&
+     ctx.storage.jma_dm_last_scope.run_id === 9 && ctx.storage.jma_dm_last_scope.excluded_by_level === 31 &&
+     ctx.storage.jma_dm_last_scope.other_fields['AI / ML'] === 49, JSON.stringify(ctx.storage.jma_dm_last_scope));
   ok('the build says how much was scanned before what was left for you',
      ctx.app.state.build.s1text.includes('סרקנו 1,601 משרות פעילות מ-246 חברות, 323 מהן חדשות') &&
      ctx.app.state.build.s1text.includes('23 חדשות בתחומים שלך'), ctx.app.state.build.s1text);
@@ -463,13 +467,18 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
      ctx.doc.querySelector('.dm-pitch-h').textContent.includes('הסוד לחפיסה גדולה') && !!ctx.doc.querySelector('.btn[data-act="library"]'));
   ctx.doc.querySelector('[data-act="set-level"][data-level="mid"]').click();
   await tick();
-  ok('choosing a level marks it and keeps it', ctx.doc.querySelector('.lvl.is-on').dataset.level === 'mid' &&
+  ok('choosing a level marks it and keeps it', ctx.doc.querySelector('[data-act="set-level"].is-on').dataset.level === 'mid' &&
      ctx.storage.jma_dm_cv_library.level === 'mid');
+  ok('how far back starts at three days', ctx.doc.querySelector('[data-act="set-days"].is-on').dataset.days === '3');
+  ctx.doc.querySelector('[data-act="set-days"][data-days="6"]').click();
+  await tick();
+  ok('and up to six can be chosen, and kept', ctx.doc.querySelector('[data-act="set-days"].is-on').dataset.days === '6' &&
+     ctx.storage.jma_dm_cv_library.daysBack === 6 && !ctx.doc.querySelector('[data-act="set-days"][data-days="7"]'));
   ctx.doc.querySelector('[data-act="build"]').click();
   await tick(200);
   let req = ctx.log.requests.find(r => r.path === '/run');
-  ok('the run sends each version\'s focus and the level', req && req.body.prefs.level === 'mid' &&
-     JSON.stringify(req.body.cvs[0].focus) === JSON.stringify(['Backend']));
+  ok('the run sends each version\'s focus, the level and how far back', req && req.body.prefs.level === 'mid' &&
+     req.body.prefs.days_back === 6 && JSON.stringify(req.body.cvs[0].focus) === JSON.stringify(['Backend']));
 
   ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV } });
   ctx.doc.querySelector('[data-act="library"]').click();
@@ -708,6 +717,14 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ctx.app.setView('end');
   ok('the end of the deck invites a look at the near misses', ctx.doc.body.textContent.includes('משרה אחת כמעט נכנסה') &&
      !!ctx.doc.querySelector('.en [data-act="skipped"]'));
+  ctx.app.state.scope = { run_id: ctx.app.state.run.id, other_fields: { 'AI / ML': 49, 'Backend': 12 }, excluded_by_level: 31 };
+  ctx.app.setView('end');
+  const aside = ctx.doc.querySelector('.dm-left-aside');
+  ok('and says what the person\'s own choices left out, by field and by level', !!aside &&
+     aside.textContent.includes('AI / ML') && aside.textContent.includes('49') && aside.textContent.includes('31'));
+  ctx.app.state.scope = { run_id: -1, other_fields: { 'AI / ML': 49 } };
+  ctx.app.setView('end');
+  ok('only for the run it was counted for', !ctx.doc.querySelector('.dm-left-aside'));
 
   // ── admins: the current method side by side with the plain question ──────────
   const honest = (verdict, answer, judged) => ({ model: 'claude-haiku-5-5', method: 'honest', verdict,

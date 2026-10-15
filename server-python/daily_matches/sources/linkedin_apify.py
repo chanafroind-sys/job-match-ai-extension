@@ -45,6 +45,9 @@ SEARCHES = _env_list("DM_APIFY_SEARCHES", [
     'hardware OR "chip design" OR ASIC OR FPGA OR VLSI OR "design verification" OR "verification engineer" '
     'OR "physical design" OR silicon OR "board design" OR algorithm OR algorithms '
     'OR "data analyst" OR "BI developer" OR "analytics engineer"',
+    # Hebrew titles, which the English searches don't match (2026-10-15).
+    'מפתח OR מפתחת OR מתכנת OR מתכנתת OR "מהנדס תוכנה" OR "מהנדסת תוכנה" OR "ראש צוות" OR "בודק תוכנה" '
+    'OR אוטומציה OR "אבטחת מידע" OR סייבר OR דאטה OR "מהנדס חומרה" OR אלגוריתמים OR קושחה',
 ])
 # Large employers whose own careers sites aren't read (bot-protected, like
 # jobs.iai.co.il, or on systems without a reader), searched by name and kept
@@ -75,6 +78,8 @@ TITLE_EXCLUDE = _env_list("DM_APIFY_TITLE_EXCLUDE", [
     "legal", "counsel", "finance", "accountant", "payroll", "hr", "people partner", "business development",
     "business developer", "business partner", "partner manager", "office manager", "bdr", "sdr", "procurement",
     "buyer", "administrative", "real estate", "interior", "landscape", "security guard", "security officer",
+    # What the Hebrew search's words also catch
+    "פיתוח עסקי", "מכירות", "גיוס", "שיווק", "חשבונות", "שירות לקוחות", "מוקד", "אבטחה פיזית", "מאבטח",
 ])
 SKIP_WEEKDAYS = (4, 5)  # Friday, Saturday (Python's weekday(): Monday is 0)
 MAX_PER_RUN = 1000  # the Actor's own maximum

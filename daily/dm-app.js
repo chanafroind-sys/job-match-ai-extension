@@ -29,6 +29,7 @@
     pendingApply: false, saved: [], busy: false, notice: '', level: null, newFocus: [],
     billing: { enabled: false }, buyError: '',
   };
+  const SCOPE_KEY = 'jma_dm_last_scope'; // what the last run's choices left aside
   const LEVELS = [['junior', 'ג׳וניור', '0-2 שנים'], ['mid', 'מיד', '2-5 שנים'], ['senior', 'סניור', '5+ שנים'],
     ['lead', 'ליד / ניהול', '']];
   const MAX_ANALYZED = 150; // server-python/daily_matches/config.py MAX_ANALYZED (250 on a first deck)
@@ -174,6 +175,30 @@
   const fieldsLegend = () => `<details class="fields-legend"><summary>מה כולל כל תחום?</summary><ul>${DM.cvLibrary.CATEGORIES.map(c =>
     `<li><b><bdi dir="ltr">${esc(c)}</bdi></b>: ${esc(DM.cvLibrary.CATEGORY_HINTS[c] || '')}</li>`).join('')}</ul></details>`;
 
+  // How far back to look, 1..6 days (3 unless chosen).
+  function daysBackCard() {
+    const now = state.daysBack || 3;
+    const btns = Array.from({ length: DM.cvLibrary.MAX_DAYS_BACK }, (_, i) => i + 1).map(d =>
+      `<button type="button" class="lvl${d === now ? ' is-on' : ''}" data-act="set-days" data-days="${d}" aria-pressed="${d === now}">${d === 1 ? 'יום' : `${d} ימים`}</button>`).join('');
+    return `<div class="dm-card-plain"><h2 class="dm-h2">כמה ימים אחורה לחפש</h2>
+      <div class="lvls days" role="group" aria-label="כמה ימים אחורה">${btns}</div>
+      <p class="dm-fine">משרות שפורסמו בימים האלה ועדיין פתוחות. משרה שכבר ראית לא תחזור, אז חלון רחב מוסיף רק משרות שעוד לא ראית.</p></div>`;
+  }
+
+  // What the run's own choices left aside: other fields, and a level left out.
+  function leftAside() {
+    const sc = state.scope;
+    if (!sc || !state.run || sc.run_id !== state.run.id) return '';
+    const fields = Object.entries(sc.other_fields || {}).slice(0, 6);
+    const lvl = sc.excluded_by_level || 0;
+    if (!fields.length && !lvl) return '';
+    const fieldRow = fields.length ? `<p class="dm-muted">משרות חדשות בתחומים שלא סימנת: ${fields.map(([c, n]) =>
+      `<b><bdi dir="ltr">${esc(c)}</bdi></b> ${fmtInt(n)}`).join(' · ')}</p>` : '';
+    const lvlRow = lvl ? `<p class="dm-muted">ועוד <b>${fmtInt(lvl)}</b> משרות חדשות בתחומים שלך לא נכנסו, כי הן לבכירים ובחרת ג׳וניור.</p>` : '';
+    return `<div class="dm-card-plain dm-left-aside"><h2 class="dm-h2">🔎 מה נשאר מחוץ לחפיסה</h2>${fieldRow}${lvlRow}
+      <button type="button" class="btn btn-secondary" data-act="library">📄 להוסיף תחומים</button></div>`;
+  }
+
   const levelButtons = () => LEVELS.map(([k, label, sub]) => `<button type="button" class="lvl${state.level === k ? ' is-on' : ''}" data-act="set-level" data-level="${k}" aria-pressed="${state.level === k}">${label}${sub ? `<small>${sub}</small>` : ''}</button>`).join('');
 
   // Before the first deck: the fields each version will be searched in, guessed
@@ -215,6 +240,7 @@
         <ul class="cv-list">${versions}</ul>
         ${versionsPitch(n)}
         ${n < DM.cvLibrary.MAX_VERSIONS ? '<button type="button" class="btn btn-secondary" data-act="library">➕ הוספת גרסת קו״ח</button>' : ''}</div>
+      ${daysBackCard()}
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2>
         <div class="lvls" role="group" aria-label="רמת ניסיון">${levels}</div>
         <p class="dm-fine">${state.level === 'junior' ? 'משרות לבכירים לא ייכנסו לחפיסה.' : 'נבדוק משרות בכל הרמות, גם ברמה נמוכה משלך.'}</p></div>
@@ -595,6 +621,7 @@
       <div class="dm-card-plain"><h2 class="dm-h2">🔖 נשמרו היום</h2>${saved.length ? saved.map(c => `<div class="en-row"><bdi dir="ltr">${esc(c.job.title)}</bdi><span>${c.match_score == null ? '' : c.match_score}</span></div>`).join('') : '<p class="dm-muted">עוד לא שמרת משרות.</p>'}
         <button type="button" class="link-btn" data-act="saved">כל המשרות השמורות</button></div>
       ${reelBtn}
+      ${leftAside()}
       ${moreNextTime()}
       ${nearNudge()}
       ${back('restart-deck', 'חזרה לחפיסה')}
@@ -612,6 +639,7 @@
     return `${topBar('✨ ההתאמות היומיות שלך')}<div class="dm-body">
       <div class="dm-card-plain"><div class="dm-big" aria-hidden="true">🌤️</div><h2 class="dm-h2">${head[0]}</h2><p class="dm-muted">${head[1]}</p>
         <p class="dm-fine">המאגר מתעדכן כל בוקר ב-6:00. אפשר גם להרחיב את התחומים או להוסיף גרסת קו״ח.</p></div>
+      ${leftAside()}
       ${nearNudge()}
       <div class="dm-stack"><button type="button" class="btn ${analyzed ? 'btn-primary' : 'btn-secondary'}" data-act="library">עריכת התחומים והגרסאות</button>
         ${analyzed ? '' : '<button type="button" class="btn btn-primary" data-act="build">חיפוש מחדש</button>'}
@@ -961,6 +989,7 @@
     try {
       await DM.api.run(payload, ev => {
         const b = state.build;
+        if (ev.type === 'started') b.runId = ev.run_id;
         if (ev.type === 'cv_text') DM.cvLibrary.cacheExtracted(ev.cv_id, ev.text).catch(() => {});
         else if (ev.type === 'cv_ready') b.s1text = 'קורות החיים מוכנים · מחפשים';
         else if (ev.type === 'candidates') {
@@ -972,6 +1001,10 @@
             : fresh > ev.candidates ? `✓ ${scope}${fmtInt(fresh)} חדשות בתחומים שלך · מנתחים את ${ev.candidates} הקרובות ביותר`
               : `✓ ${scope}${fmtInt(fresh)} חדשות בתחומים שלך`;
           Object.assign(b, { s1: 'done', s1text, s2: ev.candidates ? 'active' : 'done', total: ev.candidates });
+          if (b.runId && (ev.other_fields || ev.excluded_by_level != null)) {
+            state.scope = { run_id: b.runId, other_fields: ev.other_fields || {}, excluded_by_level: ev.excluded_by_level || 0 };
+            chrome.storage.local.set({ [SCOPE_KEY]: state.scope }).catch(() => {});
+          }
         } else if (ev.type === 'progress') {
           Object.assign(b, { done: ev.done, total: ev.total, s2text: `הושלמו ${ev.done} מתוך ${ev.total} ניתוחים` });
         } else if (ev.type === 'done') {
@@ -1042,6 +1075,8 @@
     }
     state.cvs = await DM.cvLibrary.list();
     state.level = await DM.cvLibrary.getLevel();
+    state.daysBack = await DM.cvLibrary.getDaysBack();
+    state.scope = (await chrome.storage.local.get(SCOPE_KEY))[SCOPE_KEY] || null;
     state.details = await DM.apply.getProfile();
     const s = state.status;
     if (!s || s.enabled === false) return setView('disabled');
@@ -1247,6 +1282,12 @@
         btn.classList.toggle('is-on', on);
         btn.setAttribute('aria-pressed', String(on));
         return undefined;
+      }
+      case 'set-days': {
+        const days = Number(btn.dataset.days);
+        await DM.cvLibrary.setDaysBack(days === 3 ? null : days);
+        state.daysBack = days === 3 ? null : days;
+        return render();
       }
       case 'set-level': {
         const level = btn.dataset.level === state.level ? null : btn.dataset.level;

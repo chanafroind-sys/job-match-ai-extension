@@ -118,6 +118,36 @@ async def test_focus_and_level_reach_the_pipeline(client):
     assert (await client.post("/api/daily-matches/run", headers=SUB, json=bad_level)).status_code == 422
 
 
+async def test_the_run_says_what_the_persons_choices_left_aside(client):
+    body = {"cvs": [{"id": "main", "label": "Backend", "text": BACKEND_CV, "focus": ["Backend"]}],
+            "primaryCvId": "main", "prefs": {"level": "junior"}}
+    events = _events(await client.post("/api/daily-matches/run", headers=SUB, json=body))
+    cand = next(e for e in events if e["type"] == "candidates")
+    # Other fields, at the person's level (Frontend and Hardware are Senior here); both Backend
+    # jobs are Senior too, which junior leaves out.
+    assert cand["other_fields"] == {"Data": 1}
+    assert cand["excluded_by_level"] == 2 and cand["candidates"] == 0
+
+
+async def test_how_far_back_is_the_persons_choice_up_to_six_days(client, db):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace as NS
+
+    from app.models.job_pool import DailyJobPool
+    from daily_matches import service
+    now = datetime.now(timezone.utc)
+    window = lambda days: now - service.job_filters(NS(subject="s"), [], service.Prefs(days_back=days), now)[0].published_since  # noqa: E731
+    assert window(None) == timedelta(days=3) and window(6) == timedelta(days=6) and window(9) == timedelta(days=6)
+    body = {"cvs": [{"id": "main", "label": "Data", "text": BACKEND_CV, "focus": ["Data"]}], "primaryCvId": "main"}
+    assert (await client.post("/api/daily-matches/run", headers=SUB,
+                              json={**body, "prefs": {"days_back": 7}})).status_code == 422
+    job = await db.get(DailyJobPool, "de1")
+    job.published_at = now - timedelta(days=5)  # still listed, posted 5 days ago
+    await db.commit()
+    six = _events(await client.post("/api/daily-matches/run", headers=SUB, json={**body, "prefs": {"days_back": 6}}))
+    assert next(e for e in six if e["type"] == "candidates")["candidates"] == 1
+
+
 async def test_a_version_named_after_a_long_file_name_still_builds(client):
     body = {"cvs": [{"id": "main", "label": "Backend", "text": BACKEND_CV},
                     {"id": "v1", "label": "קורות חיים מעודכנים אוקטובר 2026 גרסה לתפקידי דאטה ובינה מלאכותית סופי",

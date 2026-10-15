@@ -18,7 +18,8 @@ so it doesn't use them up either.
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from typing import AsyncIterator, Callable
 
 from fastapi import HTTPException
@@ -69,6 +70,7 @@ class CvInput:
 @dataclass
 class Prefs:
     level: str | None = None  # a config.LEVEL_EXCLUDES key, or None for any level
+    days_back: int | None = None  # how far back to look, 1..config.MAX_DAYS_BACK; None: FRESH_WINDOW
     # The person's own answers about what the CV doesn't say (a degree, a
     # driver's license, skills): evidence for the analysis (reasoning.render_facts).
     facts: dict | None = None
@@ -200,11 +202,30 @@ def job_filters(access: Access, prepared: list[_PreparedCv], prefs: Prefs,
     excluded = list(config.LEVEL_EXCLUDES.get(prefs.level or "", ()))
     union = sorted({c for cv in prepared for c in cv.focus})
 
+    window = (timedelta(days=max(1, min(config.MAX_DAYS_BACK, prefs.days_back))) if prefs.days_back
+              else config.FRESH_WINDOW)
+
     def make(categories: list[str]) -> store.JobFilter:
         return store.JobFilter(subject=access.subject, active_since=now - config.ACTIVE_WINDOW,
-                               published_since=now - config.FRESH_WINDOW,
+                               published_since=now - window,
                                categories=categories, excluded_seniority=excluded)
     return make(union), {cv.alias: make(cv.focus or union) for cv in prepared}
+
+
+async def _left_aside(session, run_filter: store.JobFilter) -> dict:
+    """What the person's own choices left out of this run, so they can widen
+    it: new jobs in the fields they didn't mark, and in their fields at a
+    level they excluded (owner's ideas, 2026-10-15)."""
+    out: dict = {}
+    if run_filter.categories:
+        every = replace(run_filter, categories=[])
+        by_cat = await store.count_fresh_by_category(session, every)
+        out["other_fields"] = {c: n for c, n in sorted(by_cat.items(), key=lambda kv: -kv[1])
+                               if c not in run_filter.categories and n}
+    if run_filter.excluded_seniority:
+        out["excluded_by_level"] = await store.count_fresh(session, replace(
+            run_filter, excluded_seniority=[], only_seniority=list(run_filter.excluded_seniority)))
+    return out
 
 
 # ── The pipeline ──────────────────────────────────────────────────────────────
@@ -427,7 +448,8 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             # user who saw only "23 new jobs in your fields" thought the pool was small).
             emit({"type": "candidates", "pool": counts["active"], "embedded": counts["embedded"],
                   "fresh": fresh_total, "candidates": len(candidates), "fresh_all": counts["fresh"],
-                  "companies": await store.count_companies(session, run_filter.active_since)})
+                  "companies": await store.count_companies(session, run_filter.active_since),
+                  **await _left_aside(session, run_filter)})
 
             if not candidates:
                 # A quiet day: nothing new in this person's fields. Nothing was spent,

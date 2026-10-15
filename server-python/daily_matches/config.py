@@ -107,6 +107,9 @@ OPENROUTER_TIMEOUT_S = 90.0
 # A deck holds only jobs published in the last FRESH_WINDOW that this person
 # was never shown or analyzed for: for a daily user, the last day's jobs.
 FRESH_WINDOW = timedelta(days=3)
+# How far back a person may choose to look (Prefs.days_back), among the jobs
+# still listed in the pool: older ones aren't there. Owner's call, 2026-10-15.
+MAX_DAYS_BACK = 6
 # LLM calls per run; the cost cap (~$0.0006 a job with Haiku 5.5). A person's
 # first deck (the free trial, or a new subscriber's first day) gets more, to
 # show everything new in their fields; after that each day only pays for

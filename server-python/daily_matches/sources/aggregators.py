@@ -86,6 +86,16 @@ def _text(value) -> str:
 # a Hebrew title gets these English words added for classification only; the
 # stored title stays as posted.
 _HEBREW_HINTS = [
+    # Business development is not a developer (checked by the pool before anything else).
+    (r"פיתוח\s+עסקי", "business development"),
+    # Specific roles first: they decide the field (AI / ML before Data, in the pool's order).
+    (r"מדענ?\S*\s+(?:ה)?נתונים|דאטה\s+סיינטיסט", "data scientist"),
+    (r"אנליסט\S*\s+(?:ה)?נתונים|ניתוח\s+נתונים", "data analyst"),
+    (r"אלגוריתמ", "algorithm engineer"), (r"קושח", "firmware"), (r"חומרה", "hardware"),
+    (r"(?:מהנדס\S*\s+)?אימות(?:\s+שבבים)?", "design verification"), (r"ענן", "cloud engineer"),
+    (r"בדיקות", "qa"), (r"תו?כניתנ|תו?כניתן", "developer"),
+    (r"ראש\s+צוות\s+(?:פיתוח|תוכנה)", "dev team lead"),
+    (r"מנהל\S*\s+(?:קבוצת\s+)?(?:פיתוח|תוכנה|הנדסה)", "engineering manager"),
     (r"פול\s*-?\s*סטא?ק|פולסטא?ק", "full stack"), (r"צד\s+שרת|בקאנד|בק\s*-?\s*אנד", "backend"),
     (r"צד\s+לקוח|פרונט\s*-?\s*אנד|פרונטאנד", "frontend"), (r"דב\s*-?\s*אופס|דבאופס", "devops"),
     (r"אוטומציה", "automation engineer"), (r"בודק(?:/ת|ת)?\s+תוכנה|בדיקות\s+תוכנה|\bQA\b", "qa"),

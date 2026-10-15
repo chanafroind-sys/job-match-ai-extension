@@ -549,6 +549,17 @@ class TestHebrewTitles:
         ("בודק/ת תוכנה - אוטומציה", "QA", "Unknown"),
         ("מהנדס/ת דאטה", "Data", "Unknown"),
         ("ראש צוות פיתוח צד שרת", "Backend", "Senior"),
+        # Missed until 2026-10-15
+        ("מהנדס/ת אלגוריתמים", "AI / ML", "Unknown"),
+        ("מדען/ית נתונים", "AI / ML", "Unknown"),  # a Data Scientist, as the pool sorts it
+        ("אנליסט/ית נתונים", "Data", "Unknown"),
+        ("מהנדס/ת חומרה", "Hardware", "Unknown"),
+        ("מהנדס/ת אימות שבבים", "Hardware", "Unknown"),
+        ("מהנדס/ת קושחה", "Embedded", "Unknown"),
+        ("מהנדס/ת ענן", "DevOps", "Unknown"),
+        ("מהנדס/ת בדיקות", "QA", "Unknown"),
+        ("תכניתן/ית", "Backend", "Unknown"),
+        ("מנהל/ת פיתוח", "Backend", "Senior"),
     ])
     async def test_hebrew_titles_are_classified_and_kept_as_posted(self, title, category, seniority):
         records, _ = await aggregators.fetch_jobspy("indeed", ["x"], scrape=FakeScrape({"indeed": [_li("h1", title, "Acme")]}))

@@ -278,6 +278,20 @@
     await _save(lib);
   }
 
+  // How far back a deck looks for new jobs, 1..6 days (server config.MAX_DAYS_BACK);
+  // null: the server's default (3). Only jobs still listed, and never one already seen.
+  const MAX_DAYS_BACK = 6;
+  async function getDaysBack() {
+    const d = (await _load()).daysBack;
+    return Number.isInteger(d) && d >= 1 && d <= MAX_DAYS_BACK ? d : null;
+  }
+
+  async function setDaysBack(days) {
+    const lib = await _load();
+    lib.daysBack = Number.isInteger(days) && days >= 1 && days <= MAX_DAYS_BACK ? days : null;
+    await _save(lib);
+  }
+
   async function rename(id, label) {
     const clean = (label || '').trim().slice(0, 60);
     if (!clean) return;
@@ -324,14 +338,14 @@
     return {
       cvs: versions.map(v => ({ id: v.id, label: v.label, text: v.text, focus: effectiveFocus(v) })),
       primaryCvId: versions.length ? versions[0].id : null,
-      prefs: { level: await getLevel() },
+      prefs: { level: await getLevel(), ...((await getDaysBack()) ? { days_back: await getDaysBack() } : {}) },
     };
   }
 
   root.JMA_DM = root.JMA_DM || {};
   root.JMA_DM.cvLibrary = {
     MAX_VERSIONS, CATEGORIES, CATEGORY_HINTS, LEVELS, list, add, rename, remove, cacheExtracted, getFile, runPayload,
-    isPdfBlob, suggestRelated,
+    isPdfBlob, suggestRelated, getDaysBack, setDaysBack, MAX_DAYS_BACK,
     setFocus, getLevel, setLevel, attachMainFile, suggestFocus, effectiveFocus, getFocusConfirmed, setFocusConfirmed,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : self);
