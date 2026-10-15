@@ -118,7 +118,7 @@
     return `<div class="dm-center"><div class="spinner" aria-hidden="true"></div><p class="dm-muted">טוען…</p>
       <p class="dm-fine dm-wake" id="dmWake" hidden>השרת מתעורר. בפעם הראשונה ביום זה לוקח עד דקה.</p>
       <ul class="dm-pitch">
-        <li><span aria-hidden="true">🌅</span>מאות משרות הייטק חדשות כל בוקר, ממאות חברות</li>
+        <li><span aria-hidden="true">🌅</span>רוב משרות ההייטק החדשות בישראל, כל בוקר במקום אחד</li>
         <li><span aria-hidden="true">🎯</span>רק מה שמתאים לקורות החיים שלך, עם ציון מוסבר</li>
         <li><span aria-hidden="true">🎞️</span>גלגלת הגשה מהירה: מגישים, שומרים או מדלגים</li>
         <li><span aria-hidden="true">⚡</span>גרסת הקו״ח המומלצת לכל משרה, ומילוי אוטומטי של הטופס כשאפשר</li>
