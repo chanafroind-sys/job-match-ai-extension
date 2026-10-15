@@ -25,6 +25,8 @@ let stateQ = {
 // וההפרדה האמיתית נאכפת ברמת ה-Storage ע"י whitelist ב-saveJobState.
 const state = stateQ;
 
+// One model for everyone: Fable was removed on 2026-10-15 (its quota was only enforced here,
+// and the server now maps any "fable" request to Sonnet).
 let cvOptions = { language: 'english', format: 'docx', coverLetter: false, tracking: true, model: 'sonnet' };
 
 // ── Monthly quota constants ────────────────────────────────────────────────────
@@ -1619,11 +1621,8 @@ function _appendQuestionsOptions(container) {
   modelRow.innerHTML = `
     <div class="settings-label" style="margin:14px 0 7px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">🤖 מודל ניתוח</div>
     <div class="cv-opts-row">
-      <button class="cv-opt-btn ${cvOptions.model !== 'fable' ? 'active' : ''}" data-model="sonnet">
+      <button class="cv-opt-btn active" data-model="sonnet">
         ⚡ Sonnet <span class="model-quota-badge" id="sonnetQuota"></span>
-      </button>
-      <button class="cv-opt-btn ${cvOptions.model === 'fable' ? 'active' : ''}" data-model="fable">
-        🔥 Fable <span class="model-quota-badge" id="fableQuota"></span>
       </button>
     </div>
     <div class="model-hint" id="modelHint"></div>
@@ -2362,11 +2361,8 @@ function showCVOptionsScreen() {
     <div class="cv-opts-section">
       <div class="settings-label">🤖 מודל ניתוח</div>
       <div class="cv-opts-row" id="cvoModelRow">
-        <button class="cv-opt-btn ${cvOptions.model !== 'fable' ? 'active' : ''}" data-cvo-model="sonnet">
+        <button class="cv-opt-btn active" data-cvo-model="sonnet">
           ⚡ Sonnet <span class="model-quota-badge" id="sonnetQuota"></span>
-        </button>
-        <button class="cv-opt-btn ${cvOptions.model === 'fable' ? 'active' : ''}" data-cvo-model="fable">
-          🔥 Fable <span class="model-quota-badge" id="fableQuota"></span>
         </button>
       </div>
       <div class="model-hint" id="modelHint" style="margin-top:4px;font-size:11px;color:var(--text-muted)"></div>

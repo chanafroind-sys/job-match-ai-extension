@@ -166,7 +166,7 @@ class TestGenerateCVStrategyInjection:
         assert "Verify the USER STRATEGY DECISIONS were followed exactly." in pass2_prompt
 
 
-HAIKU = "claude-haiku-4-5-20251001"
+HAIKU = "claude-haiku-5-5"
 
 
 def _patch_common(monkeypatch, models_seen=None, notes_seen=None):
@@ -202,7 +202,7 @@ class TestFitBasedRouting:
         body = GenerateCVRequest(cvText="CV", jobText="Job", fitType="niche_fit", model="sonnet")
         await main_module.generate_cv(body, x_license_key="lic")
         assert models[0] == HAIKU
-        assert models[1] == "claude-sonnet-4-6"
+        assert models[1] == "claude-sonnet-5-5"
 
     @pytest.mark.asyncio
     async def test_unknown_fit_keeps_full_pipeline(self, monkeypatch):
@@ -210,7 +210,7 @@ class TestFitBasedRouting:
         _patch_common(monkeypatch, models_seen=models)
         body = GenerateCVRequest(cvText="CV", jobText="Job", fitType="", model="sonnet")
         await main_module.generate_cv(body, x_license_key="lic")
-        assert models[1] == "claude-sonnet-4-6"
+        assert models[1] == "claude-sonnet-5-5"
 
     @pytest.mark.asyncio
     async def test_high_fit_with_strategy_choices_keeps_sonnet(self, monkeypatch):
@@ -222,7 +222,7 @@ class TestFitBasedRouting:
             strategyChoices=[{"question": "q", "chosen": "a"}],
         )
         await main_module.generate_cv(body, x_license_key="lic")
-        assert models[1] == "claude-sonnet-4-6"
+        assert models[1] == "claude-sonnet-5-5"
 
     @pytest.mark.asyncio
     async def test_niche_fit_all_light_choices_falls_back_to_haiku(self, monkeypatch):
@@ -265,7 +265,7 @@ class TestFitBasedRouting:
             ],
         )
         await main_module.generate_cv(body, x_license_key="lic")
-        assert models[1] == "claude-sonnet-4-6"
+        assert models[1] == "claude-sonnet-5-5"
 
     @pytest.mark.asyncio
     async def test_niche_fit_missing_impact_tag_keeps_sonnet(self, monkeypatch):
@@ -277,7 +277,7 @@ class TestFitBasedRouting:
             strategyChoices=[{"question": "q1", "chosen": "keep full detail"}],
         )
         await main_module.generate_cv(body, x_license_key="lic")
-        assert models[1] == "claude-sonnet-4-6"
+        assert models[1] == "claude-sonnet-5-5"
 
 
 class TestLightPolishPromptNote:

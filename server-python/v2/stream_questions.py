@@ -28,10 +28,13 @@ from pydantic import BaseModel
 
 # Shared infrastructure only — no V1 flow logic is imported.
 from main import (
+    MODEL_FAST,
+    MODEL_SMART,
     call_claude_cached,
     parse_json_response,
     require_auth,
     _ac,
+    _no_thinking,
     _resolve_model,
 )
 from v2.router import router
@@ -40,7 +43,7 @@ from v2.router import router
 class StreamQuestionsRequest(BaseModel):
     cvText:     str = ""
     jobText:    str = ""
-    model:      str = "claude-sonnet-4-6"
+    model:      str = MODEL_SMART
     baseScore:  int = -1
     gapPct:     int = -1
 
@@ -270,7 +273,7 @@ async def stream_questions_endpoint(
                         job_text=job_text,
                     ),
                     max_tokens=1800,
-                    model="claude-3-5-haiku",
+                    model=MODEL_FAST,  # was "claude-3-5-haiku", not a model ID: this call always failed
                 )
                 if stop1 != "max_tokens":
                     a = parse_json_response(raw1)
@@ -306,10 +309,11 @@ async def stream_questions_endpoint(
             )
             try:
                 async with _ac().messages.stream(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_SMART,
                     max_tokens=700,
                     system=sys_blocks,
                     messages=[{"role": "user", "content": prompt}],
+                    **_no_thinking(MODEL_SMART),
                 ) as stream:
                     async for sse_chunk in _stream_q_parse(stream.text_stream):
                         yield sse_chunk

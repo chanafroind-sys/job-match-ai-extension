@@ -24,7 +24,7 @@ from typing import Optional
 from fastapi import Depends
 from pydantic import BaseModel
 
-from main import call_claude_cached, parse_json_response
+from main import MODEL_FAST, MODEL_SMART, call_claude_cached, parse_json_response
 from app.core.deps import get_current_user
 from app.core.models import User
 from v2.router import router
@@ -32,12 +32,12 @@ from v2.router import router
 # Same Haiku ID the rest of the backend uses (see [[anthropic-model-ids]]);
 # classification and the constrained baseline groom are cheap/mechanical, so
 # Haiku is plenty and keeps the live UI snappy.
-_TAILOR_MODEL = "claude-haiku-4-5-20251001"
+_TAILOR_MODEL = MODEL_FAST
 # The niche restructure is the one genuinely hard judgement call in the flow —
 # it decides what to cut and how to re-angle a career story — so it runs on the
 # stronger model. It fires once, only when the user explicitly opts in, so the
 # extra cost is bounded (and the cached CV+JD prefix keeps it cheap).
-_TAILOR_MODEL_ADVANCED = "claude-sonnet-4-6"
+_TAILOR_MODEL_ADVANCED = MODEL_SMART
 
 # Recruiter-craft rules distilled from professional CV-writing guidance. Kept
 # as a shared constant so both transforms speak the same language, and kept

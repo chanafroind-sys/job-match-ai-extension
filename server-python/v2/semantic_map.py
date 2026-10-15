@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends
 
-from main import call_claude_cached
+from main import MODEL_FAST, call_claude_cached
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.core.models import User
@@ -154,7 +154,7 @@ async def semantic_map_endpoint(
             # score), so its typo stayed latent there. Here the AI runs every
             # time, so the bad ID made the API reject every call and the row
             # never saved.
-            model="claude-haiku-4-5-20251001",
+            model=MODEL_FAST,
         )
         parsed = json.loads(repair_json(raw if isinstance(raw, str) else str(raw)))
         raw_blocks = parsed.get("blocks", []) if isinstance(parsed, dict) else []

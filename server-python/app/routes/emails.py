@@ -69,7 +69,7 @@ async def draft_recruiter_letter(
     body: RecruiterLetterRequest,
     user: User = Depends(get_current_user),
 ):
-    from main import call_claude, parse_json_response
+    from main import MODEL_FAST, call_claude, parse_json_response
 
     job_text = (body.jobText or "")[:2000]
     he_chars = sum(1 for c in job_text[:300] if "א" <= c <= "ת")
@@ -84,7 +84,7 @@ async def draft_recruiter_letter(
         job_text=job_text,
     )
 
-    raw = await call_claude(prompt, max_tokens=700, model="claude-haiku-4-5-20251001")
+    raw = await call_claude(prompt, max_tokens=700, model=MODEL_FAST)
     try:
         parsed = parse_json_response(raw)
     except Exception:

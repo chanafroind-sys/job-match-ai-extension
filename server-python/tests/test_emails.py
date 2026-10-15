@@ -43,7 +43,7 @@ async def test_draft_letter_uses_haiku_model(db, user):
 
     assert resp["subject"] == "Backend Developer role"
     assert resp["body"] == "Hello, I'm a great fit."
-    assert mock_call.call_args.kwargs["model"] == "claude-haiku-4-5-20251001"
+    assert mock_call.call_args.kwargs["model"] == "claude-haiku-5-5"
 
 
 async def test_draft_letter_truncates_long_body(db, user):

@@ -725,7 +725,7 @@ async def require_auth(license_key: Optional[str],
 #     for attempt in range(1, 4):
 #         try:
 #             message = await anthropic_client.messages.create(
-#                 model="claude-haiku-4-5-20251001",
+#                 model=MODEL_FAST,
 #                 max_tokens=max_tokens,
 #                 messages=[{"role": "user", "content": prompt}],
 #             )
@@ -748,7 +748,31 @@ def _retryable(exc: Exception) -> bool:
     return True
 
 
-async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-haiku-4-5-20251001",
+
+# ── Models ────────────────────────────────────────────────────────────────────
+# One place for the models every feature uses (2026-10-15, the owner's call,
+# before any subscriber): Haiku 5.5 is a tenth of Haiku 4.5's price, Sonnet 5.5
+# two thirds of Sonnet 4.6's. Fable is retired: its quota lived only in the
+# extension, so "fable" now resolves to Sonnet.
+MODEL_FAST = "claude-haiku-5-5"
+MODEL_SMART = "claude-sonnet-5-5"
+
+
+def _no_thinking(model: str) -> dict:
+    """Request options that keep a 5.x model from thinking before it answers.
+    Both think by default; every prompt here was written, and every max_tokens
+    sized, for a model that answers straight away (a 12-token score, a 1-token
+    key check), and thinking is billed as output. Haiku 5.5 takes
+    thinking "disabled" (at its default effort); Sonnet 5.5 refuses that and
+    takes "between_tools", which with no tools means none."""
+    if model.startswith("claude-haiku-5"):
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    if model.startswith("claude-sonnet-5"):
+        return {"extra_body": {"thinking": {"type": "between_tools"}}}
+    return {}
+
+
+async def call_claude(prompt: str, max_tokens: int = 1200, model: str = MODEL_FAST,
                        check_truncation: bool = False) -> str:
     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
     last_exc: Exception | None = None
@@ -758,6 +782,7 @@ async def call_claude(prompt: str, max_tokens: int = 1200, model: str = "claude-
                 model=model,
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
+                **_no_thinking(model),
             )
             result = "".join(block.text for block in message.content if hasattr(block, "text"))
             print(f"[JMA:claude] attempt={attempt} response_len={len(result)} stop_reason={message.stop_reason}")
@@ -780,7 +805,7 @@ async def call_claude_cached(
     system_blocks: list,
     user_content: str,
     max_tokens: int = 1200,
-    model: str = "claude-sonnet-4-6",
+    model: str = MODEL_SMART,
 ) -> tuple[str, str]:
     """Call Claude with a cached system prompt. Returns (text, stop_reason)."""
     total_sys = sum(len(b.get("text", "")) for b in system_blocks)
@@ -793,6 +818,7 @@ async def call_claude_cached(
                 max_tokens=max_tokens,
                 system=system_blocks,
                 messages=[{"role": "user", "content": user_content}],
+                **_no_thinking(model),
             )
             result = "".join(block.text for block in message.content if hasattr(block, "text"))
             stop   = message.stop_reason or "end_turn"
@@ -1415,11 +1441,9 @@ Output ONLY the cover letter text — no explanations, no labels, no markdown.
 
 def _resolve_model(model_alias: str) -> str:
     """Map user-facing alias to actual Anthropic model ID."""
-    if model_alias == "fable":
-        return "claude-fable-5"
     if model_alias == "haiku":
-        return "claude-haiku-4-5-20251001"
-    return "claude-sonnet-4-6"  # default
+        return MODEL_FAST
+    return MODEL_SMART  # default, and "fable" (retired 2026-10-15)
 
 # ── Request / Response models ─────────────────────────────────────────────────
 
@@ -1432,7 +1456,7 @@ class AnalyzeRequest(BaseModel):
     jobText: str
     answers: list = []
     preflight: bool = False
-    model: str = "claude-sonnet-4-6"
+    model: str = MODEL_SMART
 
 class GenerateCVRequest(BaseModel):
     licenseKey: Optional[str] = None
@@ -1868,7 +1892,7 @@ async def extract_profile(body: ExtractProfileRequest,
             system_blocks=system_blocks,
             user_content=user_content,
             max_tokens=8192,
-            model="claude-sonnet-4-6",  # מבוסס על ה-Claude API ID מהטבלה שלך
+            model=MODEL_SMART,
         )
         if stop == "max_tokens":
             print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
@@ -1921,7 +1945,7 @@ async def extract_profile(body: ExtractProfileRequest,
 #             system_blocks=system_blocks,
 #             user_content=user_content,
 #             max_tokens=8192,
-#             model="claude-sonnet-4-6",
+#             model=MODEL_SMART,
 #         )
 #         if stop == "max_tokens":
 #             print("[JMA:extract_profile] truncated (max_tokens) — attempting partial parse")
@@ -1957,7 +1981,7 @@ async def extract_profile(body: ExtractProfileRequest,
 #     )
 #     try:
 #         resp = await anthropic_client.messages.create(
-#             model="claude-haiku-4-5-20251001",
+#             model=MODEL_FAST,
 #             max_tokens=110,
 #             messages=[{"role": "user", "content": prompt}],
 #         )
@@ -1976,13 +2000,13 @@ class AnalyzeStreamRequest(BaseModel):
     jobText: str = ""
     answers: list[dict] = []
     userConstraints: str = ""
-    model: str = "claude-sonnet-4-6"
+    model: str = MODEL_SMART
 
 
 class StreamQuestionsRequest(BaseModel):
     cvText:     str = ""
     jobText:    str = ""
-    model:      str = "claude-sonnet-4-6"
+    model:      str = MODEL_SMART
     baseScore:  int = -1
     gapPct:     int = -1
 
@@ -2219,7 +2243,7 @@ async def stream_questions_endpoint(
                         job_text=job_text,
                     ),
                     max_tokens=1800,
-                    model="claude-3-5-haiku",
+                    model=MODEL_FAST,  # was "claude-3-5-haiku", not a model ID: this call always failed
                 )
                 if stop1 != "max_tokens":
                     a = parse_json_response(raw1)
@@ -2255,10 +2279,11 @@ async def stream_questions_endpoint(
             )
             try:
                 async with _ac().messages.stream(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_SMART,
                     max_tokens=700,
                     system=sys_blocks,
                     messages=[{"role": "user", "content": prompt}],
+                    **_no_thinking(MODEL_SMART),
                 ) as stream:
                     async for sse_chunk in _stream_q_parse(stream.text_stream):
                         yield sse_chunk
@@ -2484,10 +2509,11 @@ async def stream_deep_analysis(body: DeepAnalysisRequest,
 
         try:
             async with _ac().messages.stream(
-                model="claude-haiku-4-5-20251001",
+                model=MODEL_FAST,
                 max_tokens=1500,
                 system=sys_blocks,
                 messages=[{"role": "user", "content": prompt}],
+                **_no_thinking(MODEL_FAST),
             ) as stream:
                 async for token in stream.text_stream:
                     buf += token
@@ -2598,6 +2624,7 @@ async def analyze_stream(body: AnalyzeStreamRequest,
                 max_tokens=600,
                 system=sys_blocks,
                 messages=[{"role": "user", "content": question_prompt}],
+                **_no_thinking(resolved_model),
             ) as stream:
                 async for chunk in stream.text_stream:
                     buffer += chunk
@@ -2627,6 +2654,7 @@ async def analyze_stream(body: AnalyzeStreamRequest,
                 max_tokens=500,
                 system=sys_blocks,
                 messages=[{"role": "user", "content": analysis_prompt}],
+                **_no_thinking(resolved_model),
             ) as stream:
                 async for chunk in stream.text_stream:
                     yield f"data: {json.dumps({'text': chunk})}\n\n"
@@ -2668,9 +2696,10 @@ async def score_answer(body: ScoreAnswerRequest,
     )
     try:
         resp = await _ac().messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=MODEL_FAST,
             max_tokens=12,
             messages=[{"role": "user", "content": prompt}],
+            **_no_thinking(MODEL_FAST),
         )
         raw = resp.content[0].text.strip()
         data = _safe_json_loads(raw)
@@ -2725,9 +2754,10 @@ async def verify_anthropic_key(body: VerifyAnthropicKeyRequest,
     _request_client.set(client)   # so ai_error() words failures for a personal key
     try:
         await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=MODEL_FAST,
             max_tokens=1,
             messages=[{"role": "user", "content": "hi"}],
+            **_no_thinking(MODEL_FAST),
         )
     except HTTPException:
         raise
@@ -2914,7 +2944,7 @@ async def generate_cv(body: GenerateCVRequest,
         (body.fitType == "high_fit" and not body.strategyChoices)
         or (body.fitType == "niche_fit" and choices_opt_out)
     )
-    pass2_model = "claude-haiku-4-5-20251001" if light_polish else _resolve_model(body.model)
+    pass2_model = MODEL_FAST if light_polish else _resolve_model(body.model)
     print(f"[JMA:generate_cv] fitType={body.fitType!r} strategy_choices={len(body.strategyChoices)} "
           f"opt_out={choices_opt_out} route={'light-polish/haiku' if light_polish else f'full/{pass2_model}'}")
 
@@ -2987,7 +3017,7 @@ async def generate_cv(body: GenerateCVRequest,
     ) + url_instruction + constraints_block + strategy_block + light_note
     cv_draft = await _call_with_cached_prefix(
         pass1_prompt, max_tokens=4000,
-        model="claude-haiku-4-5-20251001", check_truncation=True,
+        model=MODEL_FAST, check_truncation=True,
     )
 
     pass2_prompt = CV_PASS2_PROMPT.format(
