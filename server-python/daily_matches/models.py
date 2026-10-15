@@ -140,6 +140,18 @@ class DmPipelineDay(Base):
     summary: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class DmPaidJob(Base):
+    """A job a paid source charged for (LinkedIn through Apify), kept a few
+    days so it's never paid for again: also the ones the pool didn't keep
+    (not tech, or a copy of a company board's job)."""
+
+    __tablename__ = "dm_paid_jobs"
+
+    source: Mapped[str] = mapped_column(String(20), primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
 class DmTrial(Base):
     """One free run per install and per CV, ever. A row is reserved when a trial
     run starts and becomes consumed only if the run delivers cards; a failed

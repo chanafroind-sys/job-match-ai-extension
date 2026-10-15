@@ -34,9 +34,12 @@ def test_upgrade_downgrade_upgrade(tmp_path):
     # SQLite gets the JSON fallback, never vector(...)
     assert _columns(db_file, "dm_job_embeddings")["embedding"] == "JSON"
     assert "tier" in _columns(db_file, "dm_run_results") and "fresh_jobs" in _columns(db_file, "dm_runs")
-    assert "dm_sources" in tables and "dm_pipeline_days" in tables
+    assert "dm_sources" in tables and "dm_pipeline_days" in tables and "dm_paid_jobs" in tables
     with sqlite3.connect(db_file) as con:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "a4c9e2f7b1d5"
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "b7d3f1a9c2e4"
+
+    _alembic(db_file, "downgrade", "-1")  # the paid-for jobs go
+    assert "dm_paid_jobs" not in _tables(db_file) and "dm_pipeline_days" in _tables(db_file)
 
     _alembic(db_file, "downgrade", "-1")  # the daily collection summaries go
     assert "dm_pipeline_days" not in _tables(db_file) and "dm_sources" in _tables(db_file)

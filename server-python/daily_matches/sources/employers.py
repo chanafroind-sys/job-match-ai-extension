@@ -12,7 +12,7 @@ Amazon and Microsoft run their own systems, read by bigtech.py.
 
 Not here, because no reader exists for their systems yet: Google, Apple and
 Meta (their own sites), Amdocs and Qualcomm (Eightfold),
-Check Point, Wix, monday.com and Elbit (own or unidentified), Booking
+Wix, monday.com and Elbit (own or unidentified), Booking
 (iCIMS), Synopsys (Avature). Dell's Workday board refused the query (422).
 """
 
@@ -44,4 +44,5 @@ SEED_BOARDS: tuple[tuple[str, dict, str], ...] = (
     # Asked for by the owner on 2026-10-15.
     ("ashby", {"board": "zafran-security"}, "Zafran"),  # 3
     ("hibob", {"host": "hibob-fa0ad69d0cb34a.careers.hibob.com"}, "HiBob"),  # 20 in Israel, of them the tech ones
+    ("checkpoint", {"slug": "israel", "country": "Israel"}, "Check Point"),  # 94 in Israel (checkpoint.py)
 )

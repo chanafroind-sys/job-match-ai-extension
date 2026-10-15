@@ -72,7 +72,8 @@ def day_summary(report: dict) -> dict:
         "new_by_source": dict(sorted(new.items(), key=lambda kv: -kv[1])),
         "new_total": sum(new.values()),
         "linkedin": {k: li[k] for k in ("cards", "jobs", "blocked", "cooldowns", "via_proxy", "mb", "markup_suspect",
-                                        "via_apify", "skipped", "cost_usd", "budget_capped", "credit")
+                                        "via_apify", "skipped", "cost_usd", "budget_capped", "credit",
+                                        "not_tech", "short_description")
                      if k in li},
         "registry": {k: (extra.get("registry") or {}).get(k) for k in ("boards", "failed", "jobs")},
         "new_boards": (extra.get("new_boards") or {}).get("discovered") or {},

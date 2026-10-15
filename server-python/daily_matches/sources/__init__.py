@@ -24,9 +24,10 @@ import logging
 from collections import Counter
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.models.job_pool import DailyJobPool
+from daily_matches.models import DmPaidJob
 from app.services import job_aggregator as agg
 from daily_matches import config
 from daily_matches.sources import aggregators, linkedin as linkedin_source, linkedin_apify, probe, registry
@@ -35,6 +36,7 @@ from daily_matches.sources.dedupe import drop_copies, job_key
 logger = logging.getLogger(__name__)
 
 NEW_BOARDS_PER_DAY = 60  # newly discovered boards read on the day they're found
+PAID_MEMORY = timedelta(days=5)  # a paid-for job isn't paid for again within this (dm_paid_jobs)
 
 
 async def _known_keys(session) -> dict[str, str]:
@@ -54,6 +56,35 @@ async def _linkedin_ids(session) -> list[str]:
     return [r for (r,) in rows if r]
 
 
+async def _paid_ids(session) -> list[str]:
+    """LinkedIn jobs Apify charged for in the last days, kept or not. A
+    database without the table yet (before Render's migration) skips none."""
+    try:
+        rows = await session.execute(select(DmPaidJob.external_id).where(
+            DmPaidJob.source == "linkedin", DmPaidJob.paid_at >= config.utcnow() - PAID_MEMORY))
+        return [r for (r,) in rows]
+    except Exception as exc:  # noqa: BLE001
+        await session.rollback()
+        logger.warning("[DM] paid jobs not read: %s", type(exc).__name__)
+        return []
+
+
+async def _remember_paid(session, ids: list[str]) -> None:
+    if not ids:
+        return
+    now = config.utcnow()
+    try:
+        await session.execute(delete(DmPaidJob).where(DmPaidJob.paid_at < now - PAID_MEMORY))
+        known = set((await session.execute(select(DmPaidJob.external_id).where(
+            DmPaidJob.source == "linkedin", DmPaidJob.external_id.in_(ids)))).scalars())
+        session.add_all(DmPaidJob(source="linkedin", external_id=i[:64], paid_at=now)
+                        for i in dict.fromkeys(ids) if i not in known)
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001 — never costs the day's jobs
+        await session.rollback()
+        logger.warning("[DM] paid jobs not saved: %s", type(exc).__name__)
+
+
 async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedin_transport=None,
                         apify_transport=None, sleep=asyncio.sleep) -> dict:
     """Fetches every extra source and upserts what's new. Never raises for a
@@ -66,9 +97,11 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedi
     board_records, report["registry"] = await registry.fetch_boards(session)
     await session.commit()  # board health (failures, last_count)
 
+    paid_today: list[str] = []
     if linkedin_apify.token():  # LinkedIn refuses our servers; Apify reads it for us
-        fetch_li = linkedin_apify.fetch_linkedin_apify(await _linkedin_ids(session), transport=apify_transport,
-                                                       sleep=sleep)
+        not_again = await _linkedin_ids(session) + await _paid_ids(session)
+        fetch_li = linkedin_apify.fetch_linkedin_apify(not_again, transport=apify_transport, sleep=sleep,
+                                                       paid_out=paid_today)
     else:
         fetch_li = linkedin_source.fetch_linkedin(set(known.values()), transport=linkedin_transport, sleep=sleep)
     await session.commit()
@@ -77,6 +110,8 @@ async def collect_extra(session, *, scrape=None, jsearch_transport=None, linkedi
         aggregators.fetch_jsearch(transport=jsearch_transport),
         aggregators.fetch_jobspy("indeed", aggregators.INDEED_SEARCHES, scrape=scrape, sleep=sleep),
     )
+
+    await _remember_paid(session, paid_today)
 
     # Boards behind today's aggregator links: recorded for every day to come,
     # and read right away, so today's jobs come from the company's own board.

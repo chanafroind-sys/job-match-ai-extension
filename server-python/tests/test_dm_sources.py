@@ -388,6 +388,47 @@ def _aj(job_id, title, company="Alpha", description=LONG_DESCRIPTION):
 TUESDAY_IL = datetime(2026, 10, 13, 3, 30, tzinfo=timezone.utc)  # 06:30 in Israel
 
 
+CP_LIST = """<html><div class="position"><span><button class="iconA save-job-btn" data-id="8032809"
+ data-title="Backend Engineer" data-link="x"></button></span><a href="x"> Backend Engineer </a>
+ <div class="posInfo"><p><img src="l.svg" class="place"> Israel: Tel Aviv-Yafo </p></div></div>
+<div class="position"><button class="iconA save-job-btn" data-id="3463631" data-title="Order Management Specialist"
+ data-link="x"></button><p><img class="place"> Israel: Tel Aviv-Yafo </p></div></html>"""
+CP_JOB = """<div id="pageBody"><div id="jobOrderInfo"><div class="info"><h3>Key Responsibilities</h3>
+<ul><li>Build cloud security services in Python and Go.</li></ul></div><div class="info"><h3>Requirements</h3>
+<ul><li>4+ years of backend development</li></ul></div></div><div id="shareSection">Share</div></div>"""
+
+
+class TestCheckPoint:
+    def test_the_list_and_a_jobs_description(self):
+        from daily_matches.sources import checkpoint
+        assert checkpoint.parse_list(CP_LIST) == [
+            {"id": "8032809", "title": "Backend Engineer", "location": "Israel: Tel Aviv-Yafo"},
+            {"id": "3463631", "title": "Order Management Specialist", "location": "Israel: Tel Aviv-Yafo"}]
+        text = checkpoint.parse_job(CP_JOB)
+        assert "Python and Go" in text and "4+ years" in text and "Share" not in text
+
+    async def test_israels_tech_jobs_one_page_each(self, monkeypatch):
+        from daily_matches.sources import checkpoint
+
+        async def no_sleep(_):
+            return None
+        monkeypatch.setattr(checkpoint, "_sleep", no_sleep)
+        asked = []
+
+        def handler(request):
+            asked.append(str(request.url))
+            if "a=search" in str(request.url):
+                return httpx.Response(200, text=CP_LIST)
+            return httpx.Response(200, text=CP_JOB)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            jobs = await checkpoint.fetch_checkpoint(client, "Check Point", {"slug": "israel", "country": "Israel"})
+        assert "country_s%3AIsrael" in asked[0] or "country_s:Israel" in asked[0]
+        assert len(asked) == 2  # the list, then a page for the one title that may be tech
+        assert [j["title"] for j in jobs] == ["Backend Engineer"] and "4+ years" in jobs[0]["description"]
+        assert jobs[0]["url"].endswith("joborderid=8032809") and jobs[0]["external_job_id"] == "8032809"
+        assert registry.OWN_FETCHERS["checkpoint"] is checkpoint.fetch_checkpoint
+
+
 class TestHiBob:
     async def test_a_sites_israeli_tech_jobs(self):
         from daily_matches.sources import hibob
@@ -425,7 +466,7 @@ class TestLinkedInApify:
         assert fake.auth == {"Bearer tok"}  # the token travels in a header, never in a logged URL
         assert fake.runs[0]["body"]["skipJobId"] == ["9"] and fake.runs[1]["body"]["skipJobId"] == ["9", "1", "2"]
         assert fake.runs[0]["body"]["location"] == "Israel" and "datePosted" not in fake.runs[0]["body"] and fake.runs[0]["body"]["urlParam"] == [{"key": "f_TPR", "value": "r93600"}]
-        assert report["cards"] == 3 and report["jobs"] == 2 and report["not_tech_or_short"] == 1
+        assert report["cards"] == 3 and report["jobs"] == 2 and report["not_tech"] == 1 and report["short_description"] == 0
         assert sorted(r["external_job_id"] for r in records) == ["1", "2"]
         assert records[0]["url"].startswith("https://www.linkedin.com/jobs/view/")
         assert report["cost_usd"] == round(3 * linkedin_apify.PRICE_PER_1K / 1000, 3)
@@ -868,6 +909,12 @@ class TestCollectExtra:
         assert report["linkedin"]["via_apify"] and report["linkedin"]["jobs"] == 1
         assert apify.runs[0]["body"]["skipJobId"] == ["555"]  # what the pool holds isn't paid for again
         assert report["new_by_source"] == {"linkedin": 1}
+        # Paid for once, never again: a non-tech job the pool dropped is skipped the next time too.
+        again = FakeApify({linkedin_apify.SEARCHES[0]: [_aj("557", "Account Executive", "Gamma")]})
+        await collect_extra(db, scrape=FakeScrape(), apify_transport=again.transport, sleep=_no_sleep)
+        third = FakeApify({})
+        await collect_extra(db, scrape=FakeScrape(), apify_transport=third.transport, sleep=_no_sleep)
+        assert {"555", "556", "557"} <= set(third.runs[0]["body"]["skipJobId"])
 
     async def test_a_verified_board_replaces_the_linkedin_copy(self, db, monkeypatch):
         _fake_fetchers(monkeypatch, {("ashby", "deltaai"): ["ML Engineer"]})

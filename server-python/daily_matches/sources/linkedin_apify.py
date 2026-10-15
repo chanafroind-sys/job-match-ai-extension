@@ -158,10 +158,12 @@ def _to_record(item: dict) -> dict | None:
 
 
 async def fetch_linkedin_apify(in_pool: list[str], *, now: datetime | None = None, transport=None,
-                               sleep=asyncio.sleep) -> tuple[list[dict], dict]:
-    """in_pool: LinkedIn job ids the pool holds already (never paid for again)."""
-    report: dict = {"via_apify": True, "searches": [], "cards": 0, "jobs": 0, "not_tech_or_short": 0,
-                    "blocked": None, "cost_usd": 0.0}
+                               sleep=asyncio.sleep, paid_out: list | None = None) -> tuple[list[dict], dict]:
+    """in_pool: LinkedIn job ids not to pay for again (the pool's, and those
+    paid for in the last days). paid_out receives every id paid for today."""
+    report: dict = {"via_apify": True, "searches": [], "cards": 0, "jobs": 0, "not_tech": 0,
+                    "short_description": 0, "blocked": None, "cost_usd": 0.0}
+    left_out: list[str] = []  # titles paid for and dropped: to tune TITLE_EXCLUDE
     il_now = config.to_israel(now or config.utcnow())
     if il_now.weekday() in SKIP_WEEKDAYS:
         report["skipped"] = "weekend: Sunday's searches cover it"
@@ -193,11 +195,16 @@ async def fetch_linkedin_apify(in_pool: list[str], *, now: datetime | None = Non
             report["searches"].append({"query": query, "jobs": len(items), "capped": len(items) >= MAX_PER_RUN})
             for item in items:
                 skip.append(str(item.get("id") or ""))
+                if paid_out is not None and item.get("id"):
+                    paid_out.append(str(item["id"]))
                 rec = _to_record(item)
                 if rec:
                     records.setdefault(rec["id"], rec)
+                elif _looks_technical(item.get("title") or ""):
+                    report["short_description"] += 1
                 else:
-                    report["not_tech_or_short"] += 1
+                    report["not_tech"] += 1
+                    left_out.append(str(item.get("title") or "")[:80])
     report["cost_usd"] = round(report["cost_usd"], 3)
     report["jobs"] = len(records)
     # Today's budget ran out before the searches did: some of today's jobs weren't fetched.
@@ -206,4 +213,6 @@ async def fetch_linkedin_apify(in_pool: list[str], *, now: datetime | None = Non
     rest = budget["left_usd"] - report["cost_usd"]
     report["credit"]["lasts_working_days"] = math.floor(rest / report["cost_usd"]) if report["cost_usd"] else None
     logger.warning("[DM] linkedin (apify): %s", {k: v for k, v in report.items() if k != "searches"})
+    if left_out:  # public job titles only, for tuning the exclusions
+        logger.warning("[DM] linkedin (apify) paid for and left out (%d), e.g.: %s", len(left_out), left_out[:60])
     return list(records.values()), report
