@@ -412,12 +412,6 @@ async def verify_gumroad_license(license_key: str) -> dict:
         return {"email": "admin@internal", "uses": 1, "tier": "premium",
                 "isPremium": True, "subscriptionActive": True}
 
-    # ── Our own subscription keys (billing/), sold through the card processor ─
-    from billing import service as billing_service
-    own = await billing_service.verify_key(k)
-    if own is not None:
-        return own
-
     # ── Cache hit ─────────────────────────────────────────────────────────────
     cached = _cache_get(license_key)
     if cached is not None:
@@ -3549,8 +3543,3 @@ app.include_router(v2_router)
 # Daily Matches (daily_matches/) — isolated module, mounted the same way as V2
 from daily_matches.router import router as daily_matches_router  # noqa: E402
 app.include_router(daily_matches_router)
-
-# Subscriptions through the card processor (billing/), mounted the same way
-from billing.router import router as billing_router  # noqa: E402
-import billing.models  # noqa: E402,F401  (registers billing_* tables)
-app.include_router(billing_router)
