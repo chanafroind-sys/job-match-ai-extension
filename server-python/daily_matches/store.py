@@ -172,6 +172,12 @@ async def pool_counts(session: AsyncSession, since: datetime, now: datetime | No
     return {"active": int(active), "embedded": int(embedded), "fresh": int(fresh)}
 
 
+async def count_companies(session: AsyncSession, since: datetime) -> int:
+    """Companies with an active job: the breadth a deck was picked from."""
+    return int((await session.execute(select(func.count(func.distinct(func.lower(DailyJobPool.company))))
+                                      .where(DailyJobPool.scraped_at >= since))).scalar() or 0)
+
+
 # ── Search ────────────────────────────────────────────────────────────────────
 
 def _seen_subquery(subject: str):

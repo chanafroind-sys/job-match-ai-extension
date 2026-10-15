@@ -255,6 +255,28 @@ function guard(window) {
   r = await w.JMA_DM.apply.formFill(PROFILE, FILE, FAST);
   ok('a page that never takes it: reported as left, never "attached"', !r.attached && r.left.includes('קורות חיים') &&
      !w.document.getElementById('jma-dm-attached-note'));
+  ok('but it says the file was put in the form, so the person checks rather than redoes it', r.tried === true);
+
+  // A long name, shown cut short (2026-10-15: a main CV reported "attach it yourself" while attached).
+  const LONG = { ...FILE, name: 'קורות חיים נועה לוי 2026 גרסה מעודכנת.docx' };
+  w = page(GH_UPLOAD, 'https://job-boards.greenhouse.io/embed/job_app?for=acme&token=1');
+  w.document.getElementById('resume').addEventListener('change', () => {
+    const span = w.document.createElement('span');
+    span.textContent = 'קורות חיים נועה לוי 20…docx';
+    w.document.body.appendChild(span);
+  });
+  r = await w.JMA_DM.apply.formFill(PROFILE, LONG, FAST);
+  ok('a name the page shows cut short is still the CV attached', r.attached && !r.left.includes('קורות חיים'));
+
+  // A page that uploads first and shows the name only later.
+  w = page(GH_UPLOAD, 'https://job-boards.greenhouse.io/embed/job_app?for=acme&token=1');
+  w.document.getElementById('resume').addEventListener('change', () => setTimeout(() => {
+    const span = w.document.createElement('span');
+    span.textContent = FILE.name;
+    w.document.body.appendChild(span);
+  }, 75)); // after both tries (20 + 20 + 20 ms), before the final check
+  r = await w.JMA_DM.apply.formFill(PROFILE, FILE, { timing: { ...FAST.timing, stick: 80 } });
+  ok('a name shown only after the upload still counts, checked once more at the end', r.attached);
 
   // ── the person's own answers in lists and option buttons ─────────────────────
   const LEVER_QUESTIONS = `<form method="post" enctype="multipart/form-data" action="/apply">

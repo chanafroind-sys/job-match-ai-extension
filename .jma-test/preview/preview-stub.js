@@ -94,7 +94,8 @@
   if (COMPARE) DECK.forEach((c, i) => { c.analysis.compare = { model: COMPARE.model, method: 'honest', verdict: HONEST[i][0], tier: HONEST[i][1], answer_he: HONEST[i][2], best_cv_ref: c.best_cv_id, match_score: [92, 76, 22][i],
     cv_tip_he: i === 2 ? '' : 'Kubernetes מופיע אצלך רק בקטנה; אם תפעלת קלאסטר, כדאי להוסיף שורה שמתארת את זה.' }; });
 
-  const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
+  const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))),
+    text: () => Promise.resolve(JSON.stringify(data)) });  // dm-api.js reads text() since 9816a8e
   let built = scenario !== 'building';
   const realFetch = window.fetch.bind(window);
   window.fetch = (url, opts = {}) => {

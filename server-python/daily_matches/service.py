@@ -422,8 +422,12 @@ async def _pipeline(cvs_in: list[CvInput], primary_id: str | None, access: Acces
             if not candidates and counts["active"] > counts["embedded"]:
                 # Jobs are in, vectors aren't yet: the status call starts that in the background.
                 raise DmError("DM_POOL_PREPARING", "מאגר המשרות של היום בהכנה. נסה/י שוב בעוד כמה דקות.", 503)
+            # The whole picture, not only what was left for this person: the pool, its new
+            # jobs in every field, and how many companies they come from (2026-10-15: a new
+            # user who saw only "23 new jobs in your fields" thought the pool was small).
             emit({"type": "candidates", "pool": counts["active"], "embedded": counts["embedded"],
-                  "fresh": fresh_total, "candidates": len(candidates)})
+                  "fresh": fresh_total, "candidates": len(candidates), "fresh_all": counts["fresh"],
+                  "companies": await store.count_companies(session, run_filter.active_since)})
 
             if not candidates:
                 # A quiet day: nothing new in this person's fields. Nothing was spent,

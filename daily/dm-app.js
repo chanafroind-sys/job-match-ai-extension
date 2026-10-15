@@ -200,7 +200,7 @@
         <p class="dm-fine">${trial ? 'ניסיון חינם חד-פעמי. ריצה שנכשלת או שלא מצאה כלום לא נספרת.' : 'פעם ביום · מתאפס בחצות (שעון ישראל) · ריצה שנכשלת לא נספרת'}</p></div>
       <div class="dm-card-plain"><div class="dm-row"><h2 class="dm-h2">📄 גרסאות הקו״ח שלי <span class="dm-fine">(${n}/${DM.cvLibrary.MAX_VERSIONS})</span></h2><button type="button" class="link-btn" data-act="library">עריכה</button></div>
         <ul class="cv-list">${versions}</ul>
-        ${n < 2 ? `<p class="dm-tip">💡 אפשר להעלות גרסה לכל כיוון, למשל Backend, ‏Full Stack + LLM או DevOps. לכל משרה נבחר את הגרסה המתאימה ונכין אותה להורדה.</p>` : ''}
+        ${versionsPitch(n)}
         ${n < DM.cvLibrary.MAX_VERSIONS ? '<button type="button" class="btn btn-secondary" data-act="library">➕ הוספת גרסת קו״ח</button>' : ''}</div>
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2>
         <div class="lvls" role="group" aria-label="רמת ניסיון">${levels}</div>
@@ -498,7 +498,9 @@
       const items = [
         ['is-done', 'טופס ההגשה מולא בלשונית הסמוכה'],
         r.attached ? ['is-done', `צירפנו את ${r.fileName}`]
-          : ap.hasFile ? ['is-info', 'את קובץ קורות החיים צריך לצרף בעצמך (ההורדה למטה).']
+          // Put in the form, but the page never showed it: say so, don't claim either way.
+          : r.tried ? ['is-info', `ניסינו לצרף את ${r.fileName}, אבל לא ראינו אותו מופיע בטופס. כדאי לבדוק: אם הוא לא שם, צריך לצרף אותו בעצמך (ההורדה למטה).`]
+          : ap.hasFile ? ['is-info', 'בטופס הזה לא מצאנו איפה לצרף קובץ, אז את קורות החיים צריך לצרף בעצמך (ההורדה למטה).']
             : ['is-info', 'לא צירפנו קובץ: לגרסה הזו אין קובץ שמור. אפשר להוסיף אותו בספריית הקו״ח (📄 בראש החפיסה).'],
         r.filled && r.filled.length ? ['is-done', `מולאו ${r.filled.length} שדות: ${r.filled.join(', ')}`] : null,
         left.length ? ['is-info', `נשארו לך: ${left.join(', ')}. אנחנו לא ממציאים תשובות.`] : null,
@@ -538,6 +540,25 @@
     return `<div class="dm-body ap">${head}<div class="ap-box">${box}</div>${r && r.attached && r.letter !== 'failed' ? '' : kit}${rule}${done}</div>`;
   }
 
+  // CV versions are what widens the search: each one is a search of its own, in its
+  // own fields, and every job gets the version that fits it best. The owner wants
+  // people to see that, and to bring good versions (2026-10-15).
+  function versionsPitch(n, inLibrary) {
+    const lead = n < 2 ? 'הסוד לחפיסה גדולה ומדויקת: גרסאות קורות חיים' : `יש לך ${n} גרסאות, כל אחת היא חיפוש משלה`;
+    return `<div class="dm-pitch"><h3 class="dm-pitch-h">🚀 ${lead}</h3>
+      <p>כל גרסה היא <b>חיפוש נוסף</b>: העלו גרסה לכל כיוון שמתאים לכם (למשל Backend, ‏Full Stack + AI או ניהול צוות), ונחפש בשבילכם את כל המשרות של כל כיוון. לכל משרה נבחר את הגרסה שהכי מתאימה לה, ונצרף אותה להגשה.</p>
+      <p class="dm-fine">ככל שהגרסאות מדויקות יותר, כך ההתאמות טובות יותר: כדאי שכל גרסה תדגיש את הניסיון שרלוונטי לכיוון שלה.${inLibrary ? '' : ` אפשר עד ${DM.cvLibrary.MAX_VERSIONS} גרסאות.`}</p></div>`;
+  }
+
+  // At the end of a small deck: the ways to a bigger one tomorrow.
+  function moreNextTime() {
+    const found = (state.run || {}).candidates || 0;
+    if (state.readOnly || found >= 60) return '';
+    return `<div class="dm-card-plain dm-more-tip"><h2 class="dm-h2">רוצה יותר משרות בחפיסה הבאה?</h2>
+      <p class="dm-muted">הפעם נמצאו ${fmtInt(found)} משרות חדשות בתחומים ובגרסאות שבחרת. כדי שהחיפוש יהיה רחב יותר: מוסיפים גרסת קורות חיים לכיוון נוסף, או מסמנים עוד תחומים לגרסה קיימת.</p>
+      <button type="button" class="btn btn-secondary" data-act="library">📄 גרסאות ותחומים</button></div>`;
+  }
+
   function end() {
     const count = k => state.allCards.filter(c => c.user_action === k).length;
     const saved = state.allCards.filter(c => c.user_action === 'saved');
@@ -552,6 +573,7 @@
       <div class="dm-card-plain"><h2 class="dm-h2">🔖 נשמרו היום</h2>${saved.length ? saved.map(c => `<div class="en-row"><bdi dir="ltr">${esc(c.job.title)}</bdi><span>${c.match_score == null ? '' : c.match_score}</span></div>`).join('') : '<p class="dm-muted">עוד לא שמרת משרות.</p>'}
         <button type="button" class="link-btn" data-act="saved">כל המשרות השמורות</button></div>
       ${reelBtn}
+      ${moreNextTime()}
       ${nearNudge()}
       ${back('restart-deck', 'חזרה לחפיסה')}
       ${state.readOnly ? buyButton() : ''}</div>`;
@@ -707,7 +729,7 @@
       return `<button type="button" class="fchip${on ? ' is-on' : ''}" data-act="toggle-new-focus" data-cat="${esc(c)}" aria-pressed="${on}"><bdi dir="ltr">${esc(c)}</bdi></button>`;
     }).join('');
     return `${topBar('📄 גרסאות קורות החיים')}<div class="dm-body">
-      <p class="dm-muted">אפשר להעלות גרסה לכל כיוון שמעניין אותך. לפי התחומים של כל גרסה נחפש משרות, ולכל משרה נמליץ על הגרסה המתאימה ונכין אותה להורדה.</p>
+      ${versionsPitch(state.cvs.length, true)}
       <ul class="lib-list">${rows || '<li class="dm-muted">אין עדיין קורות חיים.</li>'}</ul>
       <p class="dm-error" id="libFileError" role="alert"></p>
       <div class="dm-card-plain"><h2 class="dm-h2">➕ הוספת גרסה</h2>
@@ -920,9 +942,12 @@
         else if (ev.type === 'cv_ready') b.s1text = 'קורות החיים מוכנים · מחפשים';
         else if (ev.type === 'candidates') {
           const fresh = ev.fresh != null ? ev.fresh : ev.candidates;
-          const s1text = !fresh ? 'אין משרות חדשות בתחומים שלך מאז החפיסה הקודמת'
-            : fresh > ev.candidates ? `✓ ${fmtInt(fresh)} משרות חדשות בתחומים שלך · מנתחים את ${ev.candidates} הקרובות ביותר`
-              : `✓ ${fmtInt(fresh)} משרות חדשות בתחומים שלך`;
+          // The breadth first: a short "23 new in your fields" read as a small pool (2026-10-15).
+          const scope = ev.pool ? `סרקנו ${fmtInt(ev.pool)} משרות פעילות${ev.companies ? ` מ-${fmtInt(ev.companies)} חברות` : ''}`
+            + `${ev.fresh_all ? `, ${fmtInt(ev.fresh_all)} מהן חדשות` : ''} · ` : '';
+          const s1text = !fresh ? `${scope}אין משרות חדשות בתחומים שלך מאז החפיסה הקודמת`
+            : fresh > ev.candidates ? `✓ ${scope}${fmtInt(fresh)} חדשות בתחומים שלך · מנתחים את ${ev.candidates} הקרובות ביותר`
+              : `✓ ${scope}${fmtInt(fresh)} חדשות בתחומים שלך`;
           Object.assign(b, { s1: 'done', s1text, s2: ev.candidates ? 'active' : 'done', total: ev.candidates });
         } else if (ev.type === 'progress') {
           Object.assign(b, { done: ev.done, total: ev.total, s2text: `הושלמו ${ev.done} מתוך ${ev.total} ניתוחים` });

@@ -189,6 +189,15 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
      runReq.opts.headers['X-License-Key'] === 'LIC');
   ok('a finished build opens the deck', ctx.app.state.view === 'deck');
 
+  const wide = events.map(e => (e.type === 'candidates'
+    ? { type: 'candidates', pool: 1601, embedded: 1601, fresh: 23, candidates: 3, fresh_all: 323, companies: 246 } : e));
+  ctx = await boot({ statuses: [SUB(null)], runEvents: wide, storage: { cvText: CV, licenseKey: 'LIC' } });
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(200);
+  ok('the build says how much was scanned before what was left for you',
+     ctx.app.state.build.s1text.includes('סרקנו 1,601 משרות פעילות מ-246 חברות, 323 מהן חדשות') &&
+     ctx.app.state.build.s1text.includes('23 חדשות בתחומים שלך'), ctx.app.state.build.s1text);
+
   // ── PDF main CV: text comes back once and is kept ─────────────────────────────
   const blob = '[PDF_BASE64:JVBERi0xLjQK]';
   ctx = await boot({ statuses: [SUB(null)], storage: { cvText: blob, cvName: 'cv.pdf',
@@ -426,7 +435,8 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV } });
   ok('the ready screen shows the guessed focus as such', ctx.doc.querySelector('.cvv-focus').textContent.includes('Backend') &&
      ctx.doc.querySelector('.cvv-focus').textContent.includes('זוהה אוטומטית'));
-  ok('one version gets the tip to add more', !!ctx.doc.querySelector('.dm-tip') && !!ctx.doc.querySelector('.btn[data-act="library"]'));
+  ok('one version is told that versions widen the search, and how to add one', ctx.doc.querySelector('.dm-pitch').textContent.includes('חיפוש נוסף') &&
+     ctx.doc.querySelector('.dm-pitch-h').textContent.includes('הסוד לחפיסה גדולה') && !!ctx.doc.querySelector('.btn[data-act="library"]'));
   ctx.doc.querySelector('[data-act="set-level"][data-level="mid"]').click();
   await tick();
   ok('choosing a level marks it and keeps it', ctx.doc.querySelector('.lvl.is-on').dataset.level === 'mid' &&

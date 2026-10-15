@@ -602,10 +602,32 @@ document.getElementById('cvFileInput').addEventListener('change', async (e) => {
     document.getElementById('cvFileInput')._hyperlinkUrls = cvHyperlinkUrls;
     document.getElementById('cvFileInput')._fileName = file.name;
     document.getElementById('cvFileInput')._fileSize = file.size;
+    document.getElementById('cvFileInput')._file = file;
   } catch (err) {
     showSettingsError(err.message);
   }
 });
+
+// A DOCX main CV is kept as text (cvText); Daily Matches also needs the file itself, to
+// attach it to applications and offer it for download. Stored the way the daily CV
+// library stores an attached main file (daily/dm-cv-library.js attachMainFile:
+// key jma_dm_cv_file_main, tied to this exact cvText by its hash). A PDF needs none:
+// cvText is the file. Over 1.5 MB it isn't kept (the library can attach one later).
+async function _keepMainCvFile(file, cvText) {
+  try {
+    if (!/\.docx$/i.test(file.name) || file.size > 1.5 * 1024 * 1024) return;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cvText));
+    const cvHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+    await chrome.storage.local.set({ jma_dm_cv_file_main: {
+      name: file.name, type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      b64: btoa(bin), cvHash } });
+  } catch (e) {
+    console.warn('[JMA] main CV file not kept for Daily Matches:', e && e.message);
+  }
+}
 
 function showSettingsError(msg) {
   const el = document.getElementById('settingsError');
@@ -718,6 +740,7 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   }
 
   if (Object.keys(toSave).length > 0) await chrome.storage.local.set(toSave);
+  if (toSave.cvText && fileInput._file) await _keepMainCvFile(fileInput._file, toSave.cvText);
 
   // If a new CV was uploaded, analyse it before declaring success. This never
   // asks for a key: the local analysis always runs, and the AI one is a bonus

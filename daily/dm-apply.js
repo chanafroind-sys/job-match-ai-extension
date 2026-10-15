@@ -457,6 +457,15 @@
     // by a plain form that sends its files itself (Lever). A page that wasn't
     // ready gets one more try; one that still doesn't take it is reported,
     // never claimed.
+    // The page shows the file by its name, or by the start of it: a long name
+    // (a main CV's, often Hebrew) is cut short ("קורות חיים נועה לוי 20…").
+    const nameShown = (name) => {
+      const text = deepText();
+      if (text.includes(name)) return true;
+      const start = name.replace(/\.[^.]+$/, '').slice(0, 14).trim();
+      return start.length >= 6 && text.includes(start);
+    };
+
     async function attach(input, fileData) {
       const native = !!(input.form && /multipart/i.test(input.form.getAttribute('enctype') || input.form.enctype || '') && input.name);
       const put = () => {
@@ -471,7 +480,7 @@
         // the page learns about the file.
         if (!/(^|\.)lever\.co$/.test(location.hostname)) { fire(input, 'input'); fire(input, 'change'); }
       };
-      const taken = () => deepText().includes(fileData.name) || (native && input.files && input.files.length === 1);
+      const taken = () => nameShown(fileData.name) || (native && input.files && input.files.length === 1);
       if (input.files && input.files.length && deepText().includes(input.files[0].name)) return input.files[0].name; // already there
       put();
       await pause(wait.confirm);
@@ -482,7 +491,7 @@
         await pause(wait.confirm);
       }
       if (!taken()) return '';
-      if (!deepText().includes(fileData.name) && !document.getElementById('jma-dm-attached-note')) {
+      if (!nameShown(fileData.name) && !document.getElementById('jma-dm-attached-note')) {
         const note = document.createElement('div');
         note.id = 'jma-dm-attached-note';
         note.dir = 'rtl';
@@ -496,9 +505,10 @@
       return fileData.name;
     }
 
-    if (file && file.b64 && typeof DataTransfer === 'function') {
+    if (file && file.b64 && typeof DataTransfer === 'function' && resume) {
       const name = await attach(resume, file);
       out.attached = !!name;
+      out.tried = true; // put in the form; whether the page took it is out.attached
       if (name) out.fileName = name;
     }
     // A cover letter: in its text box (filled above), or as a text file where
@@ -517,6 +527,8 @@
     // Report what stuck, not what was typed: a field that wants a choice from
     // its own list (Lever's location) clears itself.
     await pause(wait.stick);
+    // A page that uploads the file before it shows it (a progress bar, then the name).
+    if (!out.attached && out.tried && nameShown(file.name)) out.attached = true;
     for (const f of typed) add(f.el.isConnected && String(f.el.value || '').trim() ? out.filled : out.left, LABEL[f.key]);
     for (const c of choicesTyped) add(c.check() ? out.filled : out.left, LABEL[c.key]);
     out.left = out.left.filter(l => !out.filled.includes(l));
