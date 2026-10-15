@@ -117,7 +117,7 @@
   const fmt = (n) => (typeof n === 'number' ? n.toLocaleString('en-US') : '');
 
   // What the feature is, in one breath. Shared by the card and the dialog.
-  const PITCH = 'כל בוקר: רוב משרות ההייטק החדשות בישראל, מלינקדאין ומאתרי החברות עצמן, מסוננות לפי קורות החיים שלך לגלגלת הגשה מהירה. ' +
+  const PITCH = 'כל בוקר: רוב משרות ההייטק החדשות בישראל, ממאות חברות, מסוננות לפי קורות החיים שלך לגלגלת הגשה מהירה. ' +
     'לכל משרה, הגרסה המומלצת של קורות החיים ומילוי אוטומטי של הטופס כשאפשר.';
 
   // Before the server has answered even once on this computer.
@@ -278,7 +278,7 @@
         <button type="button" class="dm-ann-x" data-ann="later" aria-label="סגירה">✕</button>
         <span class="dm-ann-badge">✨ חדש בתוסף</span>
         <h2 id="dmAnnTitle">ההתאמות היומיות</h2>
-        <p class="dm-ann-sub">כל בוקר, רוב משרות ההייטק החדשות בישראל, מסוננות למה שבאמת מתאים לך ומוכנות להגשה מהירה.</p>
+        <p class="dm-ann-sub">כל בוקר, רוב משרות ההייטק החדשות בישראל ממאות חברות, מסוננות למה שבאמת מתאים לך ומוכנות להגשה מהירה.</p>
         <div class="dm-ann-demo" aria-hidden="true">
           <div class="dm-ann-demo-head"><div class="dm-ann-ring-wrap"><div class="dm-ann-ring"></div><span class="dm-ann-ring-num">86</span></div>
             <div><div class="dm-ann-jt" dir="ltr">Senior Backend Engineer</div><div class="dm-ann-co">פורסמה היום · ⭐ מעולה</div></div></div>
@@ -286,7 +286,7 @@
           <div class="dm-ann-cv">📄 מומלץ להגיש עם גרסת ה-Backend ⬇️</div>
         </div>
         <ol class="dm-ann-steps">
-          <li><span class="ico">🌅</span><div><b>רוב משרות ההייטק החדשות בישראל, במקום אחד.</b> כל בוקר, מלינקדאין, מ-Indeed ומאתרי החברות עצמן.</div></li>
+          <li><span class="ico">🌅</span><div><b>רוב משרות ההייטק החדשות בישראל, ממאות חברות, במקום אחד.</b> כל בוקר, מלינקדאין, מ-Indeed ומאתרי החברות עצמן.</div></li>
           <li><span class="ico">🎯</span><div><b>רק מה שמתאים לך.</b> ה-AI בודק כל משרה מול קורות החיים, דרישה אחרי דרישה, ומסביר כל ציון.</div></li>
           <li><span class="ico">🎞️</span><div><b>גלגלת הגשה מהירה.</b> מגישים, שומרים או מדלגים, משרה אחרי משרה.</div></li>
           <li><span class="ico">⚡</span><div><b>הגרסה הנכונה, והטופס מתמלא.</b> גרסת קורות החיים המתאימה לכל משרה, והטופס מתמלא אוטומטית כשאפשר. את השליחה לוחצים בעצמך.</div></li>
