@@ -77,6 +77,10 @@ SEED_BOARDS: tuple[tuple[str, str, str], ...] = (
     ("webbing", "46.00E", "Webbing"),
     ("unleash", "B9.009", "Unleash"),
     ("papayaglobal", "16.005", "Papaya Global"),
+    # Asked for by the owner on 2026-10-15; each board read live that day.
+    ("fiverr", "60.002", "Fiverr"),
+    ("papayagaming", "46.00B", "Papaya Gaming"),  # its careers page is papaya.com, not a guessable domain
+    ("4Manalytics", "B6.00F", "4M Analytics"),
     ("morphisec", "65.00C", "Morphisec"),
     ("moovit", "63.007", "Moovit"),
     ("joinattil", "38.00A", "AT&T Israel"),

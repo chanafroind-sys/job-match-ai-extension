@@ -41,4 +41,7 @@ SEED_BOARDS: tuple[tuple[str, dict, str], ...] = (
     ("smartrecruiters", {"company": "westerndigital"}, "Western Digital"),
     ("workday", {"host": "genesys.wd1.myworkdayjobs.com", "site": "Genesys"}, "Genesys"),
     ("workday", {"host": "tricentis.wd1.myworkdayjobs.com", "site": "Tricentis_Careers"}, "Tricentis"),
+    # Asked for by the owner on 2026-10-15.
+    ("ashby", {"board": "zafran-security"}, "Zafran"),  # 3
+    ("hibob", {"host": "hibob-fa0ad69d0cb34a.careers.hibob.com"}, "HiBob"),  # 20 in Israel, of them the tech ones
 )

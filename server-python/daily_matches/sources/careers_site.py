@@ -75,7 +75,12 @@ def comeet_widget(html: str) -> tuple[str | None, list[str]]:
     if not token:
         return None, []
     named = _COMEET_COMPANY_UID.findall(text)
-    return token.group(1), list(dict.fromkeys(m.upper() for m in named + _COMEET_UID.findall(text)))[:12]
+    found = list(dict.fromkeys(m.upper() for m in named + _COMEET_UID.findall(text)))
+    # A company's uid has been NN.00N on every board seen (49.004, 46.00B, B6.00F); a
+    # position's isn't (26.373). A page listing dozens of positions put its company's
+    # uid past the twelve tried (4M Analytics, 2026-10-15), so those go first.
+    found.sort(key=lambda uid: not uid[3:5] == "00")
+    return token.group(1), found[:12]
 
 
 async def _get(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str, **kwargs) -> httpx.Response | None:

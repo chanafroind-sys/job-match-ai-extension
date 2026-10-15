@@ -23,13 +23,15 @@ from app.services import job_aggregator as agg
 from app.services.israel_job_sources import COMPANIES
 from daily_matches import config
 from daily_matches.models import DmSource
-from daily_matches.sources import bigtech, comeet, employers
+from daily_matches.sources import bigtech, comeet, employers, hibob
 
 logger = logging.getLogger(__name__)
 
-FETCHABLE = ("greenhouse", "lever", "ashby", "smartrecruiters", "workday", "comeet", "amazon", "microsoft")
+FETCHABLE = ("greenhouse", "lever", "ashby", "smartrecruiters", "workday", "comeet", "amazon", "microsoft",
+             "hibob")
 # Adapters of Daily Matches' own, next to V1's (agg.FETCHERS, left untouched).
-OWN_FETCHERS = {"comeet": comeet.fetch_comeet, "amazon": bigtech.fetch_amazon, "microsoft": bigtech.fetch_microsoft}
+OWN_FETCHERS = {"comeet": comeet.fetch_comeet, "amazon": bigtech.fetch_amazon, "microsoft": bigtech.fetch_microsoft,
+                "hibob": hibob.fetch_hibob}
 MAX_FAILURES = 5  # consecutive failed fetches before a board is skipped
 FETCH_CONCURRENCY = 8
 
@@ -39,6 +41,8 @@ _SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 def _slug_of(ats: str, params: dict) -> str:
     if ats == "workday":
         return f"{params['host']}/{params['site']}".lower()
+    if ats == "hibob":
+        return str(params["host"]).lower()
     key = {"greenhouse": "board", "lever": "site", "ashby": "board", "smartrecruiters": "company"}.get(ats, "slug")
     return str(params.get(key, "")).lower()
 
@@ -77,6 +81,8 @@ def board_from_url(url: str | None) -> tuple[str, str, dict] | None:
         if rest and _SLUG.match(rest[0]) and rest[0] != "job":
             return "workday", f"{host}/{rest[0]}".lower(), {"host": host, "site": rest[0]}
         return None
+    if host.endswith(".careers.hibob.com") and re.fullmatch(r"[a-z0-9-]+\.careers\.hibob\.com", host):
+        return "hibob", host, {"host": host}
     if (host.endswith("comeet.com") or host.endswith("comeet.co")) and len(parts) >= 3 and parts[0] == "jobs":
         slug, uid = parts[1], parts[2]
         if _SLUG.match(slug) and re.fullmatch(r"[0-9A-Za-z]{1,4}\.[0-9A-Za-z]{2,6}", uid):

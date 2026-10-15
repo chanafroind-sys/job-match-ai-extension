@@ -83,6 +83,8 @@ class TestBoardFromUrl:
         ("https://boards.greenhouse.io/embed/job_app?for=newco&token=9", ("greenhouse", "newco", {"board": "newco"})),
         ("https://jobs.eu.lever.co/acme/5b37-aa", ("lever", "acme", {"site": "acme", "region": "eu"})),
         ("https://jobs.lever.co/acme/5b37-aa/apply", ("lever", "acme", {"site": "acme"})),
+        ("https://hibob-fa0ad69d0cb34a.careers.hibob.com/jobs/96c4f519-f64b",
+         ("hibob", "hibob-fa0ad69d0cb34a.careers.hibob.com", {"host": "hibob-fa0ad69d0cb34a.careers.hibob.com"})),
         ("https://jobs.ashbyhq.com/finout/4104-c2", ("ashby", "finout", {"board": "finout"})),
         ("https://jobs.smartrecruiters.com/ServiceNow/7440-staff", ("smartrecruiters", "servicenow", {"company": "ServiceNow"})),
         ("https://acme.wd5.myworkdayjobs.com/en-US/External/job/Tel-Aviv/Eng_R1",
@@ -386,6 +388,31 @@ def _aj(job_id, title, company="Alpha", description=LONG_DESCRIPTION):
 TUESDAY_IL = datetime(2026, 10, 13, 3, 30, tzinfo=timezone.utc)  # 06:30 in Israel
 
 
+class TestHiBob:
+    async def test_a_sites_israeli_tech_jobs(self):
+        from daily_matches.sources import hibob
+        host = "acme-1a2b.careers.hibob.com"
+        seen = []
+
+        def handler(request):
+            seen.append(request.headers.get("Referer"))
+            if request.headers.get("Referer") != f"https://{host}/jobs":
+                return httpx.Response(401)  # what HiBob answers a request not from its page
+            return httpx.Response(200, json={"filterGroups": [], "jobAdDetails": [
+                {"id": "u1", "title": "Senior Backend Engineer", "country": "Israel", "site": "IL",
+                 "description": "<p>We build HR software.</p>", "requirements": "<ul><li>5 years of Java</li></ul>",
+                 "publishedAt": "2026-10-12T08:14:08.371793876Z"},
+                {"id": "u2", "title": "Backend Engineer", "country": "United Kingdom", "site": "London"},
+                {"id": "u3", "title": "Account Executive", "country": "Israel", "site": "IL"},
+            ]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            jobs = await hibob.fetch_hibob(client, "Acme", {"host": host})
+        assert [j["title"] for j in jobs] == ["Senior Backend Engineer"]
+        assert jobs[0]["url"] == f"https://{host}/jobs/u1" and "5 years of Java" in jobs[0]["description"]
+        assert jobs[0]["published_at"] == datetime(2026, 10, 12, 8, 14, 8, 371793, tzinfo=timezone.utc)
+        assert registry.OWN_FETCHERS["hibob"] is hibob.fetch_hibob and "hibob" in registry.FETCHABLE
+
+
 class TestLinkedInApify:
     async def test_each_job_is_paid_once_and_the_pool_is_never_paid_for_again(self, monkeypatch):
         monkeypatch.setenv("DM_APIFY_TOKEN", "tok")
@@ -647,6 +674,13 @@ class TestCareersSite:
                 '<a href="https://www.comeet.com/jobs/cyera/17.008/careers/AA.371">y</a>')
         assert [b[:2] for b in careers_site.boards_in_html(html)] == [
             ("comeet", "cyera/17.008"), ("greenhouse", "deltaai"), ("lever", "acme")]
+
+    def test_a_company_uid_is_tried_before_its_positions_uids(self):
+        # 4M Analytics' page: its uid in a config object, after dozens of positions' uids.
+        page = "comeet " + " ".join(f'"{i:02d}.{i:03d}"' for i in range(10, 40)) + (
+            " apiConfig: { name: '4Manalytics', uid: 'B6.00F', token: '6BF287AD7E1AFCD7E2F39D7E287A21BB1AFC' }")
+        token, uids = careers_site.comeet_widget(page)
+        assert token == "6BF287AD7E1AFCD7E2F39D7E287A21BB1AFC" and uids[0] == "B6.00F"
 
     async def test_comeet_widget_leads_to_its_board(self):
         html = ('<div class="comeet-outer-wrapper"></div><script>COMEET.init({\\"token\\":\\"9103660519012202D5\\",'
