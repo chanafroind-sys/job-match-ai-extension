@@ -154,13 +154,25 @@
     if (editable) {
       return `<div class="fchips" role="group" aria-label="תחומים ל${esc(v.label)}">${DM.cvLibrary.CATEGORIES.map(c => {
         const on = shown.includes(c);
-        return `<button type="button" class="fchip${on ? ' is-on' : ''}" data-act="toggle-focus" data-id="${esc(v.id)}" data-cat="${esc(c)}" aria-pressed="${on}"><bdi dir="ltr">${esc(c)}</bdi></button>`;
-      }).join('')}</div>${!chosen.length && shown.length ? '<p class="dm-fine">זוהו אוטומטית מתוך הקובץ. לחיצה על תחום מעדכנת.</p>' : ''}`;
+        const hint = DM.cvLibrary.CATEGORY_HINTS[c] || '';
+        return `<button type="button" class="fchip${on ? ' is-on' : ''}" data-act="toggle-focus" data-id="${esc(v.id)}" data-cat="${esc(c)}" aria-pressed="${on}" title="${esc(hint)}"><bdi dir="ltr">${esc(c)}</bdi></button>`;
+      }).join('')}</div>${!chosen.length && shown.length ? '<p class="dm-fine">זוהו אוטומטית מתוך הקובץ. לחיצה על תחום מעדכנת.</p>' : ''}${relatedTips(v, shown)}`;
     }
     if (!shown.length) return '<span class="dm-fine">כל התחומים</span>';
     return shown.map(c => `<span class="chip"><bdi dir="ltr">${esc(c)}</bdi></span>`).join('') +
       (chosen.length ? '' : '<span class="dm-fine">(זוהה אוטומטית)</span>');
   }
+
+  // Neighboring fields worth adding, one click each (dm-cv-library.js RELATED).
+  function relatedTips(v, shown) {
+    const tips = DM.cvLibrary.suggestRelated(shown);
+    if (!tips.length) return '';
+    return `<div class="rel-tips">${tips.map(t => `<p class="rel-tip">💡 כדאי להוסיף <button type="button" class="fchip rel-add" data-act="toggle-focus" data-id="${esc(v.id)}" data-cat="${esc(t.cat)}"><bdi dir="ltr">+ ${esc(t.cat)}</bdi></button>: ${esc(t.why)}.</p>`).join('')}</div>`;
+  }
+
+  // What each field holds, folded: "Data Scientist" sits in AI / ML, not in Data.
+  const fieldsLegend = () => `<details class="fields-legend"><summary>מה כולל כל תחום?</summary><ul>${DM.cvLibrary.CATEGORIES.map(c =>
+    `<li><b><bdi dir="ltr">${esc(c)}</bdi></b>: ${esc(DM.cvLibrary.CATEGORY_HINTS[c] || '')}</li>`).join('')}</ul></details>`;
 
   const levelButtons = () => LEVELS.map(([k, label, sub]) => `<button type="button" class="lvl${state.level === k ? ' is-on' : ''}" data-act="set-level" data-level="${k}" aria-pressed="${state.level === k}">${label}${sub ? `<small>${sub}</small>` : ''}</button>`).join('');
 
@@ -173,6 +185,7 @@
         ${!DM.cvLibrary.effectiveFocus(v).length ? `<p class="dm-fine">${v.needsExtraction ? 'הקובץ ייקרא רק בבנייה, אז כאן נבחר ידנית.' : 'לא זיהינו תחום בגרסה הזו.'} בחר/י את התחומים שמעניינים אותך.</p>` : ''}</div></div>`).join('');
     return `${topBar('🎯 באילו תחומים לחפש?')}<div class="dm-body">
       <p class="dm-muted">לפני החפיסה הראשונה: בכל גרסה של קורות החיים סימנו את התחומים שזיהינו בה. נחפש רק משרות בתחומים המסומנים, אז כדאי לוודא שלא חסר תחום שמעניין אותך. אפשר לסמן כמה.</p>
+      ${fieldsLegend()}
       ${versions}
       <div class="dm-card-plain"><h2 class="dm-h2">רמת הניסיון שלי</h2><div class="lvls" role="group" aria-label="רמת ניסיון">${levelButtons()}</div>
         <p class="dm-fine">${state.level === 'junior' ? 'משרות לבכירים לא ייכנסו לחפיסה.' : 'נבדוק משרות בכל הרמות, גם ברמה נמוכה משלך.'}</p></div>
@@ -550,12 +563,21 @@
       <p class="dm-fine">ככל שהגרסאות מדויקות יותר, כך ההתאמות טובות יותר: כדאי שכל גרסה תדגיש את הניסיון שרלוונטי לכיוון שלה.${inLibrary ? '' : ` אפשר עד ${DM.cvLibrary.MAX_VERSIONS} גרסאות.`}</p></div>`;
   }
 
+  // The neighboring fields none of the versions searches yet, named.
+  function relatedNow() {
+    const seen = new Set();
+    const tips = state.cvs.flatMap(v => DM.cvLibrary.suggestRelated(DM.cvLibrary.effectiveFocus(v)))
+      .filter(t => !seen.has(t.cat) && seen.add(t.cat));
+    return tips.length ? `<ul class="rel-now">${tips.map(t => `<li>💡 <b><bdi dir="ltr">${esc(t.cat)}</bdi></b>: ${esc(t.why)}</li>`).join('')}</ul>` : '';
+  }
+
   // At the end of a small deck: the ways to a bigger one tomorrow.
   function moreNextTime() {
     const found = (state.run || {}).candidates || 0;
     if (state.readOnly || found >= 60) return '';
     return `<div class="dm-card-plain dm-more-tip"><h2 class="dm-h2">רוצה יותר משרות בחפיסה הבאה?</h2>
       <p class="dm-muted">הפעם נמצאו ${fmtInt(found)} משרות חדשות בתחומים ובגרסאות שבחרת. כדי שהחיפוש יהיה רחב יותר: מוסיפים גרסת קורות חיים לכיוון נוסף, או מסמנים עוד תחומים לגרסה קיימת.</p>
+      ${relatedNow()}
       <button type="button" class="btn btn-secondary" data-act="library">📄 גרסאות ותחומים</button></div>`;
   }
 
@@ -730,6 +752,7 @@
     }).join('');
     return `${topBar('📄 גרסאות קורות החיים')}<div class="dm-body">
       ${versionsPitch(state.cvs.length, true)}
+      ${fieldsLegend()}
       <ul class="lib-list">${rows || '<li class="dm-muted">אין עדיין קורות חיים.</li>'}</ul>
       <p class="dm-error" id="libFileError" role="alert"></p>
       <div class="dm-card-plain"><h2 class="dm-h2">➕ הוספת גרסה</h2>
@@ -1201,13 +1224,20 @@
         const next = current.includes(cat) ? current.filter(c => c !== cat) : current.concat(cat);
         await DM.cvLibrary.setFocus(v.id, next);
         v.focus = DM.cvLibrary.CATEGORIES.filter(c => next.includes(c));
-        btn.closest('.fchips').querySelectorAll('.fchip').forEach(b => {
+        // The version's own box: a chip, or a suggestion under the chips ("+ AI / ML").
+        const box = btn.closest('.lib-focus') || btn.closest('.cf-v');
+        if (!box) return undefined;
+        const chips = box.querySelector('.fchips');
+        chips.querySelectorAll('.fchip').forEach(b => {
           const on = DM.cvLibrary.effectiveFocus(v).includes(b.dataset.cat);
           b.classList.toggle('is-on', on);
           b.setAttribute('aria-pressed', String(on));
         });
-        const hint = btn.closest('.lib-focus').querySelector('.dm-fine');
+        const hint = box.querySelector('.fchips + .dm-fine');
         if (hint && v.focus.length) hint.remove();
+        const tips = box.querySelector('.rel-tips');
+        if (tips) tips.remove();
+        chips.insertAdjacentHTML('afterend', relatedTips(v, DM.cvLibrary.effectiveFocus(v)));
         return undefined;
       }
       case 'toggle-new-focus': {

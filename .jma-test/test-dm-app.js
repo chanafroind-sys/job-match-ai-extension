@@ -339,6 +339,20 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   ok('the first build asks to confirm the fields, with the guess marked', ctx.app.state.view === 'confirm' &&
      ctx.doc.querySelectorAll('.cf-v').length === 1 && !!ctx.doc.querySelector('.cf-v .fchip.is-on') &&
      ctx.log.requests.every(r => r.path !== '/run'));
+  ok('the fields screen says what each field holds', !!ctx.doc.querySelector('.fields-legend') &&
+     ctx.doc.querySelector('.fields-legend').textContent.includes('Data Scientist'));
+  const tip = ctx.doc.querySelector('.cf-v .rel-add');
+  ok('and suggests a neighboring field it doesn\'t search, with why', !!tip &&
+     ctx.doc.querySelector('.cf-v .rel-tip').textContent.length > 20, tip && tip.textContent);
+  if (tip) {
+    const cat = tip.dataset.cat;
+    tip.click();
+    await tick();
+    ok('one click adds it', ctx.storage.jma_dm_cv_library.mainFocus.includes(cat) &&
+       !!ctx.doc.querySelector(`.cf-v .fchip.is-on[data-cat="${cat}"]`));
+    tip && ctx.doc.querySelector(`.cf-v .fchip.is-on[data-cat="${cat}"]:not(.rel-add)`).click(); // back to the guess
+    await tick();
+  }
   ctx.doc.querySelector('.cf-v [data-act="toggle-focus"]:not(.is-on)').click();
   await tick();
   const picked = ctx.storage.jma_dm_cv_library.mainFocus;
@@ -430,6 +444,16 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   const versionBoxes = [...ctx.doc.querySelectorAll('.pf-more [data-letter]')].map(t => t.dataset.letter);
   ok('with two CV versions, each can have its own cover letter', versionBoxes.length >= 2 && versionBoxes.includes('data'),
      JSON.stringify(versionBoxes));
+
+  // ── neighboring fields: a data CV also searches AI / ML (2026-10-15) ───────────
+  const cvl = ctx.window.JMA_DM.cvLibrary;
+  const DATA_CV = 'Data Analyst. SQL and Tableau dashboards, Power BI reports, pandas, some scikit-learn models.';
+  ok('a data CV is guessed as Data, and AI / ML joins it on a sign of it', JSON.stringify(cvl.suggestFocus(DATA_CV)) ===
+     JSON.stringify(['Data', 'AI / ML']), JSON.stringify(cvl.suggestFocus(DATA_CV)));
+  ok('a hardware CV is read at all', cvl.suggestFocus('FPGA design in Verilog, RTL and ASIC verification').includes('Hardware'));
+  ok('a neighbor is suggested even without a sign, with why', cvl.suggestRelated(['Data'])[0].cat === 'AI / ML' &&
+     cvl.suggestRelated(['Data'])[0].why.includes('Data Scientist') && cvl.suggestRelated(['Data', 'AI / ML']).length === 0);
+  ok('every field says what it holds', cvl.CATEGORIES.every(c => (cvl.CATEGORY_HINTS[c] || '').length > 3));
 
   // ── focus, level and the run payload ──────────────────────────────────────────
   ctx = await boot({ statuses: [SUB(null)], runEvents: events, storage: { cvText: CV } });

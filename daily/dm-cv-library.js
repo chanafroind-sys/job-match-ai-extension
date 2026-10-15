@@ -42,23 +42,67 @@
   // A first guess at what a CV targets, from technology words. Two mentions
   // or more count; frontend plus backend reads as full stack.
   const FOCUS_HINTS = [
-    ['AI / ML', /\b(llms?|rag|langchain|pytorch|tensorflow|machine learning|deep learning|nlp|computer vision|genai|hugging ?face|fine[- ]tun\w*)\b/gi],
+    ['AI / ML', /\b(llms?|rag|langchain|pytorch|tensorflow|machine learning|deep learning|nlp|computer vision|genai|hugging ?face|fine[- ]tun\w*|data scien\w*|scikit[- ]learn|xgboost|algorithms? (?:engineer|developer|researcher))\b/gi],
     ['DevOps', /\b(kubernetes|k8s|terraform|helm|devops|sre|argo ?cd|ansible|prometheus|grafana|ci\/cd)\b/gi],
-    ['Data', /\b(spark|airflow|etl|dbt|snowflake|bigquery|databricks|data warehouse|data pipelines?)\b/gi],
+    ['Data', /\b(spark|airflow|etl|dbt|snowflake|bigquery|databricks|data warehouse|data pipelines?|data engineer\w*|data analy\w*|sql|tableau|power ?bi|looker|pandas|business intelligence|bi developer)\b/gi],
     ['Frontend', /\b(react|angular|vue|css|html|redux|next\.?js|front[- ]?end)\b/gi],
     ['Backend', /\b(back[- ]?end|microservices?|node\.?js|django|flask|fastapi|spring|java|golang|\.net|c#|rest(ful)? apis?|postgres(ql)?|mongodb|redis|kafka)\b/gi],
     ['QA', /\b(qa|selenium|playwright|cypress|test automation|automation engineer)\b/gi],
     ['Mobile', /\b(ios|android|swift|react native|flutter)\b/gi],
     ['Security', /\b(penetration|pentest\w*|reverse engineering|malware|cyber ?security|appsec)\b/gi],
     ['Embedded', /\b(embedded|firmware|rtos|linux kernel|device drivers?|bare[- ]metal)\b/gi],
+    ['Hardware', /\b(fpga|verilog|system ?verilog|vhdl|asic|vlsi|rtl|pcb|board design|chip design|silicon|signal integrity|design verification)\b/gi],
   ];
+
+  // Fields whose jobs a person in the other one often fits, as the pool sorts
+  // titles (app/services/job_aggregator.py): a Data Scientist is AI / ML, not
+  // Data; FPGA and verification are Hardware, not Embedded. A guess adds the
+  // neighbor when the CV shows any sign of it; the fields screen suggests it
+  // either way (suggestRelated). Owner's call, 2026-10-15, after a data CV's
+  // first deck missed 41 Data Scientist jobs.
+  const RELATED = [
+    ['Data', 'AI / ML', 'משרות Data Scientist ואלגוריתמים נמצאות ב-AI / ML'],
+    ['AI / ML', 'Data', 'משרות Data Engineer, Data Analyst ו-BI נמצאות ב-Data'],
+    ['Embedded', 'Hardware', 'משרות FPGA, אימות שבבים ו-Board נמצאות ב-Hardware'],
+    ['Hardware', 'Embedded', 'משרות Firmware ודרייברים נמצאות ב-Embedded'],
+    ['Backend', 'Full Stack', 'הרבה משרות Full Stack הן בעיקר צד שרת'],
+    ['Frontend', 'Full Stack', 'הרבה משרות Full Stack הן בעיקר צד לקוח'],
+  ];
+  // What each field holds, for the fields screen (the pool's title rules, in words).
+  const CATEGORY_HINTS = {
+    'Backend': 'שרתים ו-APIs: Java, Python, Go, Node.js, ‏.NET',
+    'Full Stack': 'צד שרת וצד לקוח יחד',
+    'Frontend': 'ממשקי משתמש: React, Angular, Vue',
+    'AI / ML': 'Machine Learning, ‏Data Scientist, אלגוריתמים, LLM, ‏Computer Vision',
+    'DevOps': 'ענן, Kubernetes, ‏CI/CD, ‏SRE, ‏Platform',
+    'Data': 'Data Engineer, ‏Data Analyst, ‏BI, ‏ETL',
+    'QA': 'בדיקות ידניות ואוטומציה',
+    'Security': 'סייבר, אבטחת מידע, מחקר חולשות',
+    'Mobile': 'iOS, ‏Android, ‏React Native',
+    'Embedded': 'Embedded, ‏Firmware, ‏Linux Kernel, דרייברים',
+    'Hardware': 'חומרה ושבבים: FPGA, ‏ASIC, אימות, PCB',
+  };
   function suggestFocus(text) {
     const t = text || '';
     const hits = Object.fromEntries(FOCUS_HINTS.map(([cat, re]) => [cat, (t.match(re) || []).length]));
-    if (hits.Frontend >= 2 && hits.Backend >= 2) {
-      return ['Full Stack', hits.Backend >= hits.Frontend ? 'Backend' : 'Frontend'];
+    const base = hits.Frontend >= 2 && hits.Backend >= 2
+      ? ['Full Stack', hits.Backend >= hits.Frontend ? 'Backend' : 'Frontend']
+      : Object.entries(hits).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([c]) => c);
+    // A neighbor the CV shows any sign of joins the guess (at most three fields).
+    for (const [from, to] of RELATED) {
+      if (base.length < 3 && base.includes(from) && !base.includes(to) && (hits[to] || 0) >= 1) base.push(to);
     }
-    return Object.entries(hits).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([c]) => c);
+    return base;
+  }
+
+  // Neighbors of a version's fields it doesn't search yet, and why they matter.
+  function suggestRelated(focus) {
+    const have = focus || [];
+    const out = [];
+    for (const [from, to, why] of RELATED) {
+      if (have.includes(from) && !have.includes(to) && !out.some(s => s.cat === to)) out.push({ cat: to, why });
+    }
+    return out;
   }
 
   async function sha256(text) {
@@ -286,7 +330,8 @@
 
   root.JMA_DM = root.JMA_DM || {};
   root.JMA_DM.cvLibrary = {
-    MAX_VERSIONS, CATEGORIES, LEVELS, list, add, rename, remove, cacheExtracted, getFile, runPayload, isPdfBlob,
+    MAX_VERSIONS, CATEGORIES, CATEGORY_HINTS, LEVELS, list, add, rename, remove, cacheExtracted, getFile, runPayload,
+    isPdfBlob, suggestRelated,
     setFocus, getLevel, setLevel, attachMainFile, suggestFocus, effectiveFocus, getFocusConfirmed, setFocusConfirmed,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : self);
