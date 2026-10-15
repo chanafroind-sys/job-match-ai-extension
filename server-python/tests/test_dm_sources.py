@@ -402,6 +402,21 @@ class TestLinkedInApify:
         assert sorted(r["external_job_id"] for r in records) == ["1", "2"]
         assert records[0]["url"].startswith("https://www.linkedin.com/jobs/view/")
         assert report["cost_usd"] == round(3 * linkedin_apify.PRICE_PER_1K / 1000, 3)
+        # Titles the pool would drop are left out by the Actor, so they aren't paid for.
+        assert {"sales", "business developer", "product manager"} <= set(fake.runs[0]["body"]["titleExclude"])
+        assert len(fake.runs) == len(linkedin_apify.SEARCHES)  # the hardware and algorithms search runs too
+
+    def test_excluded_titles_are_ones_the_pool_drops_anyway(self):
+        from app.services import job_aggregator as agg
+        from daily_matches.sources import linkedin_apify
+        # Every excluded phrase, as a title, is non-tech to the pool, except the
+        # few the searches' words catch that the pool would read as tech.
+        kept_by_pool = {p for p in linkedin_apify.TITLE_EXCLUDE if agg.classify_category(p) is not None}
+        assert kept_by_pool <= {"interior", "landscape", "real estate", "security guard", "security officer",
+                                "business developer"}
+        for title in ("Senior Backend Engineer", "Hardware Engineer", "Algorithm Developer", "Data Analyst"):
+            words = set(title.lower().split())
+            assert not any(set(p.split()) <= words for p in linkedin_apify.TITLE_EXCLUDE), title
 
     async def test_the_months_credit_is_spread_over_its_working_days(self, monkeypatch):
         monkeypatch.setenv("DM_APIFY_TOKEN", "tok")

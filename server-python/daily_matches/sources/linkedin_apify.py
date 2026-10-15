@@ -40,6 +40,25 @@ SEARCHES = _env_list("DM_APIFY_SEARCHES", [
     'QA OR "automation engineer" OR SDET OR android OR iOS OR mobile OR embedded OR firmware '
     'OR "security engineer" OR "security researcher" OR cyber',
     '"team lead" OR "engineering manager" OR "tech lead" OR architect',
+    # Hardware, chips and algorithms, and the data roles the first searches don't name (2026-10-15).
+    'hardware OR "chip design" OR ASIC OR FPGA OR VLSI OR "design verification" OR "verification engineer" '
+    'OR "physical design" OR silicon OR "board design" OR algorithm OR algorithms '
+    'OR "data analyst" OR "BI developer" OR "analytics engineer"',
+])
+# Titles the pool drops anyway (app/services/job_aggregator.py _NON_ENGINEERING),
+# and what the searches' words also catch ("business developer", "interior
+# architect"): the Actor leaves them out, so they aren't paid for. On
+# 2026-10-14, 208 of the 442 jobs paid for were such titles. A phrase drops a
+# title holding all its words.
+TITLE_EXCLUDE = _env_list("DM_APIFY_TITLE_EXCLUDE", [
+    "product manager", "product owner", "product lead", "product marketing", "program manager",
+    "project manager", "sales", "account executive", "account manager", "marketing", "recruiter",
+    "recruiting", "talent", "customer success", "customer support", "customer service", "support specialist",
+    "support representative", "solutions engineer", "solution engineer", "solutions architect",
+    "solution architect", "solutions consultant", "presales", "pre-sales", "technical writer", "designer",
+    "legal", "counsel", "finance", "accountant", "payroll", "hr", "people partner", "business development",
+    "business developer", "business partner", "partner manager", "office manager", "bdr", "sdr", "procurement",
+    "buyer", "administrative", "real estate", "interior", "landscape", "security guard", "security officer",
 ])
 SKIP_WEEKDAYS = (4, 5)  # Friday, Saturday (Python's weekday(): Monday is 0)
 MAX_PER_RUN = 1000  # the Actor's own maximum
@@ -105,7 +124,7 @@ async def _run(client, query: str, hours: int, limit: int, skip: list[str], slee
     # datePosted takes only a day, a week or a month (refused on 2026-10-14);
     # LinkedIn's own f_TPR, passed through urlParam, takes any window.
     body = {"keywords": query, "location": "Israel", "limit": limit, "skipJobId": skip,
-            "urlParam": [{"key": "f_TPR", "value": f"r{hours * 3600}"}]}
+            "urlParam": [{"key": "f_TPR", "value": f"r{hours * 3600}"}], "titleExclude": TITLE_EXCLUDE}
     charge_cap = round(limit * PRICE_PER_1K / 1000 * 1.1 + 0.005, 3)  # Apify stops the run past this
     run = (await _api(client, "POST", f"/acts/{ACTOR}/runs", json=body,
                       params={"maxTotalChargeUsd": charge_cap, "timeout": RUN_TIMEOUT_S}))["data"]
