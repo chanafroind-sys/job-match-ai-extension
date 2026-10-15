@@ -8,7 +8,7 @@ const { JSDOM } = require('jsdom');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-const SCRIPTS = ['jma-auth.js', 'matcher.js', 'daily/dm-docx.js', 'daily/dm-api.js', 'daily/dm-cv-library.js',
+const SCRIPTS = ['jma-auth.js', 'jma-billing.js', 'matcher.js', 'daily/dm-docx.js', 'daily/dm-api.js', 'daily/dm-cv-library.js',
   'daily/dm-apply.js', 'daily/dm-app.js'].map(read);
 
 let passed = 0, failed = 0;
@@ -49,7 +49,8 @@ const SUB = (today) => ({ enabled: true, entitlement: 'subscription', reason: ''
   next_reset_at: '2026-10-05T00:00:00+03:00' });
 
 async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_size: 1284 }, cards: DECK, entitlement: 'subscription' },
-  runEvents = [], storage = {}, injection = null, access = true, grantOnAsk = true, confirmed = true }) {
+  runEvents = [], runRaw = null, storage = {}, injection = null, access = true, grantOnAsk = true, confirmed = true,
+  billing = { enabled: false }, claims = [{ status: 'pending' }] }) {
   // Most tests are past the first deck's fields check (confirmFocus).
   if (confirmed) storage.jma_dm_cv_library = { versions: [], focusConfirmed: true, ...(storage.jma_dm_cv_library || {}) };
   const dom = new JSDOM('<main id="dm-app"></main>', { runScripts: 'outside-only', pretendToBeVisual: true,
@@ -59,12 +60,21 @@ async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_siz
   window.TextEncoder = TextEncoder;
   if (!window.crypto || !window.crypto.subtle) Object.defineProperty(window, 'crypto', { value: webcrypto, configurable: true });
   window.__JMA_DM_NO_AUTOBOOT = true;
-  const log = { requests: [], tabs: [], scripting: [], downloads: [], asks: 0 };
+  const log = { requests: [], tabs: [], scripting: [], downloads: [], asks: 0, billing: [] };
   const lastUrl = () => (log.tabs[log.tabs.length - 1] || {}).url;
   const statusQueue = [...statuses];
-  const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
+  const json = (data) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))),
+    text: () => Promise.resolve(JSON.stringify(data)) });
   window.fetch = (url, opts = {}) => {
     const u = new URL(url);
+    if (u.pathname.startsWith('/api/billing')) {
+      const bp = u.pathname.replace('/api/billing', '');
+      log.billing.push({ path: bp, opts });
+      if (bp === '/config') return json(billing);
+      if (bp === '/checkout') return json({ checkout_id: 'c'.repeat(32), url: 'https://pay.example/checkout' });
+      if (bp.startsWith('/checkout/')) return json(claims.length > 1 ? claims.shift() : claims[0]);
+      return Promise.reject(new Error('unexpected billing ' + bp));
+    }
     const p = u.pathname.replace('/api/daily-matches', '');
     log.requests.push({ path: p + u.search, opts, body: opts.body ? JSON.parse(opts.body) : null });
     if (p === '/status') return json(statusQueue.length > 1 ? statusQueue.shift() : statusQueue[0]);
@@ -72,7 +82,7 @@ async function boot({ statuses, today = { run: { id: 1, status: 'done', pool_siz
     if (p.startsWith('/results/')) return json({ ok: true });
     if (p === '/saved') return json({ cards: [] });
     if (p === '/run') {
-      const chunks = runEvents.map(e => `data: ${JSON.stringify(e)}\n\n`).concat(['data: [DONE]\n\n']);
+      const chunks = runRaw != null ? [runRaw] : runEvents.map(e => `data: ${JSON.stringify(e)}\n\n`).concat(['data: [DONE]\n\n']);
       let i = 0;
       return Promise.resolve({ ok: true, status: 200, body: { getReader: () => ({
         read: () => Promise.resolve(i < chunks.length ? { done: false, value: new TextEncoder().encode(chunks[i++]) } : { done: true }),
@@ -202,10 +212,23 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
   // ── paywall routing ───────────────────────────────────────────────────────────
   ctx = await boot({ statuses: [{ ...SUB(null), entitlement: 'locked', reason: 'trial_used', last_run: { id: 4 } }] });
   ok('locked users land on the paywall', ctx.app.state.view === 'paywall' && !!ctx.doc.querySelector('[data-act="last-deck"]'));
-  ctx.doc.querySelector('[data-act="buy"]').click();
+  ok('no "subscribe" button until the server offers one', !ctx.doc.querySelector('[data-act="buy"]') &&
+     ctx.log.billing.some(r => r.path === '/config'));
   ctx.doc.querySelector('[data-act="have-key"]').click();
-  ok('paywall links go to Gumroad and the key screen', ctx.log.tabs[0].url.includes('gumroad.com') &&
-     ctx.log.tabs[1].url === 'chrome-extension://abc/popup.html#keys');
+  ok('"I have a key" opens the key screen', ctx.log.tabs[0].url === 'chrome-extension://abc/popup.html#keys');
+
+  ctx = await boot({ statuses: [{ ...SUB(null), entitlement: 'locked', reason: 'trial_used' }],
+    billing: { enabled: true, price_label: '$5.90', test: false },
+    claims: [{ status: 'paid', license_key: 'JMA-ABCD-EFGH-JKLM-NPQR' }, { status: 'claimed' }] });
+  await tick();
+  const buyBtn = ctx.doc.querySelector('[data-act="buy"]');
+  ok('the paywall offers the subscription with its price', !!buyBtn && buyBtn.textContent.includes('$5.90'));
+  buyBtn.click();
+  await tick(150);
+  ok('subscribing opens the processor page from the server', ctx.log.billing.some(r => r.path === '/checkout' && r.opts.method === 'POST') &&
+     ctx.log.tabs[0].url === 'https://pay.example/checkout');
+  ok('the paid key lands where a typed key goes', ctx.storage.licenseKey === 'JMA-ABCD-EFGH-JKLM-NPQR' &&
+     ctx.storage.licenseValid === true && !ctx.storage.jma_billing_pending);
 
   ctx = await boot({ statuses: [SUB(null), { ...SUB(null), entitlement: 'locked', reason: 'trial_used' }], storage: { cvText: CV },
     runEvents: [{ type: 'error', code: 'LICENSE_REQUIRED', message: 'trial used [jma:LICENSE_REQUIRED]' }] });
@@ -752,6 +775,19 @@ const actions = (log) => log.requests.filter(r => r.path.startsWith('/results/')
      !ctx.doc.querySelector('.skip-groups'));
   const full = plainRows[0].querySelector('.skip-ans');
   ok('with the full answer a click away, leaked markup cut', full && full.textContent.includes('תורנויות') && !full.textContent.includes('answer_he'));
+
+  // ── a content filter that blocks the run ─────────────────────────────────────
+  const etrogPage = '<html><head></head><body><script type="text/javascript">try{if(parent.document.location==document.location) '
+    + 'window.location="https://safepage.etrog.net.il/?a=bl"}catch(e){}</script></body></html>';
+  ctx = await boot({ statuses: [SUB(null)], storage: { cvText: CV }, runRaw: etrogPage });
+  ctx.doc.querySelector('[data-act="build"]').click();
+  await tick(300);
+  const blockedView = ctx.doc.getElementById('dm-app').textContent;
+  ok("a filter's block page says so, names the filter and the address to allow", ctx.app.state.view === 'error' &&
+     blockedView.includes('סינון האינטרנט') && blockedView.includes('אתרוג') && blockedView.includes('job-match-ai-extension.onrender.com'),
+     blockedView.slice(0, 300));
+  const copyAddress = ctx.doc.querySelector('[data-act="copy"]');
+  ok('with the address one click from the clipboard', copyAddress && copyAddress.dataset.copy === 'job-match-ai-extension.onrender.com');
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

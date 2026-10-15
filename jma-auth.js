@@ -2,7 +2,7 @@
  * Shared key handling for every part of the extension.
  *
  * A user pays for AI calls one of two ways:
- *   1. A Gumroad subscription key — the call runs on the server's Claude key.
+ *   1. A subscription key (jma-billing.js) — the call runs on the server's Claude key.
  *   2. Their own Claude API key   — the call runs on their key and their credits.
  *
  * Both are sent on every request; the server picks the subscription first and
@@ -19,7 +19,6 @@
   var LICENSE_KEY_FIELD   = 'licenseKey';
   var ANTHROPIC_KEY_FIELD = 'anthropicKey';
 
-  var GUMROAD_URL = 'https://expertdevai.gumroad.com/l/job-match-ai';
   var CONSOLE_KEYS_URL = 'https://console.anthropic.com/settings/keys';
   var CONSOLE_BILLING_URL = 'https://console.anthropic.com/settings/billing';
 
@@ -80,14 +79,14 @@
    * so a locally-detected miss and a server-detected one travel the same path.
    */
   function noKeyError() {
-    return 'כדי להשתמש ביכולות ה-AI צריך מפתח אחד משניים: מפתח מנוי מ-Gumroad, ' +
+    return 'כדי להשתמש ביכולות ה-AI צריך מפתח אחד משניים: מפתח מנוי, ' +
            'או מפתח Claude API אישי. אפשר להזין אותו בהגדרות ⚙️. [jma:' + CODES.NO_KEY + ']';
   }
 
-  /** The error for a community feature reached without a Gumroad subscription. */
+  /** The error for a community feature reached without a subscription. */
   function subscriptionOnlyError() {
     return 'הפיצ\'ר הזה זמין למנויים בלבד. מפתח Claude API אישי מכסה קריאות AI, ' +
-           'אבל למאגר המגייסים, לנקודות ולהפניות צריך מפתח מנוי מ-Gumroad ' +
+           'אבל למאגר המגייסים, לנקודות ולהפניות צריך מפתח מנוי ' +
            '(אפשר לרכוש ולהזין בהגדרות ⚙️). [jma:' + CODES.LICENSE_ONLY + ']';
   }
 
@@ -155,7 +154,6 @@
   root.JMA_Auth = {
     LICENSE_KEY_FIELD: LICENSE_KEY_FIELD,
     ANTHROPIC_KEY_FIELD: ANTHROPIC_KEY_FIELD,
-    GUMROAD_URL: GUMROAD_URL,
     CONSOLE_KEYS_URL: CONSOLE_KEYS_URL,
     CONSOLE_BILLING_URL: CONSOLE_BILLING_URL,
     CODES: CODES,

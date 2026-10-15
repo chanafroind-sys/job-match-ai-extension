@@ -34,10 +34,10 @@ async function boot({ status, storage = {}, sidePanel = true, fetchFails = false
     if (fetchHangs) return new Promise(() => {}); // the free server, asleep
     if (gated) { // the server wakes up when the test says so
       return new Promise(resolve => {
-        log.answer = (st) => resolve({ ok: true, status: 200, json: () => Promise.resolve(st) });
+        log.answer = (st) => resolve({ ok: true, status: 200, json: () => Promise.resolve(st), text: () => Promise.resolve(JSON.stringify(st)) });
       });
     }
-    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(status) });
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(status), text: () => Promise.resolve(JSON.stringify(status)) });
   };
   window.crypto.randomUUID = () => '11111111-2222-3333-4444-555555555555';
   window.chrome = {

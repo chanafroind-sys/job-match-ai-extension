@@ -800,8 +800,7 @@
       <button class="btn btn-primary" id="btnActivateLicense">🔓 הפעל מנוי</button>
       <div class="key-option-status" id="keysLicenseStatus"></div>
       <div style="margin-top:8px">
-        <a href="https://expertdevai.gumroad.com/l/job-match-ai" target="_blank"
-           id="linkBuyLicense" class="key-option-link">אין לך מנוי? לרכישה ↗</a>
+        <a href="#" id="linkBuyLicense" class="key-option-link jma-buy-link" hidden>אין לך מנוי? לרכישה ↗</a>
       </div>
     </div>
 
@@ -1211,9 +1210,9 @@
         placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" autocomplete="off" spellcheck="false"
         style="width:100%;box-sizing:border-box">
       <div id="licenseSettingsStatus" class="key-option-status"></div>
+      <div id="jmaSubscriptionBox" class="key-option-status" hidden></div>
       <div style="margin-top:6px;display:flex;gap:12px">
-        <a href="https://expertdevai.gumroad.com/l/job-match-ai" target="_blank"
-           class="key-option-link">רכישת מנוי ↗</a>
+        <a href="#" class="key-option-link jma-buy-link" hidden>רכישת מנוי ↗</a>
         <a href="#" id="btnClearLicenseKey" class="key-option-link"
            style="color:var(--text-dim)">מחק מפתח</a>
       </div>
@@ -1280,6 +1279,7 @@
 </div>
 
 <script src="jma-auth.js"></script>
+<script src="jma-billing.js"></script>
 <script src="tracker.js"></script>
 <script src="docx-builder.js"></script>
 <!-- matcher.js defines window.JMA_Matcher — pure, no DOM/chrome deps. Loaded
@@ -1289,5 +1289,6 @@
 <script src="popup.js"></script>
 <script src="v2/v2-entry.js"></script>
 <script src="daily/dm-entry.js"></script>
+<script src="billing-popup.js"></script>
 </body>
 </html>

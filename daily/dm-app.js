@@ -27,6 +27,7 @@
     view: 'loading', status: null, allCards: [], cards: [], reel: 'main', idx: 0, run: null, readOnly: false,
     cvs: [], cvSel: {}, build: null, applying: null, error: null, prevView: null,
     pendingApply: false, saved: [], busy: false, notice: '', level: null, newFocus: [],
+    billing: { enabled: false }, buyError: '',
   };
   const LEVELS = [['junior', 'ג׳וניור', '0-2 שנים'], ['mid', 'מיד', '2-5 שנים'], ['senior', 'סניור', '5+ שנים'],
     ['lead', 'ליד / ניהול', '']];
@@ -132,6 +133,9 @@
     const e = state.error || {};
     const lib = e.code === 'DM_NO_CV' || e.code === 'DM_CV_UNREADABLE';
     return `<div class="dm-center"><div class="dm-big" aria-hidden="true">⚠️</div><h1 class="dm-h">${esc(e.title || 'משהו השתבש')}</h1><p class="dm-muted">${esc(e.message || '')}</p>
+      ${e.code === 'DM_FILTERED' ? `<p class="dm-fine">אפשר לפנות לשירות הלקוחות של חברת הסינון ולבקש לאשר את האתר לעבודה, ולהדביק את הכתובת:</p>
+        <button type="button" class="btn btn-secondary" data-act="copy" data-copy="${esc(DM.api.SERVER_HOST || '')}">📋 העתקת הכתובת לבקשה</button>` : ''}
+      ${e.detail ? `<p class="dm-fine" dir="ltr">פרטים טכניים: <code>${esc(e.detail)}</code></p>` : ''}
       <div class="dm-stack">${lib ? '<button type="button" class="btn btn-primary" data-act="library">ניהול גרסאות קורות החיים</button>' : ''}
       ${e.retry ? `<button type="button" class="btn ${lib ? 'btn-secondary' : 'btn-primary'}" data-act="${e.retry}">לנסות שוב</button>` : ''}</div></div>`;
   }
@@ -550,7 +554,7 @@
       ${reelBtn}
       ${nearNudge()}
       ${back('restart-deck', 'חזרה לחפיסה')}
-      ${state.readOnly ? '<button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי</button>' : ''}</div>`;
+      ${state.readOnly ? buyButton() : ''}</div>`;
   }
 
   // A finished run with no cards: nothing new in the person's fields, or
@@ -644,6 +648,34 @@
     return `${topBar('🔖 משרות שמורות')}<div class="dm-body">${rows || '<p class="dm-muted">אין עדיין משרות שמורות.</p>'}${back()}</div>`;
   }
 
+  // Shown only once the server offers a subscription (jma-billing.js); until
+  // then a locked user still has "I have a key".
+  function buyButton() {
+    const b = state.billing || {};
+    if (!b.enabled) return '';
+    const price = b.price_label ? ` · ${esc(b.price_label)} לחודש` : '';
+    return `<button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי${price}</button>
+      ${state.buyError ? `<p class="dm-fine" role="alert">${esc(state.buyError)}</p>` : ''}`;
+  }
+
+  function loadBilling() {
+    if (!root.JMA_Billing) return;
+    root.JMA_Billing.getConfig(true).then((c) => {
+      const changed = !!c.enabled !== !!state.billing.enabled || c.price_label !== state.billing.price_label;
+      state.billing = c;
+      if (changed && ['paywall', 'end'].includes(state.view)) render();
+    }).catch(() => {});
+  }
+
+  async function buy(btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ פותחים את דף התשלום…';
+    const err = root.JMA_Billing ? await root.JMA_Billing.startCheckout() : 'המנוי עדיין לא זמין לרכישה.';
+    state.buyError = err || '';
+    if (err) return render();
+    btn.textContent = '⏳ ממתינים לתשלום בלשונית שנפתחה…';
+  }
+
   function paywall() {
     const s = state.status || {};
     const limit = s.reason === 'trial_limit';
@@ -651,7 +683,7 @@
       <h1 class="dm-h">ההתאמות היומיות שמורות למנויים</h1>
       <p class="dm-muted">${limit ? 'הניסיונות החינמיים מוגבלים כרגע מהרשת שלך או להיום.' : 'ההרצה החינמית שלך כבר נוצלה.'} מנויים מקבלים חפיסה חדשה בכל יום.</p>
       <ul class="pw-list"><li>✓ כל יום: המשרות החדשות בתחומים שלך, עד ${MAX_ANALYZED} מנותחות לעומק</li><li>✓ רק התאמות אמיתיות: ציון, דרישות ופערים לכל משרה</li><li>✓ המלצה איזו גרסת קו״ח להגיש, מוכנה להורדה</li><li>✓ מילוי אוטומטי בטפסים נתמכים</li></ul>
-      <button type="button" class="btn btn-primary" data-act="buy">שדרוג למנוי</button>
+      ${buyButton()}
       <button type="button" class="btn btn-secondary" data-act="have-key">יש לי מפתח מנוי</button>
       <p class="dm-fine">מפתח Claude אישי מכסה קריאות AI. ההתאמות היומיות נשענות על מאגר המשרות שלנו, ולכן הן חלק מהמנוי.</p>
       ${s.last_run ? '<button type="button" class="link-btn" data-act="last-deck">לצפייה בחפיסה החינמית שלך</button>' : ''}</div>`;
@@ -848,10 +880,17 @@
     const text = root.JMA_Auth ? root.JMA_Auth.friendly(message) : message;
     if (code === 'LICENSE_REQUIRED') return refresh();
     if (code === 'DM_DISABLED') return setView('disabled');
+    if (code === 'DM_FILTERED') {
+      return showError({ code, title: 'סינון האינטרנט חוסם את ההתאמות', message: text, retry: 'build' });
+    }
     if (code === 'DM_POOL_EMPTY' || code === 'DM_POOL_PREPARING' || code === 'DM_NOT_READY') {
       return showError({ title: 'המאגר של היום עדיין לא מוכן', message: text, retry: 'reload' });
     }
-    return showError({ code, title: 'לא הצלחנו לבנות את החפיסה', message: text, retry: code === 'DM_NO_CV' ? null : 'build' });
+    // The friendly text hides what failed ("Failed to fetch", "HTTP 500"…): the
+    // raw message is kept for the details line and the console, to report.
+    console.warn('[JMA:DM] build failed:', message);
+    return showError({ code, title: 'לא הצלחנו לבנות את החפיסה', message: text, detail: text === message ? '' : message,
+      retry: code === 'DM_NO_CV' ? null : 'build' });
   }
 
   async function build() {
@@ -947,6 +986,7 @@
   }
 
   async function refresh() {
+    loadBilling();
     try {
       state.status = await DM.api.status();
     } catch (e) {
@@ -1164,7 +1204,7 @@
         try { await navigator.clipboard.writeText(btn.dataset.copy); } catch (_) { /* clipboard refused */ }
         return done();
       }
-      case 'buy': return chrome.tabs.create({ url: root.JMA_Auth ? root.JMA_Auth.GUMROAD_URL : 'https://expertdevai.gumroad.com/l/job-match-ai' });
+      case 'buy': return buy(btn);
       case 'have-key': return chrome.tabs.create({ url: chrome.runtime.getURL('popup.html#keys') });
       case 'last-deck': return loadDeck(true);
       case 'skipped':
@@ -1305,6 +1345,8 @@
 
   function onStorage(changes, area) {
     if (area !== 'local') return;
+    // A subscription key arrived (a payment, or one typed in the settings).
+    if (changes.licenseKey && changes.licenseKey.newValue) { state.buyError = ''; return refresh(); }
     if (changes[UI_KEY] && state.view === 'ready') maybeAutoStart();
     // Library edits made in this panel already update state; only a CV changed
     // elsewhere (V1's settings) or a first CV needs a reload here.
