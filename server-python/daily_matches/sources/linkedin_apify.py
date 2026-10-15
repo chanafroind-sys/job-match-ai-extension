@@ -19,6 +19,7 @@ import asyncio
 import logging
 import math
 import os
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -45,6 +46,21 @@ SEARCHES = _env_list("DM_APIFY_SEARCHES", [
     'OR "physical design" OR silicon OR "board design" OR algorithm OR algorithms '
     'OR "data analyst" OR "BI developer" OR "analytics engineer"',
 ])
+# Large employers whose own careers sites aren't read (bot-protected, like
+# jobs.iai.co.il, or on systems without a reader), searched by name and kept
+# to the company (companyName, as LinkedIn names it): every job they post on
+# LinkedIn, Hebrew titles included, not only those the field searches catch.
+# (search keywords, the company's LinkedIn names). Added 2026-10-15 at the owner's request.
+COMPANY_SEARCHES: tuple[tuple[str, list[str]], ...] = (
+    ('"Israel Aerospace Industries" OR IAI OR Elbit OR Rafael OR "התעשייה האווירית" OR אלביט OR רפאל',
+     ["IAI - Israel Aerospace Industries", "Israel Aerospace Industries", "Elbit Systems", "Elbit Systems Israel",
+      "Elbit Systems Ltd.", "Rafael Advanced Defense Systems", "Rafael Advanced Defense Systems Ltd.",
+      "רפאל מערכות לחימה מתקדמות - קריירה", "רפאל מערכות לחימה מתקדמות"]),
+    ('Google OR Apple OR Meta OR Amdocs OR Qualcomm OR Wix OR "monday.com" OR "Booking.com" OR Synopsys',
+     ["Google", "Apple", "Meta", "Amdocs", "Qualcomm", "Wix", "Wix.com", "monday.com", "Booking.com", "Synopsys Inc",
+      "Synopsys"]),
+)
+COMPANY_RUN_MAX = 400
 # Titles the pool drops anyway (app/services/job_aggregator.py _NON_ENGINEERING),
 # and what the searches' words also catch ("business developer", "interior
 # architect"): the Actor leaves them out, so they aren't paid for. On
@@ -119,12 +135,15 @@ async def _api(client, method: str, path: str, **kwargs) -> dict:
     return resp.json()
 
 
-async def _run(client, query: str, hours: int, limit: int, skip: list[str], sleep) -> list[dict]:
-    """One Actor run, to its end; its jobs."""
+async def _run(client, query: str, hours: int, limit: int, skip: list[str], sleep,
+               companies: list[str] | None = None) -> list[dict]:
+    """One Actor run, to its end; its jobs. companies: keep only theirs."""
     # datePosted takes only a day, a week or a month (refused on 2026-10-14);
     # LinkedIn's own f_TPR, passed through urlParam, takes any window.
     body = {"keywords": query, "location": "Israel", "limit": limit, "skipJobId": skip,
             "urlParam": [{"key": "f_TPR", "value": f"r{hours * 3600}"}], "titleExclude": TITLE_EXCLUDE}
+    if companies:
+        body["companyName"] = companies
     charge_cap = round(limit * PRICE_PER_1K / 1000 * 1.1 + 0.005, 3)  # Apify stops the run past this
     run = (await _api(client, "POST", f"/acts/{ACTOR}/runs", json=body,
                       params={"maxTotalChargeUsd": charge_cap, "timeout": RUN_TIMEOUT_S}))["data"]
@@ -180,19 +199,23 @@ async def fetch_linkedin_apify(in_pool: list[str], *, now: datetime | None = Non
         left = budget["today_jobs"]
         skip = list(dict.fromkeys(str(i) for i in in_pool))
         hours = window_hours(il_now)
-        for query in SEARCHES:
+        runs = [(q, None, MAX_PER_RUN) for q in SEARCHES] + [(q, c, COMPANY_RUN_MAX) for q, c in COMPANY_SEARCHES]
+        for query, companies, cap in runs:
             if left <= 0:
                 report["searches"].append({"query": query, "jobs": 0, "skipped": "today's budget is spent"})
                 continue
             try:
-                items = await _run(client, query, hours, min(MAX_PER_RUN, left), skip, sleep)
+                items = await _run(client, query, hours, min(cap, left), skip, sleep, companies)
             except (ApifyError, httpx.HTTPError) as exc:
                 report["blocked"] = f"apify: {exc}"[:200]
                 break
             left -= len(items)
             report["cards"] += len(items)
             report["cost_usd"] += len(items) * PRICE_PER_1K / 1000
-            report["searches"].append({"query": query, "jobs": len(items), "capped": len(items) >= MAX_PER_RUN})
+            entry = {"query": query, "jobs": len(items), "capped": len(items) >= min(cap, MAX_PER_RUN)}
+            if companies:  # how many each company posted today (beyond what the field searches found)
+                entry["by_company"] = dict(Counter(str(i.get("companyName") or "?") for i in items).most_common())
+            report["searches"].append(entry)
             for item in items:
                 skip.append(str(item.get("id") or ""))
                 if paid_out is not None and item.get("id"):

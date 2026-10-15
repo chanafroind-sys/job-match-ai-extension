@@ -472,7 +472,25 @@ class TestLinkedInApify:
         assert report["cost_usd"] == round(3 * linkedin_apify.PRICE_PER_1K / 1000, 3)
         # Titles the pool would drop are left out by the Actor, so they aren't paid for.
         assert {"sales", "business developer", "product manager"} <= set(fake.runs[0]["body"]["titleExclude"])
-        assert len(fake.runs) == len(linkedin_apify.SEARCHES)  # the hardware and algorithms search runs too
+        # The hardware and algorithms search runs too, then the searches by company.
+        assert len(fake.runs) == len(linkedin_apify.SEARCHES) + len(linkedin_apify.COMPANY_SEARCHES)
+        assert all("companyName" not in r["body"] for r in fake.runs[:len(linkedin_apify.SEARCHES)])
+
+    async def test_large_employers_are_searched_by_name_and_kept_to_their_jobs(self, monkeypatch):
+        monkeypatch.setenv("DM_APIFY_TOKEN", "tok")
+        from daily_matches.sources import linkedin_apify
+        defense, names = linkedin_apify.COMPANY_SEARCHES[0]
+        assert "IAI - Israel Aerospace Industries" in names and "Elbit Systems" in names
+        assert any("Rafael" in n for n in names) and "התעשייה האווירית" in defense
+        fake = FakeApify({defense: [_aj("71", "Embedded Software Engineer", "IAI - Israel Aerospace Industries"),
+                                    _aj("72", "מהנדס/ת תוכנה", "Elbit Systems")]})
+        records, report = await linkedin_apify.fetch_linkedin_apify([], now=TUESDAY_IL, transport=fake.transport,
+                                                                    sleep=_no_sleep)
+        run = next(r for r in fake.runs if r["body"]["keywords"] == defense)
+        assert run["body"]["companyName"] == names and int(run["body"]["limit"]) <= linkedin_apify.COMPANY_RUN_MAX
+        entry = next(s for s in report["searches"] if s["query"] == defense)
+        assert entry["by_company"] == {"IAI - Israel Aerospace Industries": 1, "Elbit Systems": 1}
+        assert {r["company"] for r in records} == {"IAI - Israel Aerospace Industries", "Elbit Systems"}
 
     def test_excluded_titles_are_ones_the_pool_drops_anyway(self):
         from app.services import job_aggregator as agg
