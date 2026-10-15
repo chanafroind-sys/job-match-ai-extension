@@ -92,6 +92,14 @@ async def admin_stats(user: User = Depends(require_admin), db: AsyncSession = De
     }
 
 
+@router.get("/api/admin/health")
+async def admin_health(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """The system-status panel: paying licenses, AI spend, decks, the daily
+    collection, server failures, and a plain-text report to copy."""
+    from app.core.monitoring import build_health
+    return await build_health(db)
+
+
 @router.get("/api/admin/recruiters/export")
 async def export_recruiters(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Recruiter).order_by(Recruiter.id))
@@ -218,6 +226,12 @@ th, td {{ text-align: right; padding: 6px 8px; border-bottom: 1px solid #eee; }}
 select {{ padding: 8px; border-radius: 8px; border: 1px solid #ddd; margin-inline-end: 8px; }}
 .row {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; }}
 #report {{ font-size: 12px; white-space: pre-wrap; background: #f7f7f8; padding: 10px; border-radius: 8px; }}
+.health-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 10px 0 14px; }}
+.hcard {{ background: #f7f7f8; border-radius: 10px; padding: 10px 12px; }}
+.hcard b {{ display: block; font-size: 22px; margin-top: 2px; }}
+.hcard span {{ font-size: 12px; color: #555; }}
+.hcard.bad {{ background: #fef2f2; }}
+.hcard.good {{ background: #f0fdf4; }}
 </style>
 </head>
 <body>
@@ -233,8 +247,20 @@ select {{ padding: 8px; border-radius: 8px; border: 1px solid #ddd; margin-inlin
 
 <div id="dashboardSection" class="hidden">
   <div class="row" style="justify-content:space-between">
-    <strong>סטטיסטיקות</strong>
+    <strong>📊 מצב המערכת</strong>
     <button class="secondary" id="btnLogout">התנתקות</button>
+  </div>
+  <div class="health-grid" id="healthCards"></div>
+  <div class="row">
+    <button id="btnCopyReport">📋 העתיקי דוח ל-Claude</button>
+    <button class="secondary" id="btnRefreshHealth">🔄 רענון</button>
+    <span id="copyMsg" style="font-size:13px;color:#15803d"></span>
+  </div>
+  <strong>⚠️ תקלות בשרת (7 ימים)</strong>
+  <table id="errorsTable"></table>
+
+  <div class="row" style="justify-content:space-between">
+    <strong>סטטיסטיקות</strong>
   </div>
   <table id="statsTable"></table>
 
@@ -286,8 +312,54 @@ async function loadStats() {{
   const resp = await apiFetch('/api/admin/stats');
   if (!resp.ok) return false;
   renderStats(await resp.json());
+  loadHealth();
   return true;
 }}
+
+function esc(v) {{
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+}}
+
+let lastReport = '';
+async function loadHealth() {{
+  const cards = document.getElementById('healthCards');
+  cards.textContent = 'טוען...';
+  const resp = await apiFetch('/api/admin/health');
+  if (!resp.ok) {{ cards.textContent = 'לא הצלחנו לטעון את מצב המערכת.'; return; }}
+  const h = await resp.json();
+  lastReport = h.report_text || '';
+  const s = h.subscribers, ai = h.ai_cost, dm = h.daily_matches, col = h.collection, err = h.server_errors;
+  const plans = Object.entries(s.paying_by_plan).map(([k, v]) => `${{esc(k)}}: ${{v}}`).join(' · ') || '—';
+  const today = (col.last_days || [])[0] || {{}};
+  const card = (label, value, sub, cls) =>
+    `<div class="hcard ${{cls || ''}}"><span>${{label}}</span><b>${{esc(value)}}</b><span>${{sub || ''}}</span></div>`;
+  cards.innerHTML = [
+    card('💳 מנויים משלמים', s.paying_total, `${{plans}}<br>מבטלים: ${{s.cancelling}} · חדשים החודש: ${{s.new_this_month}}`),
+    card('👥 פעילים השבוע', s.active_last_7_days, 'רישיונות שנבדקו ב-7 הימים האחרונים'),
+    card('🤖 עלות AI החודש', `$${{ai.month_usd}}`, ai.per_paying_user_usd == null ? 'אין עדיין מנויים משלמים'
+      : `$${{ai.per_paying_user_usd}} למנוי משלם`),
+    card('🃏 חפיסות (7 ימים)', dm.built_last_7_days, `נכשלו: ${{dm.failed_last_7_days}} · ניסיונות חינם: ${{dm.free_trials_used}}`,
+      dm.failed_last_7_days ? 'bad' : ''),
+    card('📥 איסוף משרות היום', col.ran_today ? '✓ רץ' : '✗ לא רץ',
+      `משרות חדשות: ${{esc(today.new_jobs ?? '—')}} · לינקדאין: ${{esc(today.linkedin_jobs ?? '—')}}`
+      + (today.apify_credit_left_usd != null ? `<br>יתרת Apify: $${{esc(today.apify_credit_left_usd)}}` : ''),
+      col.ran_today && !today.error ? 'good' : 'bad'),
+    card('⚠️ תקלות בשרת', err.total_last_7_days, 'ב-7 הימים האחרונים', err.total_last_7_days ? 'bad' : 'good'),
+  ].join('');
+  const kinds = {{ server_error: 'שגיאת שרת', exception: 'קריסה', slow: 'איטי (מעל 30 שנ׳)' }};
+  document.getElementById('errorsTable').innerHTML = err.groups.length
+    ? '<tr><th>פעמים</th><th>סוג</th><th>איפה</th><th>אחרונה</th></tr>' + err.groups.map(g =>
+      `<tr><td>${{g.count}}</td><td>${{esc(kinds[g.kind] || g.kind)}} ${{esc(g.status || '')}}</td>`
+      + `<td dir="ltr" style="text-align:left">${{esc(g.route)}}<br><small>${{esc(g.detail)}}</small></td><td>${{esc(g.last)}}</td></tr>`).join('')
+    : '<tr><td>אין תקלות 🎉</td></tr>';
+}}
+
+document.getElementById('btnRefreshHealth').addEventListener('click', loadHealth);
+document.getElementById('btnCopyReport').addEventListener('click', async () => {{
+  const msg = document.getElementById('copyMsg');
+  try {{ await navigator.clipboard.writeText(lastReport); msg.textContent = 'הועתק! אפשר להדביק לי בצ׳אט.'; }}
+  catch (e) {{ msg.textContent = 'ההעתקה נכשלה, נסי שוב.'; }}
+}});
 
 document.getElementById('btnLogin').addEventListener('click', async () => {{
   const key = document.getElementById('adminKeyInput').value.trim();

@@ -35,8 +35,17 @@ def test_upgrade_downgrade_upgrade(tmp_path):
     assert _columns(db_file, "dm_job_embeddings")["embedding"] == "JSON"
     assert "tier" in _columns(db_file, "dm_run_results") and "fresh_jobs" in _columns(db_file, "dm_runs")
     assert "dm_sources" in tables and "dm_pipeline_days" in tables and "dm_paid_jobs" in tables
+    assert {"app_errors", "license_activity", "ai_usage_daily"} <= tables
+    assert {"billing_subscriptions", "billing_keys", "billing_checkouts"} <= tables
     with sqlite3.connect(db_file) as con:
-        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "b7d3f1a9c2e4"
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "a7d4e2c9f1b3"
+
+    _alembic(db_file, "downgrade", "-1")  # the billing tables go
+    assert not ({"billing_subscriptions", "billing_keys", "billing_checkouts"} & _tables(db_file))
+    assert "app_errors" in _tables(db_file)
+
+    _alembic(db_file, "downgrade", "-1")  # the monitoring tables go
+    assert not ({"app_errors", "license_activity", "ai_usage_daily"} & _tables(db_file))
 
     _alembic(db_file, "downgrade", "-1")  # the paid-for jobs go
     assert "dm_paid_jobs" not in _tables(db_file) and "dm_pipeline_days" in _tables(db_file)

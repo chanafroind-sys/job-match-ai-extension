@@ -412,6 +412,12 @@ async def verify_gumroad_license(license_key: str) -> dict:
         return {"email": "admin@internal", "uses": 1, "tier": "premium",
                 "isPremium": True, "subscriptionActive": True}
 
+    # ── Our own subscription keys (billing/), sold through the card processor ─
+    from billing import service as billing_service
+    own = await billing_service.verify_key(k)
+    if own is not None:
+        return own
+
     # ── Cache hit ─────────────────────────────────────────────────────────────
     cached = _cache_get(license_key)
     if cached is not None:
@@ -538,6 +544,10 @@ async def verify_gumroad_license(license_key: str) -> dict:
         "subscriptionActive": subscription_active,
     }
     _cache_set(license_key, result, valid=True)
+    # Counted as a paying license in the admin's status panel (a fingerprint, never the key).
+    # Whatever payment provider replaces Gumroad calls this the same way.
+    from app.core import monitoring
+    monitoring.record_license(license_key, tier, subscription_active)
     return result
 
 
@@ -772,6 +782,14 @@ def _no_thinking(model: str) -> dict:
     return {}
 
 
+def _track(model: str, usage) -> None:
+    """Counts a call's tokens toward the admin's AI-cost figure
+    (app/core/monitoring.py). A user's own Claude key isn't the owner's cost."""
+    if not using_own_key():
+        from app.core import monitoring
+        monitoring.record_usage(model, usage)
+
+
 async def call_claude(prompt: str, max_tokens: int = 1200, model: str = MODEL_FAST,
                        check_truncation: bool = False) -> str:
     print(f"[JMA:claude] calling model prompt_len={len(prompt)} max_tokens={max_tokens}")
@@ -784,6 +802,7 @@ async def call_claude(prompt: str, max_tokens: int = 1200, model: str = MODEL_FA
                 messages=[{"role": "user", "content": prompt}],
                 **_no_thinking(model),
             )
+            _track(model, message.usage)
             result = "".join(block.text for block in message.content if hasattr(block, "text"))
             print(f"[JMA:claude] attempt={attempt} response_len={len(result)} stop_reason={message.stop_reason}")
             if check_truncation and message.stop_reason == "max_tokens":
@@ -820,6 +839,7 @@ async def call_claude_cached(
                 messages=[{"role": "user", "content": user_content}],
                 **_no_thinking(model),
             )
+            _track(model, message.usage)
             result = "".join(block.text for block in message.content if hasattr(block, "text"))
             stop   = message.stop_reason or "end_turn"
             usage  = message.usage
@@ -1679,6 +1699,10 @@ class _CORSMiddleware:
 
 app.add_middleware(_CORSMiddleware)
 
+# Server failures (5xx, exceptions, requests over 30 s) for the admin's status panel.
+from app.core.monitoring import MonitorMiddleware  # noqa: E402
+app.add_middleware(MonitorMiddleware)
+
 from app.routes.points import router as points_router  # noqa: E402  (after app/_ws_user_id defined — deps.py imports main lazily)
 app.include_router(points_router)
 
@@ -2287,6 +2311,7 @@ async def stream_questions_endpoint(
                 ) as stream:
                     async for sse_chunk in _stream_q_parse(stream.text_stream):
                         yield sse_chunk
+                    _track(MODEL_SMART, (await stream.get_final_message()).usage)
             except Exception as e:
                 print(f"[JMA:stream_q] pass2 error: {e}")
 
@@ -2533,6 +2558,7 @@ async def stream_deep_analysis(body: DeepAnalysisRequest,
                         # Summary is the final section — no trailing marker, flush freely.
                         yield f"data: {json.dumps({'token': buf})}\n\n"
                         buf = ""
+                _track(MODEL_FAST, (await stream.get_final_message()).usage)
 
             if not summary_seen:
                 # Model stopped before ###SUMMARY### — salvage the decision from whatever
@@ -2642,6 +2668,7 @@ async def analyze_stream(body: AnalyzeStreamRequest,
                                 yield f"data: {json.dumps({'question': q})}\n\n"
                             except Exception:
                                 pass
+                _track(resolved_model, (await stream.get_final_message()).usage)
         except Exception as e:
             print(f"[JMA:stream_questions] {e}")
 
@@ -2658,6 +2685,7 @@ async def analyze_stream(body: AnalyzeStreamRequest,
             ) as stream:
                 async for chunk in stream.text_stream:
                     yield f"data: {json.dumps({'text': chunk})}\n\n"
+                _track(resolved_model, (await stream.get_final_message()).usage)
         except Exception as e:
             print(f"[JMA:stream_analysis] {e}")
             yield f'data: {json.dumps({"text": "שגיאה בניתוח. אנא נסה שוב."})}\n\n'
@@ -3521,3 +3549,8 @@ app.include_router(v2_router)
 # Daily Matches (daily_matches/) — isolated module, mounted the same way as V2
 from daily_matches.router import router as daily_matches_router  # noqa: E402
 app.include_router(daily_matches_router)
+
+# Subscriptions through the card processor (billing/), mounted the same way
+from billing.router import router as billing_router  # noqa: E402
+import billing.models  # noqa: E402,F401  (registers billing_* tables)
+app.include_router(billing_router)

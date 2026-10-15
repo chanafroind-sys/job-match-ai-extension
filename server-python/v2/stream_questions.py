@@ -35,6 +35,7 @@ from main import (
     require_auth,
     _ac,
     _no_thinking,
+    _track,
     _resolve_model,
 )
 from v2.router import router
@@ -317,6 +318,7 @@ async def stream_questions_endpoint(
                 ) as stream:
                     async for sse_chunk in _stream_q_parse(stream.text_stream):
                         yield sse_chunk
+                    _track(MODEL_SMART, (await stream.get_final_message()).usage)
             except Exception as e:
                 print(f"[JMA:v2:stream_q] pass2 error: {e}")
 
