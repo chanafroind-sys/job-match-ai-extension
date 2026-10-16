@@ -6,13 +6,13 @@
 // screens, using the popup's existing classes and tokens. It loads
 // daily/dm-api.js itself rather than taking a second script tag.
 //
-// The card never waits for the server. It draws at once from the last status
-// the server gave (kept in storage), or, the very first time, from a "first
-// look" that needs nothing from the server: what the feature does and "try
-// it". The live status (free, no AI, open to keyless users because the trial
+// The popup never waits for the server. The card draws at once from the last
+// status the server gave (kept in storage); the very first time, a spinner
+// holds its place until the server answers. The live status (free, no AI, open to keyless users because the trial
 // is) then fills in what only the server knows: the free run or the
 // subscription, today's deck, the pool. A definite "no" (feature off, bad
-// key) removes the card; a server that can't be reached leaves it.
+// key) removes the card; a server that can't be reached leaves a card drawn
+// from the last answer and removes a spinner.
 //
 // The launch announcement: a dialog over the popup that explains the feature
 // in three steps and offers the free run. Until a person has tried it, it
@@ -49,6 +49,10 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
+      .dm-hero-pending { display: flex; justify-content: center; padding: 18px 16px; }
+      .dm-spinner { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid rgba(99,102,241,0.2);
+        border-top-color: var(--accent, #6366F1); animation: dm-spin 0.8s linear infinite; }
+      @keyframes dm-spin { to { transform: rotate(360deg); } }
       .dm-hero { text-align: right; background: var(--bg-card); border: 1.5px solid rgba(99,102,241,0.35);
         border-radius: var(--border-radius); padding: 14px 16px 12px; box-shadow: var(--shadow-sm); margin-bottom: 4px; }
       .dm-hero-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -120,9 +124,6 @@
   const PITCH = 'כל בוקר: רוב משרות ההייטק החדשות בישראל, ממאות חברות, מסוננות לפי קורות החיים שלך לגלגלת הגשה מהירה. ' +
     'לכל משרה, הגרסה המומלצת של קורות החיים ומילוי אוטומטי של הטופס כשאפשר.';
 
-  // Before the server has answered even once on this computer.
-  const FIRST_LOOK = { enabled: true, entitlement: null, today: null, firstLook: true };
-
   // What the card says for each state, plus whether clicking should start a
   // run right away (the user already asked for one by clicking it).
   function cardModel(s) {
@@ -142,10 +143,6 @@
     if (s.entitlement === 'trial') {
       return { pill: '🎁 ניסיון חינם', gift: true, text: PITCH,
         btn: 'לנסות בחינם', meta: 'הרצה אחת עלינו · בלי מפתח ובלי כרטיס אשראי', autoStart: true };
-    }
-    if (s.firstLook) {
-      return { pill: '✨ חדש', gift: true, text: PITCH,
-        btn: 'לנסות עכשיו', meta: 'מי שעוד לא ניסה מקבל הרצה אחת עלינו', autoStart: true };
     }
     return { pill: 'חדש להיום',
       text: `${pool}נסנן אותן לגלגלת הגשה מהירה של מה שמתאים לך, עם הגרסה המומלצת של קורות החיים.`,
@@ -175,6 +172,19 @@
     if (cls) node.className = cls;
     if (text != null) node.textContent = text;
     return node;
+  }
+
+  // The card's place while the server decides, the first time there's no
+  // last answer to draw: a spinner, not a card that may vanish a second later.
+  function renderPending() {
+    const screen = document.getElementById('screen-ready');
+    if (!screen || document.getElementById('jma-dm-hero')) return;
+    injectStyles();
+    const hero = el('div', 'dm-hero dm-hero-pending');
+    hero.id = 'jma-dm-hero';
+    hero.setAttribute('aria-busy', 'true');
+    hero.append(el('span', 'dm-spinner'));
+    screen.insertAdjacentElement('afterbegin', hero);
   }
 
   function renderHero(s) {
@@ -232,7 +242,6 @@
   // nobody whose free run is used up.
   function shouldAnnounce(s, ui) {
     if (s.today) return false;
-    if (s.firstLook) return !ui.annSeen && ui.annDismissedOn !== todayKey();
     if (s.entitlement === 'trial') return ui.annDismissedOn !== todayKey();
     if (s.entitlement === 'subscription') return !ui.annSeen;
     return false;
@@ -355,13 +364,19 @@
 
   async function init() {
     const stored = await chrome.storage.local.get([CACHE_KEY, UI_KEY]);
-    // At once, before any network: the last known status, or the first look.
-    show(fromCache(stored[CACHE_KEY]) || FIRST_LOOK, stored[UI_KEY] || {});
+    // At once, before any network: the last known status, or a spinner in
+    // the card's place until the server says what goes there.
+    const cached = fromCache(stored[CACHE_KEY]);
+    if (cached) show(cached, stored[UI_KEY] || {});
+    else renderPending();
     try {
       await loadScript('daily/dm-api.js');
       lastStatus = await window.JMA_DM.api.status();
     } catch (_) {
-      return; // unreachable: the card stays (the deck says what's wrong if it's opened); the popup works as before
+      // Unreachable: a card drawn from the last answer stays (the deck says
+      // what's wrong if it's opened); a spinner goes. The popup works as before.
+      if (!cached) clearAll();
+      return;
     }
     await chrome.storage.local.set({ [CACHE_KEY]: { at: Date.now(), status: lastStatus } });
     const ui = (await chrome.storage.local.get(UI_KEY))[UI_KEY] || {}; // may have changed meanwhile

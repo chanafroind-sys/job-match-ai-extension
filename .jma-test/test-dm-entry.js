@@ -121,8 +121,10 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
   ctx = await boot({ status: { enabled: false, reason: 'off' } });
   ok('disabled feature adds nothing', !ctx.doc.getElementById('jma-dm-hero') && !ctx.doc.getElementById('jma-dm-strip'));
   ctx = await boot({ status: SUB, fetchFails: true });
-  ok('an unreachable server leaves the first-look card and throws nothing',
-     ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent === '✨ חדש');
+  ok('an unreachable server with nothing cached leaves no card and throws nothing', !ctx.doc.getElementById('jma-dm-hero'));
+  ctx = await boot({ status: SUB, fetchFails: true, storage: { jma_dm_status_cache: { at: Date.now(),
+    status: { ...SUB, today: { status: 'done', cards: 5 }, next_reset_at: new Date(Date.now() + 3600e3).toISOString() } } } });
+  ok('with a last answer cached, the card it drew stays', ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent === '5 בחפיסה');
 
   // ── dismissed strip stays dismissed today ─────────────────────────────────────
   ctx = await boot({ status: SUB, storage: { jma_dm_ui: { stripDismissedOn: new Date().toDateString() } } });
@@ -196,39 +198,29 @@ const SUB = { enabled: true, entitlement: 'subscription', today: null, pool: { a
   ok('and an updated status redraws it', ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent === '7 בחפיסה' &&
      ctx.storage.jma_dm_status_cache.status.today.cards === 7);
 
-  // ── the first look: a new install, nothing cached, the server still asleep ──
+  // ── a new install, nothing cached, the server still asleep ─────────────────
   ctx = await boot({ status: SUB, gated: true });
   hero = ctx.doc.getElementById('jma-dm-hero');
-  ann = ctx.doc.getElementById('jma-dm-announce');
-  ok('a new user sees the card and the dialog at once, before the server answers',
-     hero && hero.classList.contains('is-gift') && hero.querySelector('.dm-pill').textContent === '✨ חדש' &&
-     hero.textContent.includes('גלגלת הגשה מהירה') && ann && ann.dataset.kind === 'first');
-  ok('the first look promises only what is true for everyone',
-     ann.querySelector('.dm-ann-gift').textContent.includes('מי שעוד לא ניסה') && !ctx.doc.getElementById('jma-dm-strip'));
+  ok('a new user sees a spinner in the card\'s place at once, and no dialog yet',
+     hero && !!hero.querySelector('.dm-spinner') && !hero.querySelector('.dm-pill') &&
+     !ctx.doc.getElementById('jma-dm-announce') && !ctx.doc.getElementById('jma-dm-strip'));
   ctx.log.answer(TRIAL);
   await tick();
-  ok('the answer refines the open dialog in place: the free run', ctx.doc.getElementById('jma-dm-announce') === ann &&
-     ann.dataset.kind === 'trial' && ann.querySelector('.dm-ann-gift').textContent.includes('ניסיון אחד עלינו') &&
-     ann.querySelector('[data-ann="go"]').textContent === 'לנסות עכשיו בחינם' &&
-     ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('ניסיון חינם'));
+  ann = ctx.doc.getElementById('jma-dm-announce');
+  ok('the answer replaces the spinner with the free-run card and its dialog',
+     !ctx.doc.querySelector('.dm-spinner') && ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('ניסיון חינם') &&
+     !!ann && ann.querySelector('.dm-ann-gift').textContent.includes('ניסיון אחד עלינו'));
 
   ctx = await boot({ status: SUB, gated: true });
   ctx.log.answer({ ...SUB, entitlement: 'locked', reason: 'trial_used' });
   await tick();
-  ok('someone whose free run is used gets the locked card, and the dialog goes',
+  ok('someone whose free run is used gets the locked card and no dialog',
      ctx.doc.querySelector('#jma-dm-hero .dm-pill').textContent.includes('למנויים') && !ctx.doc.getElementById('jma-dm-announce'));
 
   ctx = await boot({ status: SUB, gated: true });
-  ctx.doc.getElementById('btnDmOpen').click();
+  ctx.log.answer({ enabled: false, reason: 'off' });
   await tick();
-  ok('"try it" works before the server answers: the deck opens and builds when it can',
-     ctx.log.sidePanel.length === 1 && ctx.storage.jma_dm_ui.autoStartAt > 0);
-
-  ctx = await boot({ status: SUB, gated: true });
-  ctx.doc.querySelector('.dm-ann-later').click();
-  await tick();
-  ok('"later" on the first look waits until tomorrow, like the trial',
-     ctx.storage.jma_dm_ui.annDismissedOn === new Date().toDateString() && !ctx.storage.jma_dm_ui.annSeen);
+  ok('a feature that is off makes the spinner disappear', !ctx.doc.getElementById('jma-dm-hero'));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
