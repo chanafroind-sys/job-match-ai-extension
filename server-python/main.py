@@ -284,7 +284,12 @@ def inject_tracking_links(cv_text: str, app_id: str) -> str:
 
     return cv_text
 
-anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+# The SDK default waits up to 10 minutes on a call that never answers, holding the
+# user (and a connection) the whole time. The longest real call, a full CV on
+# Sonnet, answers in about two minutes.
+CLAUDE_TIMEOUT = httpx.Timeout(240.0, connect=10.0)
+
+anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY, timeout=CLAUDE_TIMEOUT)
 
 
 # ── Per-request Anthropic client (BYOK) ───────────────────────────────────────
@@ -301,19 +306,21 @@ _request_client: ContextVar[Optional[AsyncAnthropic]] = ContextVar("_request_cli
 
 # Clients hold an httpx connection pool; building one per request would leak
 # sockets under load. Cache by key hash, bounded so a flood of bogus keys can't
-# grow it without limit.
+# grow it without limit. Least recently used goes first: own keys are how most
+# AI runs now, and emptying the whole cache at the cap made every active user
+# open fresh connections at once.
 _byok_clients: dict[str, AsyncAnthropic] = {}
-_BYOK_CLIENT_CACHE_MAX = 200
+_BYOK_CLIENT_CACHE_MAX = 1000
 
 
 def _byok_client(api_key: str) -> AsyncAnthropic:
     h = hashlib.sha256(api_key.encode()).hexdigest()
-    client = _byok_clients.get(h)
+    client = _byok_clients.pop(h, None)
     if client is None:
         if len(_byok_clients) >= _BYOK_CLIENT_CACHE_MAX:
-            _byok_clients.clear()
-        client = AsyncAnthropic(api_key=api_key, max_retries=0)
-        _byok_clients[h] = client
+            _byok_clients.pop(next(iter(_byok_clients)))
+        client = AsyncAnthropic(api_key=api_key, max_retries=0, timeout=CLAUDE_TIMEOUT)
+    _byok_clients[h] = client
     return client
 
 

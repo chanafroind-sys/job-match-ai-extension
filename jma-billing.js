@@ -19,6 +19,12 @@
   var BASE = 'https://job-match-ai-extension.onrender.com/api/billing';
   var PENDING_KEY = 'jma_billing_pending';
   var POLL_MS = 4000;
+  // After a quarter of an hour the payer has most likely left the payment page;
+  // an abandoned checkout polled every 4 s for its whole 6 h, from every open
+  // page, was most of the server's traffic. A page that opens later still
+  // checks at once (watch), so a late payment is picked up right away.
+  var POLL_SLOW_MS = 30000;
+  var FAST_FOR_MS = 15 * 60 * 1000;
   var PENDING_MAX_MS = 6 * 60 * 60 * 1000; // the server's CHECKOUT_TTL
   var NOT_AVAILABLE = 'המנוי עדיין לא זמין לרכישה.';
 
@@ -103,7 +109,9 @@
       if (done) {
         pollTimer = null;
       } else {
-        pollTimer = setTimeout(tick, POLL_MS);
+        var p = await _pending();
+        var fast = !p || Date.now() - p.at < FAST_FOR_MS;
+        pollTimer = setTimeout(tick, fast ? POLL_MS : POLL_SLOW_MS);
       }
     };
     pollTimer = setTimeout(tick, 0);
